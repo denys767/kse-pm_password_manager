@@ -34,12 +34,12 @@
 
 Задачі:
 
-- [ ] Обрати Java stack: Spring Boot backend.
-- [ ] Описати компоненти: frontend, backend, Keycloak, PostgreSQL, reverse proxy.
-- [ ] Описати модель шифрування: сервер не зберігає відкриті паролі.
-- [ ] Описати модель ролей.
-- [ ] Описати API-first підхід для майбутньої мобільної апки.
-- [ ] Описати базовий threat model.
+- [x] Обрати Java stack: Spring Boot backend.
+- [x] Описати компоненти: frontend, backend, Keycloak, PostgreSQL, reverse proxy. → [ARCHITECTURE.md](ARCHITECTURE.md)
+- [x] Описати модель шифрування: сервер не зберігає відкриті паролі.
+- [x] Описати модель ролей.
+- [x] Описати API-first підхід для майбутньої мобільної апки.
+- [x] Описати базовий threat model.
 
 **Оцінка:** 2–3 дні.
 
@@ -49,13 +49,13 @@
 
 Задачі:
 
-- [ ] Створити Spring Boot проєкт.
-- [ ] Налаштувати структуру модулів: auth, vault, sharing, audit, settings.
-- [ ] Додати базові REST API.
-- [ ] Додати базовий frontend shell.
-- [ ] Підключити PostgreSQL.
-- [ ] Додати health endpoint.
-- [ ] Налаштувати dev/stage середовище.
+- [x] Створити Spring Boot проєкт.
+- [x] Налаштувати структуру модулів: auth, vault, sharing, audit, settings.
+- [x] Додати базові REST API.
+- [x] Додати базовий frontend shell.
+- [x] Підключити PostgreSQL.
+- [x] Додати health endpoint.
+- [x] Налаштувати dev/stage середовище (профіль `dev` з H2 + docker-compose для повного стеку).
 
 **Оцінка:** 4–5 днів.
 
@@ -65,13 +65,13 @@
 
 Задачі:
 
-- [ ] Розгорнути Keycloak.
-- [ ] Створити realm для застосунку.
-- [ ] Створити client для web app.
-- [ ] Налаштувати Google як identity provider.
-- [ ] Налаштувати mapping email/name/groups.
-- [ ] Налаштувати перевірку JWT у Spring Boot.
-- [ ] Зробити logout flow.
+- [x] Розгорнути Keycloak (docker-compose, автоімпорт realm).
+- [x] Створити realm для застосунку ([realm-export.json](../keycloak/realm-export.json)).
+- [x] Створити client для web app (`kse-pm-web`, Authorization Code + PKCE).
+- [ ] Налаштувати Google як identity provider (конфігурація готова, потрібні реальні Google OAuth credentials — [KEYCLOAK.md](KEYCLOAK.md)).
+- [x] Налаштувати mapping email/name/groups (broker + groups protocol mapper).
+- [x] Налаштувати перевірку JWT у Spring Boot (OAuth2 resource server, realm roles → authorities).
+- [ ] Зробити logout flow (описано в [KEYCLOAK.md](KEYCLOAK.md); у shell поки локальний Lock).
 
 **Оцінка:** 4–5 днів.
 
@@ -83,15 +83,15 @@
 
 Задачі:
 
-- [ ] Створити модель password item.
-- [ ] Поля: назва, URL, username/login, password, notes, tags, owner.
-- [ ] Реалізувати створення запису.
-- [ ] Реалізувати перегляд списку записів.
-- [ ] Реалізувати відкриття одного запису.
-- [ ] Реалізувати редагування.
-- [ ] Реалізувати видалення.
-- [ ] Реалізувати copy-to-clipboard.
-- [ ] Додати базове шифрування перед збереженням.
+- [x] Створити модель password item.
+- [x] Поля: назва, URL, username/login, password, notes, tags, owner.
+- [x] Реалізувати створення запису.
+- [x] Реалізувати перегляд списку записів.
+- [x] Реалізувати відкриття одного запису.
+- [x] Реалізувати редагування.
+- [x] Реалізувати видалення.
+- [x] Реалізувати copy-to-clipboard (з автоочищенням clipboard).
+- [x] Додати базове шифрування перед збереженням (AES-GCM + PBKDF2 у браузері, WebCrypto).
 
 **Оцінка:** 5–6 днів.
 
@@ -103,14 +103,14 @@
 
 Задачі:
 
-- [ ] Створити модель permission: owner, editor, viewer.
-- [ ] Додати shared collection.
-- [ ] Додати sharing із конкретним користувачем.
-- [ ] Додати sharing із групою.
-- [ ] Додати revoke access.
-- [ ] Додати перевірку прав на backend.
-- [ ] Додати UI "Share".
-- [ ] Додати audit event: хто і з ким поділився.
+- [x] Створити модель permission: owner, editor, viewer.
+- [x] Додати shared collection (записи типу SHARED + sharing per group).
+- [x] Додати sharing із конкретним користувачем.
+- [x] Додати sharing із групою.
+- [x] Додати revoke access.
+- [x] Додати перевірку прав на backend.
+- [x] Додати UI “Share”.
+- [x] Додати audit event: хто і з ким поділився.
 
 **Оцінка:** 4–5 днів.
 
@@ -122,12 +122,12 @@
 
 Задачі:
 
-- [ ] У Keycloak увімкнути WebAuthn як другий фактор.
-- [ ] Налаштувати required action для реєстрації passkey.
+- [ ] У Keycloak увімкнути WebAuthn як другий фактор (покрокова інструкція в [KEYCLOAK.md](KEYCLOAK.md)).
+- [ ] Налаштувати required action для реєстрації passkey (інструкція там само).
 - [ ] Додати UX-повідомлення: "налаштуйте passkey / Touch ID / Face ID / Windows Hello".
 - [ ] Протестувати на Chrome/Safari/Windows Hello/macOS.
-- [ ] Додати fallback: recovery code або admin reset.
-- [ ] Зафіксувати обмеження для MVP.
+- [ ] Додати fallback: recovery code або admin reset (описано в [KEYCLOAK.md](KEYCLOAK.md)).
+- [x] Зафіксувати обмеження для MVP ([KEYCLOAK.md](KEYCLOAK.md), [ARCHITECTURE.md](ARCHITECTURE.md)).
 
 **Оцінка:** 3–4 дні.
 
@@ -146,11 +146,11 @@
 
 Задачі:
 
-- [ ] Додати поле sync_mode.
-- [ ] Додати UI toggle.
-- [ ] Додати заборону local-only для shared records.
-- [ ] Додати warning modal.
-- [ ] Додати audit event для зміни sync mode.
+- [x] Додати поле sync_mode.
+- [x] Додати UI toggle.
+- [x] Додати заборону local-only для shared records.
+- [x] Додати warning modal.
+- [x] Додати audit event для зміни sync mode.
 
 **Оцінка:** 2–3 дні.
 

@@ -1,0 +1,25 @@
+spring:
+  application:
+    name: kse-pm-password-manager
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/pm}
+    username: ${DB_USER:pm}
+    password: ${DB_PASSWORD:pm}
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${KEYCLOAK_ISSUER_URI:http://localhost:8081/realms/kse-pm}
+
+server:
+  port: 8080
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
