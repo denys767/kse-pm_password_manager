@@ -19,8 +19,13 @@ public record PasswordItemResponse(
         SyncMode syncMode,
         AccessRole accessRole,
         /** Item key wrapped with the requesting user's public key; null when the
-         * caller has permission metadata but no provisioned key (group shares). */
+         * caller's access comes from a collection or bare group permission. */
         String wrappedKey,
+        UUID collectionId,
+        /** Item key wrapped AES-GCM with the collection key (members unwrap the
+         * collection key first, then this). */
+        String collectionWrappedKey,
+        String collectionWrappedKeyIv,
         Instant createdAt,
         Instant updatedAt) {
 
@@ -41,6 +46,9 @@ public record PasswordItemResponse(
                 item.getSyncMode(),
                 accessRole,
                 wrappedKey,
+                item.getCollectionId(),
+                item.getCollectionWrappedKey(),
+                item.getCollectionWrappedKeyIv(),
                 item.getCreatedAt(),
                 item.getUpdatedAt());
     }

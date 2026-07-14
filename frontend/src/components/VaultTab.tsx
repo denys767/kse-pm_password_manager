@@ -2,19 +2,21 @@ import { ChangeEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { api } from './../api';
 import * as pmc from '../crypto';
 import { parseCsv, toCsv, CsvRow } from '../csv';
+import { unwrapItemKeyFor } from '../itemKeys';
 import { loadLocalItems } from '../localItems';
 import { ItemDialog } from './ItemDialog';
 import type { Session } from '../App';
-import type { PasswordItem, Settings } from '../types';
+import type { Collection, PasswordItem, Settings } from '../types';
 
 interface Props {
     session: Session;
     settings: Settings;
+    collections: Collection[];
 }
 
 type DialogState = { mode: 'add' } | { mode: 'edit'; item: PasswordItem } | null;
 
-export function VaultTab({ session, settings }: Props) {
+export function VaultTab({ session, settings, collections }: Props) {
     const [serverItems, setServerItems] = useState<PasswordItem[]>([]);
     const [localItems, setLocalItems] = useState<PasswordItem[]>([]);
     const [search, setSearch] = useState('');
@@ -46,9 +48,7 @@ export function VaultTab({ session, settings }: Props) {
             let skipped = 0;
             for (const item of [...serverItems, ...localItems]) {
                 try {
-                    const key = item.syncMode === 'LOCAL_ONLY'
-                        ? await pmc.unwrapItemKeyWithKek(item.kekWrappedKey!.ct, item.kekWrappedKey!.iv, session.keys.kek)
-                        : await pmc.unwrapItemKey(item.wrappedKey!, session.keys.privateKey);
+                    const key = await unwrapItemKeyFor(item, collections, session.keys);
                     rows.push({
                         name: item.name,
                         url: item.url || '',
@@ -148,6 +148,11 @@ export function VaultTab({ session, settings }: Props) {
                             <strong>{item.name}</strong>
                             {item.itemType === 'SHARED' && <span className="badge shared">shared</span>}
                             {item.syncMode === 'LOCAL_ONLY' && <span className="badge local">local-only</span>}
+                            {item.collectionId && (
+                                <span className="badge shared">
+                                    📁 {collections.find((c) => c.id === item.collectionId)?.name ?? 'collection'}
+                                </span>
+                            )}
                             {item.accessRole && item.accessRole !== 'OWNER'
                                 && <span className="badge">{item.accessRole.toLowerCase()}</span>}
                             <div className="item-meta">
@@ -165,6 +170,7 @@ export function VaultTab({ session, settings }: Props) {
                 <ItemDialog
                     session={session}
                     settings={settings}
+                    collections={collections}
                     item={dialog.mode === 'edit' ? dialog.item : null}
                     onClose={async (changed) => {
                         setDialog(null);

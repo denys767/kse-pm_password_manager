@@ -1,0 +1,165 @@
+package ua.kse.passwordmanager.collections;
+
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
+import java.util.stream.Collectors;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import ua.kse.passwordmanager.audit.AuditAction;
+import ua.kse.passwordmanager.audit.AuditService;
+import ua.kse.passwordmanager.auth.CurrentUser;
+import ua.kse.passwordmanager.collections.CollectionDtos.AddMemberRequest;
+import ua.kse.passwordmanager.collections.CollectionDtos.CollectionResponse;
+import ua.kse.passwordmanager.collections.CollectionDtos.CreateCollectionRequest;
+import ua.kse.passwordmanager.collections.CollectionDtos.MemberResponse;
+import ua.kse.passwordmanager.common.BadRequestException;
+import ua.kse.passwordmanager.common.ForbiddenException;
+import ua.kse.passwordmanager.common.NotFoundException;
+import ua.kse.passwordmanager.vault.PasswordItemRepository;
+
+@Service
+public class CollectionService {
+
+    private final CollectionRepository collectionRepository;
+    private final CollectionMemberRepository memberRepository;
+    private final PasswordItemRepository itemRepository;
+    private final AuditService auditService;
+
+    public CollectionService(CollectionRepository collectionRepository,
+                             CollectionMemberRepository memberRepository,
+                             PasswordItemRepository itemRepository,
+                             AuditService auditService) {
+        this.collectionRepository = collectionRepository;
+        this.memberRepository = memberRepository;
+        this.itemRepository = itemRepository;
+        this.auditService = auditService;
+    }
+
+    @Transactional
+    public CollectionResponse create(CurrentUser user, CreateCollectionRequest request) {
+        Collection collection = collectionRepository.save(
+                new Collection(request.name().trim(), user.email()));
+        CollectionMember self = memberRepository.save(new CollectionMember(
+                collection, user.email(), CollectionRole.MANAGER,
+                request.wrappedKeyForSelf(), user.email()));
+        auditService.record(user.email(), AuditAction.COLLECTION_CREATED, collection.getId(),
+                collection.getName(), null, null);
+        return CollectionResponse.from(collection, self, 1);
+    }
+
+    @Transactional(readOnly = true)
+    public List<CollectionResponse> listMine(CurrentUser user) {
+        return memberRepository.findByMemberEmail(user.email()).stream()
+                .map(member -> CollectionResponse.from(member.getCollection(), member,
+                        memberRepository.findByCollectionId(member.getCollection().getId()).size()))
+                .toList();
+    }
+
+    public List<MemberResponse> members(CurrentUser user, UUID collectionId) {
+        requireMembership(user, collectionId);
+        return memberRepository.findByCollectionId(collectionId).stream()
+                .map(MemberResponse::from)
+                .toList();
+    }
+
+    @Transactional
+    public MemberResponse addMember(CurrentUser user, UUID collectionId, AddMemberRequest request) {
+        CollectionMember me = requireMembership(user, collectionId);
+        if (!me.getRole().canManageMembers()) {
+            throw new ForbiddenException("Only a manager can add members");
+        }
+        Collection collection = me.getCollection();
+        String email = request.email().trim().toLowerCase(Locale.ROOT);
+        CollectionMember member = memberRepository
+                .findByCollectionIdAndMemberEmail(collectionId, email)
+                .map(existing -> {
+                    existing.setRole(request.role());
+                    existing.setWrappedKey(request.wrappedKey());
+                    return existing;
+                })
+                .orElseGet(() -> new CollectionMember(collection, email, request.role(),
+                        request.wrappedKey(), user.email()));
+        member = memberRepository.save(member);
+        auditService.record(user.email(), AuditAction.COLLECTION_MEMBER_ADDED, collectionId,
+                collection.getName(), email, "role " + request.role());
+        return MemberResponse.from(member);
+    }
+
+    @Transactional
+    public MemberResponse changeRole(CurrentUser user, UUID collectionId, UUID memberId,
+                                     CollectionRole role) {
+        CollectionMember me = requireMembership(user, collectionId);
+        if (!me.getRole().canManageMembers()) {
+            throw new ForbiddenException("Only a manager can change roles");
+        }
+        CollectionMember member = memberRepository.findByIdAndCollectionId(memberId, collectionId)
+                .orElseThrow(() -> new NotFoundException("Member not found"));
+        if (member.getMemberEmail().equalsIgnoreCase(me.getCollection().getOwnerEmail())) {
+            throw new BadRequestException("The collection owner's role cannot be changed");
+        }
+        member.setRole(role);
+        auditService.record(user.email(), AuditAction.COLLECTION_MEMBER_ROLE_CHANGED, collectionId,
+                me.getCollection().getName(), member.getMemberEmail(), "role " + role);
+        return MemberResponse.from(memberRepository.save(member));
+    }
+
+    /**
+     * Removes a member. Limitation (documented in the roadmap): the collection
+     * key is not rotated, so a removed member who saved the key could still
+     * decrypt ciphertext they had already fetched.
+     */
+    @Transactional
+    public void removeMember(CurrentUser user, UUID collectionId, UUID memberId) {
+        CollectionMember me = requireMembership(user, collectionId);
+        if (!me.getRole().canManageMembers()) {
+            throw new ForbiddenException("Only a manager can remove members");
+        }
+        CollectionMember member = memberRepository.findByIdAndCollectionId(memberId, collectionId)
+                .orElseThrow(() -> new NotFoundException("Member not found"));
+        if (member.getMemberEmail().equalsIgnoreCase(me.getCollection().getOwnerEmail())) {
+            throw new BadRequestException("The collection owner cannot be removed");
+        }
+        memberRepository.delete(member);
+        auditService.record(user.email(), AuditAction.COLLECTION_MEMBER_REMOVED, collectionId,
+                me.getCollection().getName(), member.getMemberEmail(), null);
+    }
+
+    @Transactional
+    public void delete(CurrentUser user, UUID collectionId) {
+        Collection collection = collectionRepository.findById(collectionId)
+                .orElseThrow(() -> new NotFoundException("Collection not found"));
+        if (!collection.getOwnerEmail().equalsIgnoreCase(user.email())) {
+            throw new ForbiddenException("Only the owner can delete a collection");
+        }
+        if (itemRepository.countByCollectionId(collectionId) > 0) {
+            throw new BadRequestException("Remove all items from the collection first");
+        }
+        memberRepository.deleteByCollectionId(collectionId);
+        collectionRepository.delete(collection);
+        auditService.record(user.email(), AuditAction.COLLECTION_DELETED, collectionId,
+                collection.getName(), null, null);
+    }
+
+    public Optional<CollectionRole> roleFor(UUID collectionId, String email) {
+        return memberRepository.findByCollectionIdAndMemberEmail(collectionId, email)
+                .map(CollectionMember::getRole);
+    }
+
+    /** collectionId → role for every collection the user belongs to. */
+    @Transactional(readOnly = true)
+    public Map<UUID, CollectionRole> membershipsOf(String email) {
+        return memberRepository.findByMemberEmail(email).stream()
+                .collect(Collectors.toMap(m -> m.getCollection().getId(), CollectionMember::getRole));
+    }
+
+    private CollectionMember requireMembership(CurrentUser user, UUID collectionId) {
+        collectionRepository.findById(collectionId)
+                .orElseThrow(() -> new NotFoundException("Collection not found"));
+        return memberRepository.findByCollectionIdAndMemberEmail(collectionId, user.email())
+                // Hide the collection's existence from non-members.
+                .orElseThrow(() -> new NotFoundException("Collection not found"));
+    }
+}

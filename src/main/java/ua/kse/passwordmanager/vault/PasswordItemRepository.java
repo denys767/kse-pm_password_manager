@@ -11,6 +11,10 @@ public interface PasswordItemRepository extends JpaRepository<PasswordItem, UUID
 
     List<PasswordItem> findByOwnerEmailOrderByNameAsc(String ownerEmail);
 
+    List<PasswordItem> findByCollectionIdInOrderByNameAsc(Collection<UUID> collectionIds);
+
+    long countByCollectionId(UUID collectionId);
+
     @Query("""
             select distinct p.item from Permission p
             where (p.granteeType = ua.kse.passwordmanager.sharing.GranteeType.USER

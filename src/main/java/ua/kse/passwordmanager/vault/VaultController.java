@@ -74,4 +74,11 @@ public class VaultController {
                                                @Valid @RequestBody SyncModeRequest request) {
         return vaultService.changeSyncMode(authFacade.current(), id, request.syncMode());
     }
+
+    /** Move the item into / out of a collection (owner only). */
+    @PutMapping("/{id}/collection")
+    public PasswordItemResponse changeCollection(@PathVariable UUID id,
+                                                 @Valid @RequestBody ItemCollectionRequest request) {
+        return vaultService.changeCollection(authFacade.current(), id, request);
+    }
 }

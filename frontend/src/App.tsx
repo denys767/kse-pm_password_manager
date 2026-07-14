@@ -3,21 +3,23 @@ import { api } from './api';
 import { fetchConfig, initOidc, loadOrCreateKeys, oidcLogout, setDevIdentity, VaultKeys } from './auth';
 import { UnlockScreen } from './components/UnlockScreen';
 import { VaultTab } from './components/VaultTab';
+import { CollectionsTab } from './components/CollectionsTab';
 import { AuditTab } from './components/AuditTab';
 import { SettingsTab } from './components/SettingsTab';
-import type { FrontendConfig, Me, Settings } from './types';
+import type { Collection, FrontendConfig, Me, Settings } from './types';
 
 export interface Session {
     user: Me;
     keys: VaultKeys;
 }
 
-type Tab = 'vault' | 'audit' | 'settings';
+type Tab = 'vault' | 'collections' | 'audit' | 'settings';
 
 export default function App() {
     const [config, setConfig] = useState<FrontendConfig | null>(null);
     const [oidcReady, setOidcReady] = useState(false);
     const [session, setSession] = useState<Session | null>(null);
+    const [collections, setCollections] = useState<Collection[]>([]);
     const [settings, setSettings] = useState<Settings>({
         defaultSyncMode: 'SERVER_SYNCED',
         clipboardClearSeconds: 20,
@@ -37,6 +39,10 @@ export default function App() {
             .catch((e) => setFatal(`Не вдалося завантажити конфігурацію: ${e.message}`));
     }, []);
 
+    const refreshCollections = useCallback(async () => {
+        setCollections(await api<Collection[]>('/api/collections'));
+    }, []);
+
     const unlock = useCallback(async (passphrase: string, dev?: { email: string; roles: string; groups: string }) => {
         if (dev) {
             setDevIdentity(dev);
@@ -45,10 +51,12 @@ export default function App() {
         const keys = await loadOrCreateKeys(passphrase);
         setSession({ user, keys });
         setSettings(await api<Settings>('/api/settings'));
-    }, []);
+        await refreshCollections();
+    }, [refreshCollections]);
 
     const lock = useCallback(() => {
         setSession(null);
+        setCollections([]);
         setTab('vault');
     }, []);
 
@@ -88,6 +96,9 @@ export default function App() {
                     <nav className="tabs">
                         <button className={`tab ${tab === 'vault' ? 'active' : ''}`}
                                 onClick={() => setTab('vault')}>Vault</button>
+                        <button id="collections-tab-btn"
+                                className={`tab ${tab === 'collections' ? 'active' : ''}`}
+                                onClick={() => setTab('collections')}>Collections</button>
                         {isAuditor && (
                             <button id="audit-tab-btn" className={`tab ${tab === 'audit' ? 'active' : ''}`}
                                     onClick={() => setTab('audit')}>Audit log</button>
@@ -95,7 +106,13 @@ export default function App() {
                         <button className={`tab ${tab === 'settings' ? 'active' : ''}`}
                                 onClick={() => setTab('settings')}>Settings</button>
                     </nav>
-                    {tab === 'vault' && <VaultTab session={session} settings={settings} />}
+                    {tab === 'vault' && (
+                        <VaultTab session={session} settings={settings} collections={collections} />
+                    )}
+                    {tab === 'collections' && (
+                        <CollectionsTab session={session} collections={collections}
+                                        onChanged={refreshCollections} />
+                    )}
                     {tab === 'audit' && <AuditTab />}
                     {tab === 'settings' && <SettingsTab settings={settings} onSaved={setSettings} />}
                 </main>

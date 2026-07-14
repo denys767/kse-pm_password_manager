@@ -104,13 +104,13 @@
 Задачі:
 
 - [x] Створити модель permission: owner, editor, viewer.
-- [x] Додати shared collection (записи типу SHARED + sharing per group).
+- [x] Додати shared collection — повноцінна E2E-модель (org-key: власний AES-ключ колекції, обгорнутий публічним ключем кожного члена; ролі manager/editor/viewer) — [ROADMAP.md, Фаза 3](../docs/ROADMAP.md).
 - [x] Додати sharing із конкретним користувачем.
-- [x] Додати sharing із групою.
+- [x] Додати sharing із групою (permission-рівень; для реального E2E-доступу команди — Collections вище).
 - [x] Додати revoke access.
 - [x] Додати перевірку прав на backend.
-- [x] Додати UI “Share”.
-- [x] Додати audit event: хто і з ким поділився.
+- [x] Додати UI “Share” (+ окрема вкладка “Collections” для командних vault-ів).
+- [x] Додати audit event: хто і з ким поділився (+ COLLECTION_* події).
 
 **Оцінка:** 4–5 днів.
 

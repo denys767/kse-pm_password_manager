@@ -33,9 +33,33 @@ export interface PasswordItem {
     syncMode: SyncMode;
     accessRole: AccessRole | null;
     wrappedKey: string | null;
+    collectionId: string | null;
+    collectionWrappedKey: string | null;
+    collectionWrappedKeyIv: string | null;
     updatedAt: string;
     /** Present only on local-only items (stored in localStorage). */
     kekWrappedKey?: Encrypted;
+}
+
+export type CollectionRole = 'VIEWER' | 'EDITOR' | 'MANAGER';
+
+export interface Collection {
+    id: string;
+    name: string;
+    ownerEmail: string;
+    myRole: CollectionRole;
+    /** Collection key wrapped with my public key. */
+    myWrappedKey: string;
+    memberCount: number;
+    createdAt: string;
+}
+
+export interface CollectionMemberInfo {
+    id: string;
+    memberEmail: string;
+    role: CollectionRole;
+    addedBy: string;
+    createdAt: string;
 }
 
 export interface Permission {
