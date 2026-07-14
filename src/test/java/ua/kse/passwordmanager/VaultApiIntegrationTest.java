@@ -22,7 +22,7 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 
-@SpringBootTest
+@SpringBootTest(properties = "pm.allow-insecure-dev=true")
 @AutoConfigureMockMvc
 @ActiveProfiles("dev")
 class VaultApiIntegrationTest {
@@ -51,7 +51,8 @@ class VaultApiIntegrationTest {
                   "passwordIv": "aXZpdml2aXZpdg==",
                   "tags": "test",
                   "itemType": "%s",
-                  "syncMode": "%s"
+                  "syncMode": "%s",
+                  "wrappedKey": "b3duZXJXcmFwcGVkS2V5"
                 }
                 """.formatted(name, itemType, syncMode);
     }
@@ -59,6 +60,18 @@ class VaultApiIntegrationTest {
     private String createItem(String owner, String name, String itemType) throws Exception {
         String body = mockMvc.perform(as(post("/api/vault/items"), owner)
                         .content(itemJson(name, itemType, "SERVER_SYNCED")))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        return objectMapper.readTree(body).get("id").asText();
+    }
+
+    private String shareWithUser(String owner, String itemId, String grantee, String role)
+            throws Exception {
+        String body = mockMvc.perform(as(post("/api/vault/items/" + itemId + "/permissions"), owner)
+                        .content("""
+                                {"granteeType": "USER", "grantee": "%s", "role": "%s",
+                                 "wrappedKey": "Z3JhbnRlZVdyYXBwZWRLZXk="}
+                                """.formatted(grantee, role)))
                 .andExpect(status().isCreated())
                 .andReturn().getResponse().getContentAsString();
         return objectMapper.readTree(body).get("id").asText();
@@ -83,12 +96,15 @@ class VaultApiIntegrationTest {
 
         mockMvc.perform(as(get("/api/vault/items"), ALICE))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$[?(@.id == '%s')].accessRole".formatted(id), hasItem("OWNER")));
+                .andExpect(jsonPath("$[?(@.id == '%s')].accessRole".formatted(id), hasItem("OWNER")))
+                .andExpect(jsonPath("$[?(@.id == '%s')].wrappedKey".formatted(id),
+                        hasItem("b3duZXJXcmFwcGVkS2V5")));
 
         mockMvc.perform(as(get("/api/vault/items/" + id), ALICE))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.name").value("GitHub"))
-                .andExpect(jsonPath("$.encryptedPassword").value("Y2lwaGVydGV4dA=="));
+                .andExpect(jsonPath("$.encryptedPassword").value("Y2lwaGVydGV4dA=="))
+                .andExpect(jsonPath("$.wrappedKey").value("b3duZXJXcmFwcGVkS2V5"));
 
         mockMvc.perform(as(put("/api/vault/items/" + id), ALICE)
                         .content(itemJson("GitHub (renamed)", "PERSONAL", "SERVER_SYNCED")))
@@ -103,6 +119,16 @@ class VaultApiIntegrationTest {
 
         mockMvc.perform(as(get("/api/vault/items/" + id), ALICE))
                 .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void createRequiresWrappedKey() throws Exception {
+        mockMvc.perform(as(post("/api/vault/items"), ALICE)
+                        .content("""
+                                {"name": "No key", "encryptedPassword": "YQ==", "passwordIv": "aXY=",
+                                 "itemType": "PERSONAL", "syncMode": "SERVER_SYNCED"}
+                                """))
+                .andExpect(status().isBadRequest());
     }
 
     @Test
@@ -121,30 +147,20 @@ class VaultApiIntegrationTest {
     @Test
     void sharingGrantsAndRevokesAccess() throws Exception {
         String id = createItem(ALICE, "Team wiki", "PERSONAL");
+        String permissionId = shareWithUser(ALICE, id, BOB, "VIEWER");
 
-        String permissionBody = mockMvc.perform(as(post("/api/vault/items/" + id + "/permissions"), ALICE)
-                        .content("""
-                                {"granteeType": "USER", "grantee": "%s", "role": "VIEWER"}
-                                """.formatted(BOB)))
-                .andExpect(status().isCreated())
-                .andReturn().getResponse().getContentAsString();
-        String permissionId = objectMapper.readTree(permissionBody).get("id").asText();
-
-        // Sharing converts the item to SHARED; viewer can read but not edit.
+        // Sharing converts the item to SHARED; viewer gets their wrapped key.
         mockMvc.perform(as(get("/api/vault/items/" + id), BOB))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.itemType").value("SHARED"))
-                .andExpect(jsonPath("$.accessRole").value("VIEWER"));
+                .andExpect(jsonPath("$.accessRole").value("VIEWER"))
+                .andExpect(jsonPath("$.wrappedKey").value("Z3JhbnRlZVdyYXBwZWRLZXk="));
         mockMvc.perform(as(put("/api/vault/items/" + id), BOB)
                         .content(itemJson("Edited by viewer", "SHARED", "SERVER_SYNCED")))
                 .andExpect(status().isForbidden());
 
         // Upgrading to editor allows editing.
-        mockMvc.perform(as(post("/api/vault/items/" + id + "/permissions"), ALICE)
-                        .content("""
-                                {"granteeType": "USER", "grantee": "%s", "role": "EDITOR"}
-                                """.formatted(BOB)))
-                .andExpect(status().isCreated());
+        shareWithUser(ALICE, id, BOB, "EDITOR");
         mockMvc.perform(as(put("/api/vault/items/" + id), BOB)
                         .content(itemJson("Edited by editor", "SHARED", "SERVER_SYNCED")))
                 .andExpect(status().isOk());
@@ -160,18 +176,31 @@ class VaultApiIntegrationTest {
     }
 
     @Test
-    void groupSharingGrantsAccessByGroupMembership() throws Exception {
+    void userShareRequiresWrappedKey() throws Exception {
+        String id = createItem(ALICE, "Needs key", "PERSONAL");
+        mockMvc.perform(as(post("/api/vault/items/" + id + "/permissions"), ALICE)
+                        .content("""
+                                {"granteeType": "USER", "grantee": "%s", "role": "VIEWER"}
+                                """.formatted(BOB)))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void groupSharingGrantsAccessByGroupMembershipWithWarning() throws Exception {
         String id = createItem(ALICE, "Infra credentials", "PERSONAL");
 
         mockMvc.perform(as(post("/api/vault/items/" + id + "/permissions"), ALICE)
                         .content("""
                                 {"granteeType": "GROUP", "grantee": "dev-team", "role": "VIEWER"}
                                 """))
-                .andExpect(status().isCreated());
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.warning").exists());
 
+        // Group member has permission metadata but no provisioned wrapped key.
         mockMvc.perform(as(get("/api/vault/items/" + id), BOB).header("X-Dev-Groups", "dev-team"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.accessRole").value("VIEWER"));
+                .andExpect(jsonPath("$.accessRole").value("VIEWER"))
+                .andExpect(jsonPath("$.wrappedKey").doesNotExist());
         mockMvc.perform(as(get("/api/vault/items/" + id), BOB))
                 .andExpect(status().isNotFound());
     }
@@ -247,5 +276,81 @@ class VaultApiIntegrationTest {
                 .andExpect(jsonPath("$.email").value(ALICE))
                 .andExpect(jsonPath("$.roles", hasItem("ADMIN")))
                 .andExpect(jsonPath("$.groups", hasItem("dev-team")));
+    }
+
+    @Test
+    void updateSnapshotsPreviousVersion() throws Exception {
+        String id = createItem(ALICE, "Versioned", "PERSONAL");
+
+        mockMvc.perform(as(get("/api/vault/items/" + id + "/versions"), ALICE))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(0)));
+
+        mockMvc.perform(as(put("/api/vault/items/" + id), ALICE)
+                        .content(itemJson("Versioned v2", "PERSONAL", "SERVER_SYNCED")))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(as(get("/api/vault/items/" + id + "/versions"), ALICE))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(1)))
+                .andExpect(jsonPath("$[0].name").value("Versioned"))
+                .andExpect(jsonPath("$[0].replacedBy").value(ALICE))
+                .andExpect(jsonPath("$[0].encryptedPassword").value("Y2lwaGVydGV4dA=="));
+
+        // Version history follows item access rules.
+        mockMvc.perform(as(get("/api/vault/items/" + id + "/versions"), BOB))
+                .andExpect(status().isNotFound());
+
+        // Deleting the item removes its history too.
+        mockMvc.perform(as(delete("/api/vault/items/" + id), ALICE))
+                .andExpect(status().isNoContent());
+    }
+
+    @Test
+    void keysLifecycle() throws Exception {
+        String carol = "carol@kse.org.ua";
+        // No keypair yet.
+        mockMvc.perform(as(get("/api/keys/me"), carol))
+                .andExpect(status().isNotFound());
+        mockMvc.perform(as(get("/api/keys/" + carol), ALICE))
+                .andExpect(status().isNotFound());
+
+        String keysJson = """
+                {"publicKey": "cHVibGljS2V5", "encryptedPrivateKey": "ZW5jUHJpdg==",
+                 "privateKeyIv": "aXY=", "kdfSalt": "c2FsdA=="}
+                """;
+        mockMvc.perform(as(put("/api/keys/me"), carol).content(keysJson))
+                .andExpect(status().isCreated());
+
+        mockMvc.perform(as(get("/api/keys/me"), carol))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.publicKey").value("cHVibGljS2V5"))
+                .andExpect(jsonPath("$.kdfSalt").value("c2FsdA=="));
+
+        // Other users see only the public key.
+        String publicView = mockMvc.perform(as(get("/api/keys/" + carol), ALICE))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.publicKey").value("cHVibGljS2V5"))
+                .andReturn().getResponse().getContentAsString();
+        JsonNode node = objectMapper.readTree(publicView);
+        org.junit.jupiter.api.Assertions.assertFalse(node.has("encryptedPrivateKey"),
+                "public view must not expose the encrypted private key");
+
+        // Re-encrypting the same keypair (passphrase change) is allowed.
+        mockMvc.perform(as(put("/api/keys/me"), carol).content("""
+                {"publicKey": "cHVibGljS2V5", "encryptedPrivateKey": "bmV3RW5jUHJpdg==",
+                 "privateKeyIv": "aXYy", "kdfSalt": "c2FsdDI="}
+                """))
+                .andExpect(status().isOk());
+
+        // Replacing with a different keypair needs force=true.
+        String differentKey = """
+                {"publicKey": "b3RoZXJLZXk=", "encryptedPrivateKey": "eA==",
+                 "privateKeyIv": "aXY=", "kdfSalt": "c2FsdA=="}
+                """;
+        mockMvc.perform(as(put("/api/keys/me"), carol).content(differentKey))
+                .andExpect(status().isBadRequest());
+        mockMvc.perform(as(put("/api/keys/me?force=true"), carol).content(differentKey))
+                .andExpect(status().isOk());
     }
 }

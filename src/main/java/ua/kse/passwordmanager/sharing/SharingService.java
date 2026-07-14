@@ -11,6 +11,8 @@ import ua.kse.passwordmanager.auth.CurrentUser;
 import ua.kse.passwordmanager.common.BadRequestException;
 import ua.kse.passwordmanager.common.ForbiddenException;
 import ua.kse.passwordmanager.common.NotFoundException;
+import ua.kse.passwordmanager.vault.ItemKey;
+import ua.kse.passwordmanager.vault.ItemKeyRepository;
 import ua.kse.passwordmanager.vault.ItemType;
 import ua.kse.passwordmanager.vault.PasswordItem;
 import ua.kse.passwordmanager.vault.PasswordItemRepository;
@@ -18,15 +20,22 @@ import ua.kse.passwordmanager.vault.PasswordItemRepository;
 @Service
 public class SharingService {
 
+    /** Temporary until collections (org-key model) land in Phase 3. */
+    static final String GROUP_SHARE_WARNING =
+            "Group members without a provisioned wrapped key cannot decrypt this item yet";
+
     private final PermissionRepository permissionRepository;
     private final PasswordItemRepository itemRepository;
+    private final ItemKeyRepository itemKeyRepository;
     private final AuditService auditService;
 
     public SharingService(PermissionRepository permissionRepository,
                           PasswordItemRepository itemRepository,
+                          ItemKeyRepository itemKeyRepository,
                           AuditService auditService) {
         this.permissionRepository = permissionRepository;
         this.itemRepository = itemRepository;
+        this.itemKeyRepository = itemKeyRepository;
         this.auditService = auditService;
     }
 
@@ -62,6 +71,11 @@ public class SharingService {
         if (request.granteeType() == GranteeType.USER && grantee.equalsIgnoreCase(item.getOwnerEmail())) {
             throw new BadRequestException("Cannot share an item with its owner");
         }
+        if (request.granteeType() == GranteeType.USER
+                && (request.wrappedKey() == null || request.wrappedKey().isBlank())) {
+            throw new BadRequestException(
+                    "wrappedKey is required: wrap the item key with the recipient's public key");
+        }
 
         Permission permission = permissionRepository
                 .findByItemIdAndGranteeTypeAndGrantee(itemId, request.granteeType(), grantee)
@@ -73,6 +87,16 @@ public class SharingService {
                         request.role(), user.email()));
         permission = permissionRepository.save(permission);
 
+        if (request.granteeType() == GranteeType.USER) {
+            ItemKey itemKey = itemKeyRepository.findByItemIdAndUserEmail(itemId, grantee)
+                    .map(existing -> {
+                        existing.setWrappedKey(request.wrappedKey());
+                        return existing;
+                    })
+                    .orElseGet(() -> new ItemKey(item, grantee, request.wrappedKey()));
+            itemKeyRepository.save(itemKey);
+        }
+
         // Once an item is shared with anyone, it is a shared item.
         if (item.getItemType() != ItemType.SHARED) {
             item.setItemType(ItemType.SHARED);
@@ -81,7 +105,8 @@ public class SharingService {
 
         auditService.record(user.email(), AuditAction.ITEM_SHARED, item.getId(), item.getName(),
                 grantee, request.granteeType() + " granted role " + request.role());
-        return PermissionResponse.from(permission);
+        return PermissionResponse.from(permission,
+                request.granteeType() == GranteeType.GROUP ? GROUP_SHARE_WARNING : null);
     }
 
     public List<PermissionResponse> listPermissions(CurrentUser user, UUID itemId) {
@@ -97,6 +122,9 @@ public class SharingService {
         Permission permission = permissionRepository.findByIdAndItemId(permissionId, itemId)
                 .orElseThrow(() -> new NotFoundException("Permission not found"));
         permissionRepository.delete(permission);
+        if (permission.getGranteeType() == GranteeType.USER) {
+            itemKeyRepository.deleteByItemIdAndUserEmail(itemId, permission.getGrantee());
+        }
         auditService.record(user.email(), AuditAction.ACCESS_REVOKED, item.getId(), item.getName(),
                 permission.getGrantee(), permission.getGranteeType() + " access revoked");
     }

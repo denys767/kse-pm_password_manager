@@ -127,6 +127,27 @@ dialog::backdrop { background: rgba(15, 23, 42, 0.5); }
     font-size: 14px;
 }
 
+.strength { margin: 4px 0 8px; }
+.strength-track { height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; }
+.strength-bar { height: 100%; border-radius: 3px; transition: width 0.2s; }
+.strength-bar.s0 { background: #dc2626; }
+.strength-bar.s1 { background: #f97316; }
+.strength-bar.s2 { background: #eab308; }
+.strength-bar.s3 { background: #22c55e; }
+.strength-bar.s4 { background: #15803d; }
+
+button.linklike {
+    background: none;
+    border: none;
+    color: var(--accent);
+    padding: 0;
+    cursor: pointer;
+    font-size: 13px;
+    text-decoration: underline;
+}
+
+#history-section { margin-top: 12px; }
+
 .audit-table { width: 100%; background: var(--card); border-collapse: collapse; border: 1px solid var(--border); border-radius: 10px; }
 .audit-table th, .audit-table td { padding: 8px 12px; text-align: left; font-size: 13px; border-bottom: 1px solid var(--border); }
 .audit-table th { color: var(--muted); }

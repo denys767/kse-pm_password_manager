@@ -1,0 +1,57 @@
+# Production-shaped stack: nginx (TLS termination + security headers) in
+# front of the app, PostgreSQL and Keycloak on the internal network only.
+#
+# Before first run:
+#   1. Put TLS cert/key into ./nginx/certs/server.crt and server.key
+#      (self-signed for staging: openssl req -x509 -newkey rsa:2048 -nodes
+#       -keyout nginx/certs/server.key -out nginx/certs/server.crt -days 365
+#       -subj "/CN=pm.example.com")
+#   2. Set real secrets via environment or a .env file.
+services:
+  app:
+    build: .
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/pm
+      DB_USER: pm
+      DB_PASSWORD: ${DB_PASSWORD:-change-me}
+      KEYCLOAK_ISSUER_URI: ${KEYCLOAK_ISSUER_URI:-http://keycloak:8081/realms/kse-pm}
+    depends_on:
+      - postgres
+      - keycloak
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: pm
+      POSTGRES_USER: pm
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-change-me}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    command: start-dev --import-realm --http-port=8081
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-change-me}
+    volumes:
+      - ./keycloak:/opt/keycloak/data/import
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:1.27
+    ports:
+      - "443:443"
+      - "8443:8443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+    depends_on:
+      - app
+      - keycloak
+    restart: unless-stopped
+
+volumes:
+  pgdata:

@@ -18,10 +18,14 @@ public record PasswordItemResponse(
         ItemType itemType,
         SyncMode syncMode,
         AccessRole accessRole,
+        /** Item key wrapped with the requesting user's public key; null when the
+         * caller has permission metadata but no provisioned key (group shares). */
+        String wrappedKey,
         Instant createdAt,
         Instant updatedAt) {
 
-    public static PasswordItemResponse from(PasswordItem item, AccessRole accessRole) {
+    public static PasswordItemResponse from(PasswordItem item, AccessRole accessRole,
+                                            String wrappedKey) {
         return new PasswordItemResponse(
                 item.getId(),
                 item.getName(),
@@ -36,6 +40,7 @@ public record PasswordItemResponse(
                 item.getItemType(),
                 item.getSyncMode(),
                 accessRole,
+                wrappedKey,
                 item.getCreatedAt(),
                 item.getUpdatedAt());
     }
