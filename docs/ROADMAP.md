@@ -35,15 +35,18 @@
 
 **Критерій готовності:** запис можна створити згенерованим паролем, поділитися колекцією на команду, відкотити до попередньої версії, імпортувати з CSV.
 
-## Фаза 4 — Production readiness (оцінка 1–2 тижні)
+## Фаза 4 — Production readiness 🔄
 
-- ⬜ OpenAPI-специфікація (springdoc-openapi) — стабільний контракт для мобільної апки (US-10).
-- ⬜ CI: GitHub Actions (build + test на PR), Dependabot.
-- ⬜ Testcontainers-тест Flyway-міграцій проти справжнього PostgreSQL.
-- ⬜ Dockerfile застосунку + prod docker-compose з nginx (TLS termination, security headers, CSP).
-- ⬜ Rate limiting (bucket4j); Keycloak event listener → audit LOGIN-подій.
-- ⬜ Prometheus-метрики, структуровані логи, алерти на аномалії в audit (сплески share/revoke/copy).
-- ⬜ Бекапи PostgreSQL + runbook відновлення; чекліст security review перед запуском.
+- ✅ OpenAPI-специфікація (springdoc): `/v3/api-docs` + Swagger UI (`/swagger-ui.html`) — контракт для мобільної апки (US-10). На публічному edge nginx блокує Swagger.
+- ✅ CI: GitHub Actions — `mvn verify` (frontend + backend + тести) на кожен PR.
+- ✅ Testcontainers-тест Flyway-міграцій проти справжнього PostgreSQL (CI-gated: `FlywayMigrationIT`, вмикається змінною `CI=true`).
+- ✅ Dockerfile (multi-stage, non-root) + `docker-compose.prod.yml` з nginx: TLS termination, HSTS, CSP, X-Frame-Options; Postgres/Keycloak лише у внутрішній мережі; `/actuator/*` (крім health) закритий ззовні.
+- ✅ Rate limiting: in-memory fixed window per client IP на `/api/**` (300 rpm за замовчуванням, `pm.rate-limit.requests-per-minute`); для горизонтального масштабування — bucket4j+Redis окремим кроком.
+- ✅ Prometheus-метрики (`/actuator/prometheus`, micrometer).
+- ✅ Dependabot (maven, npm, GitHub Actions, docker — щотижнево).
+- ⬜ Keycloak event listener → audit LOGIN-подій.
+- ⬜ Алерти на аномалії в audit (сплески share/revoke/copy); структуровані логи.
+- ✅ Runbook бекапів/відновлення + чекліст перед запуском ([OPERATIONS.md](OPERATIONS.md)); сам процес бекапів налаштовується на хості за runbook-ом.
 
 **Критерій готовності:** `docker compose -f docker-compose.prod.yml up` дає HTTPS-стек; CI зелений на кожен PR.
 

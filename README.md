@@ -24,6 +24,18 @@ mvn spring-boot:run       # backend перевіряє JWT від Keycloak
 
 Налаштування Google Workspace SSO та WebAuthn — у [docs/KEYCLOAK.md](docs/KEYCLOAK.md).
 
+## Production-подібний деплой
+
+```bash
+# TLS-сертифікати у nginx/certs/ (див. коментар у docker-compose.prod.yml), потім:
+DB_PASSWORD=... KEYCLOAK_ADMIN_PASSWORD=... docker compose -f docker-compose.prod.yml up -d --build
+```
+
+nginx термінує TLS (застосунок на :443, Keycloak на :8443), додає HSTS/CSP/X-Frame-Options
+і закриває `/actuator/*` (крім health) та Swagger ззовні. API задокументоване
+через OpenAPI: `/swagger-ui.html` (dev/staging). Метрики: `/actuator/prometheus`.
+Rate limit на API: 300 запитів/хв на IP (`pm.rate-limit.requests-per-minute`).
+
 ## Тести
 
 ```bash
@@ -59,3 +71,4 @@ Frontend збирається автоматично під час `mvn package`
 - [Roadmap: фази розвитку від MVP до продукту](docs/ROADMAP.md)
 - [Архітектура: компоненти, E2E-модель шифрування, ролі, threat model](docs/ARCHITECTURE.md)
 - [Keycloak: Google Workspace SSO та WebAuthn/passkey](docs/KEYCLOAK.md)
+- [Operations: бекапи, відновлення, моніторинг, чекліст запуску](docs/OPERATIONS.md)

@@ -33,6 +33,9 @@ public class SecurityConfig {
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/api/health", "/api/config", "/actuator/health").permitAll()
+                        // Swagger UI and non-API actuator endpoints fall through to
+                        // anyRequest().permitAll(); the reverse proxy blocks /actuator/*
+                        // (except health) from the outside.
                         .requestMatchers("/api/**").authenticated()
                         .anyRequest().permitAll())
                 .oauth2ResourceServer(oauth2 -> oauth2

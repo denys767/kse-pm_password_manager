@@ -22,4 +22,12 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        include: health,info,prometheus
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+
+pm:
+  rate-limit:
+    requests-per-minute: 300
