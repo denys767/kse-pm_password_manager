@@ -71,7 +71,7 @@
 - [ ] Налаштувати Google як identity provider (конфігурація готова, потрібні реальні Google OAuth credentials — [KEYCLOAK.md](KEYCLOAK.md)).
 - [x] Налаштувати mapping email/name/groups (broker + groups protocol mapper).
 - [x] Налаштувати перевірку JWT у Spring Boot (OAuth2 resource server, realm roles → authorities).
-- [ ] Зробити logout flow (описано в [KEYCLOAK.md](KEYCLOAK.md); у shell поки локальний Lock).
+- [x] Зробити logout flow (keycloak-js `logout()` → Keycloak end-session endpoint; локальний Lock окремо чистить ключі з пам'яті).
 
 **Оцінка:** 4–5 днів.
 

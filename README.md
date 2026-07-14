@@ -38,14 +38,20 @@ sync-mode toggle і доступ до audit log.
 
 ```
 src/main/java/ua/kse/passwordmanager/
-  auth/      Keycloak JWT (prod) / header-auth (dev), /api/me, /api/health
-  vault/     записи: CRUD, copy-event, sync-mode toggle
+  auth/      Keycloak JWT (prod) / header-auth (dev), /api/me, /api/config
+  keys/      user keypairs для E2E sharing (public + encrypted private key)
+  vault/     записи: CRUD, item_keys (wrapped AES-ключі), sync-mode toggle
   sharing/   permissions (owner/editor/viewer, user/group), share/revoke
   audit/     audit log подій (create/view/update/delete/copy/share/revoke/sync)
   settings/  налаштування користувача (default sync mode, clipboard timeout)
-src/main/resources/static/   frontend shell (WebCrypto client-side encryption)
+src/main/resources/db/migration/   Flyway-міграції (PostgreSQL)
+frontend/                    React + TypeScript SPA (Vite); crypto.ts — WebCrypto E2E
 keycloak/realm-export.json   realm kse-pm: client, ролі, groups-mapper, Google IdP
 ```
+
+Frontend збирається автоматично під час `mvn package`/`spring-boot:run`
+(frontend-maven-plugin). Для backend-ітерацій: `-Dfrontend.skip=true`.
+Окрема розробка UI: `cd frontend && npm run dev` (Vite dev server із proxy на :8080).
 
 ## Документація
 

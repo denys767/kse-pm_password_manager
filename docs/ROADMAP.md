@@ -14,10 +14,11 @@
 
 **Критерій готовності:** отримувач share розшифровує запис своїм ключем (перевірено браузерним E2E-тестом); всі інтеграційні тести зелені.
 
-## Фаза 2 — Frontend-платформа та справжня автентифікація (оцінка 1–2 тижні)
+## Фаза 2 — Frontend-платформа та справжня автентифікація 🔄
 
-- ⬜ Міграція на **React + TypeScript** (Vite, каталог `frontend/`); crypto-модуль (`crypto.js`) переноситься як TS-модуль без зміни логіки; збірка інтегрується в Maven (frontend-maven-plugin → `static/`).
-- ⬜ Справжній **OIDC-флоу**: keycloak-js (Authorization Code + PKCE), автооновлення токена, повний logout через Keycloak end-session endpoint (закриває Epic 4).
+- ✅ Міграція на **React + TypeScript** (Vite, каталог `frontend/`); crypto-модуль перенесено як `crypto.ts` без зміни логіки; збірка інтегрована в Maven (frontend-maven-plugin → `static/`, `-Dfrontend.skip=true` для backend-ітерацій). Той самий Playwright E2E проходить проти React UI.
+- ✅ **OIDC-флоу в коді**: `/api/config` повідомляє режим автентифікації; в oidc-режимі keycloak-js (Authorization Code + PKCE) з автооновленням токена і повним logout через end-session endpoint. Dev-режим лишається через X-Dev-* заголовки.
+- ⬜ Прогнати OIDC-флоу проти живого Keycloak з Google IdP (потрібні реальні OAuth credentials).
 - ⬜ **WebAuthn**: увімкнути в живому Keycloak за [KEYCLOAK.md](KEYCLOAK.md), UX-повідомлення про passkey, тест-матриця Chrome/Safari/Windows Hello (закриває Epic 7).
 
 **Критерій готовності:** вхід через Keycloak (Google) → passkey → vault без dev-заголовків.
