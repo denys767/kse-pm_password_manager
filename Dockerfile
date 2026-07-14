@@ -7,7 +7,7 @@ COPY frontend frontend
 COPY src src
 RUN mvn -B package -DskipTests
 
-FROM eclipse-temurin:21-jre
+FROM eclipse-temurin:25-jre
 RUN useradd --system --uid 1001 app
 USER app
 COPY --from=build /app/target/password-manager-*.jar /app.jar
