@@ -279,6 +279,34 @@ class VaultApiIntegrationTest {
     }
 
     @Test
+    void updateSnapshotsPreviousVersion() throws Exception {
+        String id = createItem(ALICE, "Versioned", "PERSONAL");
+
+        mockMvc.perform(as(get("/api/vault/items/" + id + "/versions"), ALICE))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(0)));
+
+        mockMvc.perform(as(put("/api/vault/items/" + id), ALICE)
+                        .content(itemJson("Versioned v2", "PERSONAL", "SERVER_SYNCED")))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(as(get("/api/vault/items/" + id + "/versions"), ALICE))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(1)))
+                .andExpect(jsonPath("$[0].name").value("Versioned"))
+                .andExpect(jsonPath("$[0].replacedBy").value(ALICE))
+                .andExpect(jsonPath("$[0].encryptedPassword").value("Y2lwaGVydGV4dA=="));
+
+        // Version history follows item access rules.
+        mockMvc.perform(as(get("/api/vault/items/" + id + "/versions"), BOB))
+                .andExpect(status().isNotFound());
+
+        // Deleting the item removes its history too.
+        mockMvc.perform(as(delete("/api/vault/items/" + id), ALICE))
+                .andExpect(status().isNoContent());
+    }
+
+    @Test
     void keysLifecycle() throws Exception {
         String carol = "carol@kse.org.ua";
         // No keypair yet.

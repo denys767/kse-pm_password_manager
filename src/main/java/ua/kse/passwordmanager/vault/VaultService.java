@@ -26,17 +26,20 @@ public class VaultService {
     private final PasswordItemRepository itemRepository;
     private final PermissionRepository permissionRepository;
     private final ItemKeyRepository itemKeyRepository;
+    private final ItemVersionRepository itemVersionRepository;
     private final SharingService sharingService;
     private final AuditService auditService;
 
     public VaultService(PasswordItemRepository itemRepository,
                         PermissionRepository permissionRepository,
                         ItemKeyRepository itemKeyRepository,
+                        ItemVersionRepository itemVersionRepository,
                         SharingService sharingService,
                         AuditService auditService) {
         this.itemRepository = itemRepository;
         this.permissionRepository = permissionRepository;
         this.itemKeyRepository = itemKeyRepository;
+        this.itemVersionRepository = itemVersionRepository;
         this.sharingService = sharingService;
         this.auditService = auditService;
     }
@@ -103,6 +106,7 @@ public class VaultService {
                 && !permissionRepository.findByItemId(item.getId()).isEmpty()) {
             throw new BadRequestException("Revoke all access before making a shared item personal");
         }
+        itemVersionRepository.save(new ItemVersion(item, user.email()));
         apply(item, request);
         item = itemRepository.save(item);
         auditService.record(user.email(), AuditAction.ITEM_UPDATED, item.getId(), item.getName(),
@@ -118,9 +122,19 @@ public class VaultService {
         }
         permissionRepository.deleteByItemId(id);
         itemKeyRepository.deleteByItemId(id);
+        itemVersionRepository.deleteByItemId(id);
         itemRepository.delete(access.item());
         auditService.record(user.email(), AuditAction.ITEM_DELETED, id, access.item().getName(),
                 null, null);
+    }
+
+    /** Version history is ciphertext under the same item key, so anyone who can
+     * read the item can also decrypt its history. */
+    public List<ItemVersionResponse> versions(CurrentUser user, UUID id) {
+        readableItem(user, id);
+        return itemVersionRepository.findByItemIdOrderByReplacedAtDesc(id).stream()
+                .map(ItemVersionResponse::from)
+                .toList();
     }
 
     @Transactional
@@ -154,6 +168,7 @@ public class VaultService {
                 item.getName(), null, "SERVER_SYNCED -> LOCAL_ONLY, server copy removed");
         permissionRepository.deleteByItemId(id);
         itemKeyRepository.deleteByItemId(id);
+        itemVersionRepository.deleteByItemId(id);
         itemRepository.delete(item);
         return new PasswordItemResponse(snapshot.id(), snapshot.name(), snapshot.url(),
                 snapshot.username(), snapshot.encryptedPassword(), snapshot.passwordIv(),

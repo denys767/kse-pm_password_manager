@@ -61,6 +61,19 @@ export interface Settings {
     clipboardClearSeconds: number;
 }
 
+export interface ItemVersion {
+    id: string;
+    name: string;
+    url: string | null;
+    username: string | null;
+    encryptedPassword: string;
+    passwordIv: string;
+    encryptedNotes: string | null;
+    notesIv: string | null;
+    replacedBy: string;
+    replacedAt: string;
+}
+
 export interface AuditEvent {
     id: number;
     occurredAt: string;

@@ -56,6 +56,12 @@ public class VaultController {
         vaultService.delete(authFacade.current(), id);
     }
 
+    /** Previous versions of the item (ciphertext under the same item key). */
+    @GetMapping("/{id}/versions")
+    public List<ItemVersionResponse> versions(@PathVariable UUID id) {
+        return vaultService.versions(authFacade.current(), id);
+    }
+
     /** Client-reported clipboard copy, recorded for the audit trail. */
     @PostMapping("/{id}/copy-event")
     @ResponseStatus(HttpStatus.NO_CONTENT)

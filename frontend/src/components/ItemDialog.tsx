@@ -2,8 +2,9 @@ import { FormEvent, useEffect, useRef, useState } from 'react';
 import { api, ApiError } from '../api';
 import * as pmc from '../crypto';
 import { loadLocalItems, saveLocalItems } from '../localItems';
+import { estimateStrength, generatePassword, hibpBreachCount } from '../passwords';
 import type { Session } from '../App';
-import type { PasswordItem, Permission, Settings } from '../types';
+import type { ItemVersion, PasswordItem, Permission, Settings } from '../types';
 
 interface Props {
     session: Session;
@@ -42,6 +43,8 @@ export function ItemDialog({ session, settings, item, onClose }: Props) {
     const [showPassword, setShowPassword] = useState(false);
     const [copyLabel, setCopyLabel] = useState('Copy');
     const [loaded, setLoaded] = useState(item === null);
+    const [hibpStatus, setHibpStatus] = useState<string | null>(null);
+    const [versions, setVersions] = useState<ItemVersion[] | null>(null);
 
     const isOwner = !current || !current.accessRole || current.accessRole === 'OWNER';
     const canEdit = !current || ((isOwner || current.accessRole === 'EDITOR') && itemKey !== null);
@@ -297,6 +300,63 @@ export function ItemDialog({ session, settings, item, onClose }: Props) {
         setPermissions(await api<Permission[]>(`/api/vault/items/${current.id}/permissions`));
     }
 
+    function generate() {
+        set('password', generatePassword());
+        setShowPassword(true);
+        setHibpStatus(null);
+    }
+
+    async function checkBreach() {
+        if (!fields.password) {
+            return;
+        }
+        setHibpStatus('Перевіряю…');
+        try {
+            const count = await hibpBreachCount(fields.password);
+            setHibpStatus(count === 0
+                ? '✅ Не знайдено у відомих витоках.'
+                : `⚠ Знайдено у витоках ${count.toLocaleString()} разів — змініть пароль!`);
+        } catch (e) {
+            setHibpStatus((e as Error).message);
+        }
+    }
+
+    async function toggleHistory() {
+        if (versions !== null) {
+            setVersions(null);
+            return;
+        }
+        if (!current) {
+            return;
+        }
+        setVersions(await api<ItemVersion[]>(`/api/vault/items/${current.id}/versions`));
+    }
+
+    /** Decrypt a snapshot (same item key) into the form; the user then saves. */
+    async function restoreVersion(version: ItemVersion) {
+        if (!itemKey) {
+            return;
+        }
+        try {
+            const password = await pmc.decryptField(itemKey, version.encryptedPassword, version.passwordIv);
+            const notes = version.encryptedNotes
+                ? await pmc.decryptField(itemKey, version.encryptedNotes, version.notesIv!)
+                : '';
+            setFields((f) => ({
+                ...f,
+                name: version.name,
+                url: version.url || '',
+                username: version.username || '',
+                password,
+                notes,
+            }));
+            setVersions(null);
+            setError('Версію підставлено у форму — натисніть Save, щоб відновити.');
+        } catch {
+            setError('Не вдалося розшифрувати цю версію.');
+        }
+    }
+
     const showShare = current !== null && isOwner && current.syncMode !== 'LOCAL_ONLY' && loaded;
 
     return (
@@ -320,15 +380,37 @@ export function ItemDialog({ session, settings, item, onClose }: Props) {
                         <div className="row">
                             <input id="f-password" type={showPassword ? 'text' : 'password'} required
                                    autoComplete="new-password" readOnly={!canEdit}
-                                   value={fields.password} onChange={(e) => set('password', e.target.value)} />
+                                   value={fields.password}
+                                   onChange={(e) => { set('password', e.target.value); setHibpStatus(null); }} />
                             <button type="button" id="toggle-pass" className="secondary small"
                                     onClick={() => setShowPassword((v) => !v)}>👁</button>
+                            {canEdit && (
+                                <button type="button" id="generate-pass" className="secondary small"
+                                        title="Згенерувати пароль" onClick={generate}>🎲</button>
+                            )}
                             {current && itemKey && (
                                 <button type="button" id="copy-pass" className="secondary small"
                                         onClick={copyPassword}>{copyLabel}</button>
                             )}
                         </div>
                     </label>
+                    {fields.password && (() => {
+                        const s = estimateStrength(fields.password);
+                        return (
+                            <div className="strength">
+                                <div className="strength-track">
+                                    <div className={`strength-bar s${s.score}`}
+                                         style={{ width: `${(s.score + 1) * 20}%` }} />
+                                </div>
+                                <span className="hint">
+                                    {s.label} (~{s.bits} біт){' '}
+                                    <button type="button" id="hibp-btn" className="linklike"
+                                            onClick={checkBreach}>перевірити витік</button>
+                                </span>
+                                {hibpStatus && <span className="hint" id="hibp-status"> {hibpStatus}</span>}
+                            </div>
+                        );
+                    })()}
                     <label>Notes
                         <textarea id="f-notes" rows={3} readOnly={!canEdit}
                                   value={fields.notes} onChange={(e) => set('notes', e.target.value)} />
@@ -384,6 +466,29 @@ export function ItemDialog({ session, settings, item, onClose }: Props) {
                                 </select>
                                 <button type="button" id="share-btn" className="secondary" onClick={share}>Share</button>
                             </div>
+                        </div>
+                    )}
+
+                    {current && current.syncMode !== 'LOCAL_ONLY' && itemKey && (
+                        <div id="history-section">
+                            <button type="button" id="history-btn" className="linklike"
+                                    onClick={() => toggleHistory().catch((e) => setError((e as Error).message))}>
+                                {versions === null ? 'Показати історію версій' : 'Сховати історію'}
+                            </button>
+                            {versions !== null && (
+                                <ul id="version-list" className="permission-list">
+                                    {versions.length === 0 && <li><span className="hint">Попередніх версій немає.</span></li>}
+                                    {versions.map((version) => (
+                                        <li key={version.id}>
+                                            <span>{new Date(version.replacedAt).toLocaleString()} · {version.name} · {version.replacedBy}</span>
+                                            {canEdit && (
+                                                <button type="button" className="secondary small"
+                                                        onClick={() => restoreVersion(version)}>Відновити</button>
+                                            )}
+                                        </li>
+                                    ))}
+                                </ul>
+                            )}
                         </div>
                     )}
 
