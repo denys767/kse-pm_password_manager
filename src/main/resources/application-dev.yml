@@ -1,6 +1,9 @@
 # Dev profile: in-memory H2 instead of PostgreSQL, header-based auth instead of Keycloak.
 # NEVER use this profile outside local development — it trusts X-Dev-User headers blindly.
+# Startup fails unless PM_ALLOW_INSECURE_DEV=true is set (see DevProfileGuard).
 spring:
+  flyway:
+    enabled: false
   datasource:
     url: jdbc:h2:mem:pm;DB_CLOSE_DELAY=-1
     username: sa

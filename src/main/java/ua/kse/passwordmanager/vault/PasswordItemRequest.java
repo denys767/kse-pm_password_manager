@@ -14,5 +14,7 @@ public record PasswordItemRequest(
         @Size(max = 255) String notesIv,
         @Size(max = 1024) String tags,
         @NotNull ItemType itemType,
-        @NotNull SyncMode syncMode) {
+        @NotNull SyncMode syncMode,
+        /** Item AES key wrapped with the owner's public key; required on create. */
+        @Size(max = 4096) String wrappedKey) {
 }

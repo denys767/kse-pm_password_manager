@@ -29,6 +29,7 @@ public class PasswordItem {
     @Column(nullable = false)
     private String name;
 
+    @Column(length = 2048)
     private String url;
 
     private String username;
@@ -44,6 +45,7 @@ public class PasswordItem {
 
     private String notesIv;
 
+    @Column(length = 1024)
     private String tags;
 
     @Column(nullable = false)

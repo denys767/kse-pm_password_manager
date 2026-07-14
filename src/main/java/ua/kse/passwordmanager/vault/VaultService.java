@@ -4,8 +4,10 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import ua.kse.passwordmanager.audit.AuditAction;
@@ -23,32 +25,38 @@ public class VaultService {
 
     private final PasswordItemRepository itemRepository;
     private final PermissionRepository permissionRepository;
+    private final ItemKeyRepository itemKeyRepository;
     private final SharingService sharingService;
     private final AuditService auditService;
 
     public VaultService(PasswordItemRepository itemRepository,
                         PermissionRepository permissionRepository,
+                        ItemKeyRepository itemKeyRepository,
                         SharingService sharingService,
                         AuditService auditService) {
         this.itemRepository = itemRepository;
         this.permissionRepository = permissionRepository;
+        this.itemKeyRepository = itemKeyRepository;
         this.sharingService = sharingService;
         this.auditService = auditService;
     }
 
     public List<PasswordItemResponse> list(CurrentUser user) {
+        Map<UUID, String> wrappedKeys = itemKeyRepository.findByUserEmail(user.email()).stream()
+                .collect(Collectors.toMap(k -> k.getItem().getId(), ItemKey::getWrappedKey));
         List<PasswordItemResponse> result = new ArrayList<>();
         Set<UUID> seen = new HashSet<>();
         for (PasswordItem item : itemRepository.findByOwnerEmailOrderByNameAsc(user.email())) {
             seen.add(item.getId());
-            result.add(PasswordItemResponse.from(item, AccessRole.OWNER));
+            result.add(PasswordItemResponse.from(item, AccessRole.OWNER, wrappedKeys.get(item.getId())));
         }
         List<String> groups = user.groups().isEmpty()
                 ? List.of("__none__")
                 : user.groups().stream().map(g -> g.toLowerCase(Locale.ROOT)).toList();
         for (PasswordItem item : itemRepository.findSharedWith(user.email(), groups)) {
             if (seen.add(item.getId())) {
-                result.add(PasswordItemResponse.from(item, sharingService.resolveAccess(item, user)));
+                result.add(PasswordItemResponse.from(item, sharingService.resolveAccess(item, user),
+                        wrappedKeys.get(item.getId())));
             }
         }
         return result;
@@ -60,13 +68,17 @@ public class VaultService {
             throw new BadRequestException(
                     "Local-only items are never stored on the server; keep them on the device");
         }
+        if (request.wrappedKey() == null || request.wrappedKey().isBlank()) {
+            throw new BadRequestException("wrappedKey is required: wrap the item key with your public key");
+        }
         PasswordItem item = new PasswordItem();
         apply(item, request);
         item.setOwnerEmail(user.email());
         item = itemRepository.save(item);
+        itemKeyRepository.save(new ItemKey(item, user.email(), request.wrappedKey()));
         auditService.record(user.email(), AuditAction.ITEM_CREATED, item.getId(), item.getName(),
                 null, "type=" + item.getItemType());
-        return PasswordItemResponse.from(item, AccessRole.OWNER);
+        return PasswordItemResponse.from(item, AccessRole.OWNER, request.wrappedKey());
     }
 
     @Transactional
@@ -74,7 +86,7 @@ public class VaultService {
         var access = readableItem(user, id);
         auditService.record(user.email(), AuditAction.ITEM_VIEWED, access.item().getId(),
                 access.item().getName(), null, null);
-        return PasswordItemResponse.from(access.item(), access.role());
+        return PasswordItemResponse.from(access.item(), access.role(), wrappedKeyFor(user, id));
     }
 
     @Transactional
@@ -95,7 +107,7 @@ public class VaultService {
         item = itemRepository.save(item);
         auditService.record(user.email(), AuditAction.ITEM_UPDATED, item.getId(), item.getName(),
                 null, null);
-        return PasswordItemResponse.from(item, access.role());
+        return PasswordItemResponse.from(item, access.role(), wrappedKeyFor(user, id));
     }
 
     @Transactional
@@ -105,6 +117,7 @@ public class VaultService {
             throw new ForbiddenException("Only the owner can delete an item");
         }
         permissionRepository.deleteByItemId(id);
+        itemKeyRepository.deleteByItemId(id);
         itemRepository.delete(access.item());
         auditService.record(user.email(), AuditAction.ITEM_DELETED, id, access.item().getName(),
                 null, null);
@@ -130,21 +143,30 @@ public class VaultService {
         }
         PasswordItem item = access.item();
         if (syncMode == SyncMode.SERVER_SYNCED) {
-            return PasswordItemResponse.from(item, access.role());
+            return PasswordItemResponse.from(item, access.role(), wrappedKeyFor(user, id));
         }
         if (item.getItemType() == ItemType.SHARED) {
             throw new BadRequestException("Shared items must stay server-synced");
         }
-        PasswordItemResponse snapshot = PasswordItemResponse.from(item, access.role());
+        PasswordItemResponse snapshot =
+                PasswordItemResponse.from(item, access.role(), wrappedKeyFor(user, id));
         auditService.record(user.email(), AuditAction.SYNC_MODE_CHANGED, item.getId(),
                 item.getName(), null, "SERVER_SYNCED -> LOCAL_ONLY, server copy removed");
         permissionRepository.deleteByItemId(id);
+        itemKeyRepository.deleteByItemId(id);
         itemRepository.delete(item);
         return new PasswordItemResponse(snapshot.id(), snapshot.name(), snapshot.url(),
                 snapshot.username(), snapshot.encryptedPassword(), snapshot.passwordIv(),
                 snapshot.encryptedNotes(), snapshot.notesIv(), snapshot.tags(),
                 snapshot.ownerEmail(), snapshot.itemType(), SyncMode.LOCAL_ONLY,
-                snapshot.accessRole(), snapshot.createdAt(), snapshot.updatedAt());
+                snapshot.accessRole(), snapshot.wrappedKey(), snapshot.createdAt(),
+                snapshot.updatedAt());
+    }
+
+    private String wrappedKeyFor(CurrentUser user, UUID itemId) {
+        return itemKeyRepository.findByItemIdAndUserEmail(itemId, user.email())
+                .map(ItemKey::getWrappedKey)
+                .orElse(null);
     }
 
     private ItemAccess readableItem(CurrentUser user, UUID id) {

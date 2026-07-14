@@ -1,10 +1,10 @@
 /*
- * KSE Password Manager — frontend shell (MVP).
+ * KSE Password Manager — frontend shell (MVP, E2E key wrapping).
  *
- * Client-side encryption: the vault passphrase never leaves the browser.
- * A key is derived with PBKDF2 (SHA-256, 210k iterations) and secrets are
- * encrypted with AES-GCM before any request, so the server only ever sees
- * ciphertext. Local-only items are kept (encrypted) in localStorage.
+ * Crypto model lives in crypto.js (PMCrypto): passphrase → KEK → decrypts the
+ * user's RSA private key; every item has its own AES key, stored only wrapped
+ * (RSA-OAEP per recipient on the server, KEK-wrapped for local-only items).
+ * Plaintext secrets and unwrapped keys never leave the browser.
  *
  * Dev mode: identity is sent via X-Dev-User/X-Dev-Roles/X-Dev-Groups headers.
  * In production these headers are ignored — Keycloak issues a JWT instead.
@@ -13,71 +13,17 @@
 const state = {
     user: null,
     devHeaders: {},
-    key: null,
+    kek: null,          // AES key derived from the passphrase
+    privateKey: null,   // own RSA private key (unwrapped, in memory only)
+    publicKey: null,    // own RSA public key (CryptoKey, for wrapping at create)
     serverItems: [],
     localItems: [],
     settings: { defaultSyncMode: 'SERVER_SYNCED', clipboardClearSeconds: 20 },
-    editing: null, // item currently open in the dialog, null for "add" mode
+    editing: null,      // item currently open in the dialog, null for "add" mode
+    editingItemKey: null, // unwrapped AES key of the open item
 };
 
 const $ = (id) => document.getElementById(id);
-
-// ---------------------------------------------------------------- crypto ---
-
-const te = new TextEncoder();
-const td = new TextDecoder();
-
-const b64 = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf)));
-const unb64 = (str) => Uint8Array.from(atob(str), (c) => c.charCodeAt(0));
-
-async function deriveKey(passphrase, saltB64) {
-    const material = await crypto.subtle.importKey('raw', te.encode(passphrase), 'PBKDF2', false, ['deriveKey']);
-    return crypto.subtle.deriveKey(
-        { name: 'PBKDF2', salt: unb64(saltB64), iterations: 210000, hash: 'SHA-256' },
-        material,
-        { name: 'AES-GCM', length: 256 },
-        false,
-        ['encrypt', 'decrypt']);
-}
-
-async function encrypt(text) {
-    const iv = crypto.getRandomValues(new Uint8Array(12));
-    const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, state.key, te.encode(text));
-    return { ct: b64(ct), iv: b64(iv) };
-}
-
-async function decrypt(ctB64, ivB64) {
-    const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(ivB64) }, state.key, unb64(ctB64));
-    return td.decode(pt);
-}
-
-function saltFor(email) {
-    const key = `pm.salt.${email}`;
-    let salt = localStorage.getItem(key);
-    if (!salt) {
-        salt = b64(crypto.getRandomValues(new Uint8Array(16)));
-        localStorage.setItem(key, salt);
-    }
-    return salt;
-}
-
-/* Verify the passphrase against a locally stored check value so a typo does
- * not silently produce undecryptable items. */
-async function verifyPassphrase(email) {
-    const key = `pm.check.${email}`;
-    const stored = localStorage.getItem(key);
-    if (!stored) {
-        const enc = await encrypt('kse-pm-check');
-        localStorage.setItem(key, JSON.stringify(enc));
-        return true;
-    }
-    try {
-        const { ct, iv } = JSON.parse(stored);
-        return (await decrypt(ct, iv)) === 'kse-pm-check';
-    } catch {
-        return false;
-    }
-}
 
 // ------------------------------------------------------------------- api ---
 
@@ -91,7 +37,9 @@ async function api(path, options = {}) {
         try {
             message = (await response.json()).error || message;
         } catch { /* non-JSON error body */ }
-        throw new Error(message);
+        const error = new Error(message);
+        error.status = response.status;
+        throw error;
     }
     return response.status === 204 ? null : response.json();
 }
@@ -114,6 +62,50 @@ function saveLocalItems() {
 
 // ---------------------------------------------------------------- unlock ---
 
+/**
+ * First unlock generates the keypair and uploads it (private key encrypted
+ * with the KEK); later unlocks download and decrypt it — a wrong passphrase
+ * fails AES-GCM authentication and is reported cleanly. Works across devices
+ * because the salt and encrypted private key live on the server.
+ */
+async function loadOrCreateKeys(passphrase) {
+    let keys;
+    try {
+        keys = await api('/api/keys/me');
+    } catch (e) {
+        if (e.status !== 404) {
+            throw e;
+        }
+        const salt = PMCrypto.generateSalt();
+        const kek = await PMCrypto.deriveKek(passphrase, salt);
+        const keypair = await PMCrypto.generateUserKeypair();
+        const encPriv = await PMCrypto.exportEncryptedPrivateKey(keypair.privateKey, kek);
+        const publicKeyB64 = await PMCrypto.exportPublicKey(keypair.publicKey);
+        await api('/api/keys/me', {
+            method: 'PUT',
+            body: JSON.stringify({
+                publicKey: publicKeyB64,
+                encryptedPrivateKey: encPriv.ct,
+                privateKeyIv: encPriv.iv,
+                kdfSalt: salt,
+            }),
+        });
+        state.kek = kek;
+        state.privateKey = keypair.privateKey;
+        state.publicKey = await PMCrypto.importPublicKey(publicKeyB64);
+        return;
+    }
+    const kek = await PMCrypto.deriveKek(passphrase, keys.kdfSalt);
+    try {
+        state.privateKey = await PMCrypto.importEncryptedPrivateKey(
+            keys.encryptedPrivateKey, keys.privateKeyIv, kek);
+    } catch {
+        throw new Error('Невірний passphrase для цього vault.');
+    }
+    state.kek = kek;
+    state.publicKey = await PMCrypto.importPublicKey(keys.publicKey);
+}
+
 async function unlock() {
     const email = $('dev-email').value.trim().toLowerCase();
     const passphrase = $('passphrase').value;
@@ -129,13 +121,10 @@ async function unlock() {
     };
     try {
         state.user = await api('/api/me');
+        await loadOrCreateKeys(passphrase);
     } catch (e) {
-        return showError(errorEl, `Не вдалося увійти: ${e.message}`);
-    }
-    state.key = await deriveKey(passphrase, saltFor(state.user.email));
-    if (!(await verifyPassphrase(state.user.email))) {
-        state.key = null;
-        return showError(errorEl, 'Невірний passphrase для цього vault.');
+        return showError(errorEl, e.message.startsWith('Невірний') ? e.message
+            : `Не вдалося увійти: ${e.message}`);
     }
     $('passphrase').value = '';
     $('unlock-screen').hidden = true;
@@ -148,10 +137,13 @@ async function unlock() {
 }
 
 function lock() {
-    state.key = null;
+    state.kek = null;
+    state.privateKey = null;
+    state.publicKey = null;
     state.user = null;
     state.serverItems = [];
     state.localItems = [];
+    state.editingItemKey = null;
     $('app').hidden = true;
     $('unlock-screen').hidden = false;
     $('lock-btn').hidden = true;
@@ -199,9 +191,21 @@ function renderItems() {
             <button class="secondary small">Open</button>`;
         li.querySelector('strong').textContent = item.name;
         li.querySelector('.item-meta').textContent = [item.username, item.url].filter(Boolean).join(' · ');
-        li.addEventListener('click', () => openItem(item));
+        li.addEventListener('click', () => openItem(item).catch((e) => alert(e.message)));
         list.appendChild(li);
     }
+}
+
+/** Unwrap the AES key of an item: RSA for server items, KEK for local-only. */
+async function itemKeyOf(item) {
+    if (item.syncMode === 'LOCAL_ONLY') {
+        return PMCrypto.unwrapItemKeyWithKek(item.kekWrappedKey.ct, item.kekWrappedKey.iv, state.kek);
+    }
+    if (!item.wrappedKey) {
+        throw new Error('Для вас ще не надано ключ до цього запису '
+            + '(group-share без ключа — попросіть owner-а поділитися напряму).');
+    }
+    return PMCrypto.unwrapItemKey(item.wrappedKey, state.privateKey);
 }
 
 async function openItem(listItem) {
@@ -211,34 +215,40 @@ async function openItem(listItem) {
         item = await api(`/api/vault/items/${item.id}`);
     }
     state.editing = item;
+    state.editingItemKey = null;
     $('dialog-title').textContent = item.name;
     $('f-name').value = item.name;
     $('f-url').value = item.url || '';
     $('f-username').value = item.username || '';
     $('f-password').type = 'password';
+    $('dialog-error').hidden = true;
     try {
-        $('f-password').value = await decrypt(item.encryptedPassword, item.passwordIv);
-        $('f-notes').value = item.encryptedNotes ? await decrypt(item.encryptedNotes, item.notesIv) : '';
-        $('dialog-error').hidden = true;
-    } catch {
+        const itemKey = await itemKeyOf(item);
+        state.editingItemKey = itemKey;
+        $('f-password').value = await PMCrypto.decryptField(itemKey, item.encryptedPassword, item.passwordIv);
+        $('f-notes').value = item.encryptedNotes
+            ? await PMCrypto.decryptField(itemKey, item.encryptedNotes, item.notesIv)
+            : '';
+    } catch (e) {
         $('f-password').value = '';
         $('f-notes').value = '';
-        showError($('dialog-error'),
-            'Не вдалося розшифрувати запис цим passphrase (запис створено з іншим ключем).');
+        showError($('dialog-error'), e.message.startsWith('Для вас')
+            ? e.message
+            : 'Не вдалося розшифрувати запис (ключ не підходить).');
     }
     $('f-tags').value = item.tags || '';
     $('f-type').value = item.itemType;
     $('f-sync').checked = item.syncMode !== 'LOCAL_ONLY';
 
     const isOwner = !item.accessRole || item.accessRole === 'OWNER';
-    const canEdit = isOwner || item.accessRole === 'EDITOR';
+    const canEdit = (isOwner || item.accessRole === 'EDITOR') && state.editingItemKey !== null;
     for (const id of ['f-name', 'f-url', 'f-username', 'f-password', 'f-notes', 'f-tags']) {
         $(id).readOnly = !canEdit;
     }
     $('f-type').disabled = !isOwner;
     $('save-btn').hidden = !canEdit;
     $('delete-btn').hidden = !isOwner;
-    $('copy-pass').hidden = false;
+    $('copy-pass').hidden = state.editingItemKey === null;
     updateSyncControls();
     $('f-sync').disabled = $('f-sync').disabled || !isOwner;
 
@@ -251,6 +261,7 @@ async function openItem(listItem) {
 
 function openAddDialog() {
     state.editing = null;
+    state.editingItemKey = null;
     $('item-form').reset();
     $('dialog-title').textContent = 'Add password';
     $('dialog-error').hidden = true;
@@ -306,8 +317,12 @@ async function saveItem(event) {
         }
     }
     try {
-        const password = await encrypt($('f-password').value);
-        const notes = $('f-notes').value ? await encrypt($('f-notes').value) : null;
+        // Existing item keeps its key (recipients keep access); new item gets a fresh one.
+        const itemKey = state.editingItemKey || await PMCrypto.generateItemKey();
+        const password = await PMCrypto.encryptField(itemKey, $('f-password').value);
+        const notes = $('f-notes').value
+            ? await PMCrypto.encryptField(itemKey, $('f-notes').value)
+            : null;
         const payload = {
             name: $('f-name').value.trim(),
             url: $('f-url').value.trim() || null,
@@ -322,9 +337,9 @@ async function saveItem(event) {
         };
 
         if (wantsSync) {
-            await saveSynced(payload, wasLocal);
+            await saveSynced(payload, itemKey, wasLocal);
         } else {
-            await saveLocalOnly(payload);
+            await saveLocalOnly(payload, itemKey);
         }
         $('item-dialog').close();
         await refreshItems();
@@ -333,11 +348,12 @@ async function saveItem(event) {
     }
 }
 
-async function saveSynced(payload, wasLocal) {
+async function saveSynced(payload, itemKey, wasLocal) {
     if (state.editing && !wasLocal) {
         await api(`/api/vault/items/${state.editing.id}`, { method: 'PUT', body: JSON.stringify(payload) });
         return;
     }
+    payload.wrappedKey = await PMCrypto.wrapItemKey(itemKey, state.publicKey);
     await api('/api/vault/items', { method: 'POST', body: JSON.stringify(payload) });
     if (state.editing && wasLocal) {
         state.localItems = state.localItems.filter((i) => i.id !== state.editing.id);
@@ -345,7 +361,7 @@ async function saveSynced(payload, wasLocal) {
     }
 }
 
-async function saveLocalOnly(payload) {
+async function saveLocalOnly(payload, itemKey) {
     if (payload.itemType === 'SHARED') {
         throw new Error('Shared-запис не може бути local-only.');
     }
@@ -361,6 +377,7 @@ async function saveLocalOnly(payload) {
         ...payload,
         id: existingId || `local-${crypto.randomUUID()}`,
         syncMode: 'LOCAL_ONLY',
+        kekWrappedKey: await PMCrypto.wrapItemKeyWithKek(itemKey, state.kek),
         ownerEmail: state.user.email,
         accessRole: 'OWNER',
         updatedAt: new Date().toISOString(),
@@ -426,21 +443,41 @@ async function renderPermissions() {
 }
 
 async function shareItem() {
-    const grantee = $('share-grantee').value.trim();
+    const grantee = $('share-grantee').value.trim().toLowerCase();
     if (!grantee) {
         return;
     }
+    const granteeType = $('share-type').value;
     try {
-        await api(`/api/vault/items/${state.editing.id}/permissions`, {
+        const body = {
+            granteeType,
+            grantee,
+            role: $('share-role').value,
+        };
+        if (granteeType === 'USER') {
+            if (!state.editingItemKey) {
+                throw new Error('Немає ключа запису — розшифруйте запис перед шерингом.');
+            }
+            let recipient;
+            try {
+                recipient = await api(`/api/keys/${encodeURIComponent(grantee)}`);
+            } catch (e) {
+                throw e.status === 404
+                    ? new Error(`У ${grantee} ще немає ключів — користувач має увійти у vault хоча б раз.`)
+                    : e;
+            }
+            const recipientKey = await PMCrypto.importPublicKey(recipient.publicKey);
+            body.wrappedKey = await PMCrypto.wrapItemKey(state.editingItemKey, recipientKey);
+        }
+        const created = await api(`/api/vault/items/${state.editing.id}/permissions`, {
             method: 'POST',
-            body: JSON.stringify({
-                granteeType: $('share-type').value,
-                grantee,
-                role: $('share-role').value,
-            }),
+            body: JSON.stringify(body),
         });
         $('share-grantee').value = '';
         $('dialog-error').hidden = true;
+        if (created.warning) {
+            showError($('dialog-error'), `⚠ ${created.warning}`);
+        }
         state.editing.itemType = 'SHARED';
         $('f-type').value = 'SHARED';
         updateSyncControls();

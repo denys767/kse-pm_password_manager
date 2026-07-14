@@ -7,12 +7,13 @@
 ## Швидкий старт (dev, без Keycloak)
 
 ```bash
-mvn spring-boot:run -Dspring-boot.run.profiles=dev
+PM_ALLOW_INSECURE_DEV=true mvn spring-boot:run -Dspring-boot.run.profiles=dev
 ```
 
 Відкрийте http://localhost:8080 — dev-режим використовує H2 in-memory і приймає
 identity з полів на екрані Unlock (заголовки `X-Dev-User`/`X-Dev-Roles`/`X-Dev-Groups`).
-Профіль `dev` призначений тільки для локальної розробки.
+Профіль `dev` призначений тільки для локальної розробки: без явного
+`PM_ALLOW_INSECURE_DEV=true` застосунок відмовляється стартувати.
 
 ## Повний стек (PostgreSQL + Keycloak)
 
@@ -49,5 +50,6 @@ keycloak/realm-export.json   realm kse-pm: client, ролі, groups-mapper, Goog
 ## Документація
 
 - [Backlog, user journeys, user stories та алгоритм роботи](docs/BACKLOG.md)
-- [Архітектура: компоненти, модель шифрування, ролі, threat model](docs/ARCHITECTURE.md)
+- [Roadmap: фази розвитку від MVP до продукту](docs/ROADMAP.md)
+- [Архітектура: компоненти, E2E-модель шифрування, ролі, threat model](docs/ARCHITECTURE.md)
 - [Keycloak: Google Workspace SSO та WebAuthn/passkey](docs/KEYCLOAK.md)
