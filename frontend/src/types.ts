@@ -98,6 +98,14 @@ export interface ItemVersion {
     replacedAt: string;
 }
 
+export interface Anomaly {
+    actorEmail: string;
+    action: string;
+    count: number;
+    windowMinutes: number;
+    threshold: number;
+}
+
 export interface AuditEvent {
     id: number;
     occurredAt: string;

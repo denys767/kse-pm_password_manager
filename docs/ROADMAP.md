@@ -45,8 +45,10 @@
 - ✅ Rate limiting: in-memory fixed window per client IP на `/api/**` (300 rpm за замовчуванням, `pm.rate-limit.requests-per-minute`); для горизонтального масштабування — bucket4j+Redis окремим кроком.
 - ✅ Prometheus-метрики (`/actuator/prometheus`, micrometer).
 - ✅ Dependabot (maven, npm, GitHub Actions, docker — щотижнево).
-- ⬜ Keycloak event listener → audit LOGIN-подій.
-- ⬜ Алерти на аномалії в audit (сплески share/revoke/copy); структуровані логи.
+- ⬜ Keycloak event listener → audit LOGIN-подій (потребує живого Keycloak — Docker-демон недоступний у поточному sandbox-середовищі, тож не верифіковано; код відкладено до появи середовища з робочим Docker).
+- ✅ **Алерти на аномалії в audit** (сплески share/revoke/copy): порогова евристика `AuditAnomalyService` — для кожної пари (актор, тип дії) рахує кількість подій за останні `pm.audit.anomaly.window-minutes` (за замовчуванням 15 хв) і порівнює з порогом (ACCESS_REVOKED/COLLECTION_MEMBER_REMOVED = 5, ITEM_COPIED/ITEM_SHARED = 10, інше = 20). Обчислюється на вимогу при виклику `GET /api/audit/anomalies` (той самий доступ, що й `/api/audit` — admin/security), без scheduler. Frontend показує червоний банер над таблицею audit log. Перевірено: MockMvc-тести (сплеск флагується, легка активність — ні, non-admin отримує 403) + живий curl-прогін + Playwright (банер рендериться з реальними даними).
+  - **Обмеження, зафіксовано свідомо:** це прості пороги, не ML/SIEM — не ловить повільні, розподілені в часі атаки чи змову кількох акаунтів. Для продакшена варто інтегрувати з реальним security-моніторингом (напр. експорт у SIEM через Prometheus-метрики, які вже є).
+- ⬜ Структуровані логи.
 - ✅ Runbook бекапів/відновлення + чекліст перед запуском ([OPERATIONS.md](OPERATIONS.md)); сам процес бекапів налаштовується на хості за runbook-ом.
 
 **Критерій готовності:** `docker compose -f docker-compose.prod.yml up` дає HTTPS-стек; CI зелений на кожен PR.
