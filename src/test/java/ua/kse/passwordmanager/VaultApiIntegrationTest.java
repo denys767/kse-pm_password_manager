@@ -307,6 +307,60 @@ class VaultApiIntegrationTest {
     }
 
     @Test
+    void rotateKeyReplacesCiphertextAndDropsUnlistedHolders() throws Exception {
+        String carol = "carol-rot@kse.org.ua";
+        String id = createItem(ALICE, "Rotated secret", "PERSONAL");
+        shareWithUser(ALICE, id, BOB, "VIEWER");
+        shareWithUser(ALICE, id, carol, "VIEWER");
+
+        String rotateBody = """
+                {
+                  "encryptedPassword": "bmV3Q2lwaGVy",
+                  "passwordIv": "bmV3SXY=",
+                  "wrappedKeys": [
+                    {"granteeEmail": "%s", "wrappedKey": "bmV3T3duZXJXcmFwcGVk"},
+                    {"granteeEmail": "%s", "wrappedKey": "bmV3Q2Fyb2xXcmFwcGVk"}
+                  ]
+                }
+                """.formatted(ALICE, carol);
+        mockMvc.perform(as(post("/api/vault/items/" + id + "/rotate-key"), ALICE).content(rotateBody))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.encryptedPassword").value("bmV3Q2lwaGVy"))
+                .andExpect(jsonPath("$.wrappedKey").value("bmV3T3duZXJXcmFwcGVk"));
+
+        // Carol (kept) gets the new wrapped key; Bob (excluded) loses his entirely.
+        mockMvc.perform(as(get("/api/vault/items/" + id), carol))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.encryptedPassword").value("bmV3Q2lwaGVy"))
+                .andExpect(jsonPath("$.wrappedKey").value("bmV3Q2Fyb2xXcmFwcGVk"));
+        mockMvc.perform(as(get("/api/vault/items/" + id), BOB))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.wrappedKey").doesNotExist());
+    }
+
+    @Test
+    void rotateKeyRejectsNonOwnerAndMissingOwnerEntry() throws Exception {
+        String id = createItem(ALICE, "Guarded", "PERSONAL");
+        shareWithUser(ALICE, id, BOB, "EDITOR");
+
+        // Non-owner cannot rotate.
+        mockMvc.perform(as(post("/api/vault/items/" + id + "/rotate-key"), BOB)
+                        .content("""
+                                {"encryptedPassword": "eA==", "passwordIv": "aXY=",
+                                 "wrappedKeys": [{"granteeEmail": "%s", "wrappedKey": "eA=="}]}
+                                """.formatted(BOB)))
+                .andExpect(status().isForbidden());
+
+        // Owner must be included in the new wrapped-key list.
+        mockMvc.perform(as(post("/api/vault/items/" + id + "/rotate-key"), ALICE)
+                        .content("""
+                                {"encryptedPassword": "eA==", "passwordIv": "aXY=",
+                                 "wrappedKeys": [{"granteeEmail": "%s", "wrappedKey": "eA=="}]}
+                                """.formatted(BOB)))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
     void keysLifecycle() throws Exception {
         String carol = "carol@kse.org.ua";
         // No keypair yet.

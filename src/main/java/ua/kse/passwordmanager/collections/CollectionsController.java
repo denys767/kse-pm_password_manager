@@ -72,4 +72,11 @@ public class CollectionsController {
     public void delete(@PathVariable UUID id) {
         collectionService.delete(authFacade.current(), id);
     }
+
+    /** Rotate the collection's AES key, typically as part of removing a member. */
+    @PostMapping("/{id}/rotate-key")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void rotateKey(@PathVariable UUID id, @Valid @RequestBody RotateCollectionKeyRequest request) {
+        collectionService.rotateKey(authFacade.current(), id, request);
+    }
 }

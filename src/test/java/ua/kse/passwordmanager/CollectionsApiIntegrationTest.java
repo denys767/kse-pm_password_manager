@@ -10,6 +10,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -210,5 +211,82 @@ class CollectionsApiIntegrationTest {
                 .andExpect(jsonPath("$.collectionId").doesNotExist());
         mockMvc.perform(as(delete("/api/collections/" + collectionId), ALICE))
                 .andExpect(status().isNoContent());
+    }
+
+    private String memberIdOf(String collectionId, String manager, String email) throws Exception {
+        String body = mockMvc.perform(as(get("/api/collections/" + collectionId + "/members"), manager))
+                .andReturn().getResponse().getContentAsString();
+        for (JsonNode member : objectMapper.readTree(body)) {
+            if (member.get("memberEmail").asText().equalsIgnoreCase(email)) {
+                return member.get("id").asText();
+            }
+        }
+        throw new AssertionError("No member " + email + " in collection " + collectionId);
+    }
+
+    @Test
+    void rotateKeyUpdatesRemainingMembersAndCollectionItemsButNotRemovedMember() throws Exception {
+        String collectionId = createCollection(ALICE, "Rotate");
+        String bobMemberId = addMember(ALICE, collectionId, BOB, "VIEWER");
+        addMember(ALICE, collectionId, CAROL, "VIEWER");
+        String itemId = createItem(ALICE, "Rotatable");
+        putInCollection(ALICE, itemId, collectionId);
+
+        String aliceMemberId = memberIdOf(collectionId, ALICE, ALICE);
+        String carolMemberId = memberIdOf(collectionId, ALICE, CAROL);
+
+        String rotateBody = """
+                {
+                  "memberWrappedKeys": [
+                    {"memberId": "%s", "wrappedKey": "bmV3QWxpY2VXcmFwcGVk"},
+                    {"memberId": "%s", "wrappedKey": "bmV3Q2Fyb2xXcmFwcGVk"}
+                  ],
+                  "itemWrappedKeys": [
+                    {"itemId": "%s", "wrappedKey": "bmV3SXRlbUtleQ==", "wrappedKeyIv": "bmV3SXRlbUl2"}
+                  ]
+                }
+                """.formatted(aliceMemberId, carolMemberId, itemId);
+        mockMvc.perform(as(post("/api/collections/" + collectionId + "/rotate-key"), ALICE)
+                        .content(rotateBody))
+                .andExpect(status().isNoContent());
+        mockMvc.perform(as(delete("/api/collections/" + collectionId + "/members/" + bobMemberId), ALICE))
+                .andExpect(status().isNoContent());
+
+        // Carol (kept) sees the new collection key and the new item wrap.
+        mockMvc.perform(as(get("/api/collections"), CAROL))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[?(@.id == '%s')].myWrappedKey".formatted(collectionId),
+                        hasItem("bmV3Q2Fyb2xXcmFwcGVk")));
+        mockMvc.perform(as(get("/api/vault/items/" + itemId), CAROL))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.collectionWrappedKey").value("bmV3SXRlbUtleQ=="))
+                .andExpect(jsonPath("$.collectionWrappedKeyIv").value("bmV3SXRlbUl2"));
+
+        // Bob (removed) has no access at all — rotation plus revoke together.
+        mockMvc.perform(as(get("/api/vault/items/" + itemId), BOB))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void rotateKeyRequiresManagerAndValidatesItemMembership() throws Exception {
+        String collectionId = createCollection(ALICE, "GuardedRotate");
+        addMember(ALICE, collectionId, BOB, "EDITOR");
+
+        mockMvc.perform(as(post("/api/collections/" + collectionId + "/rotate-key"), BOB)
+                        .content("{\"memberWrappedKeys\": [], \"itemWrappedKeys\": []}"))
+                .andExpect(status().isForbidden());
+
+        String otherCollectionId = createCollection(CAROL, "Other");
+        String otherItemId = createItem(CAROL, "Not in Rotate");
+        putInCollection(CAROL, otherItemId, otherCollectionId);
+
+        String badBody = """
+                {"memberWrappedKeys": [], "itemWrappedKeys": [
+                  {"itemId": "%s", "wrappedKey": "eA==", "wrappedKeyIv": "aXY="}
+                ]}
+                """.formatted(otherItemId);
+        mockMvc.perform(as(post("/api/collections/" + collectionId + "/rotate-key"), ALICE)
+                        .content(badBody))
+                .andExpect(status().isBadRequest());
     }
 }

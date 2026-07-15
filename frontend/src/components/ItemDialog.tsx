@@ -324,9 +324,58 @@ export function ItemDialog({ session, settings, collections, item, onClose }: Pr
         }
     }
 
+    /**
+     * Rotates the item's AES key so the recipient being revoked cannot decrypt
+     * anything written after this point, even if they saved the old wrapped
+     * key. Skipped when there's no one else to re-wrap for, or when the item
+     * lives in a collection (its key is wrapped by the collection key instead
+     * — see CollectionsTab.removeMember for that rotation).
+     */
+    async function rotateItemKeyExcluding(remaining: Permission[]) {
+        if (!current || !itemKey) {
+            return;
+        }
+        const newKey = await pmc.generateItemKey();
+        const password = await pmc.encryptField(newKey, fields.password);
+        const notes = fields.notes ? await pmc.encryptField(newKey, fields.notes) : null;
+        const wrappedKeys = [
+            { granteeEmail: session.user.email, wrappedKey: await pmc.wrapItemKey(newKey, session.keys.publicKey) },
+        ];
+        for (const permission of remaining) {
+            const recipient = await api<{ publicKey: string }>(`/api/keys/${encodeURIComponent(permission.grantee)}`);
+            const recipientKey = await pmc.importPublicKey(recipient.publicKey);
+            wrappedKeys.push({
+                granteeEmail: permission.grantee,
+                wrappedKey: await pmc.wrapItemKey(newKey, recipientKey),
+            });
+        }
+        await api(`/api/vault/items/${current.id}/rotate-key`, {
+            method: 'POST',
+            body: JSON.stringify({
+                encryptedPassword: password.ct,
+                passwordIv: password.iv,
+                encryptedNotes: notes ? notes.ct : null,
+                notesIv: notes ? notes.iv : null,
+                wrappedKeys,
+            }),
+        });
+        setItemKey(newKey);
+    }
+
     async function revoke(permissionId: string) {
         if (!current) {
             return;
+        }
+        const target = permissions.find((p) => p.id === permissionId);
+        const remainingUserShares = permissions.filter(
+            (p) => p.id !== permissionId && p.granteeType === 'USER');
+        if (target?.granteeType === 'USER' && !current.collectionId && remainingUserShares.length > 0) {
+            try {
+                await rotateItemKeyExcluding(remainingUserShares);
+            } catch (e) {
+                setError(`Не вдалося ротувати ключ, revoke скасовано: ${(e as Error).message}`);
+                return;
+            }
         }
         await api(`/api/vault/items/${current.id}/permissions/${permissionId}`, { method: 'DELETE' });
         setPermissions(await api<Permission[]>(`/api/vault/items/${current.id}/permissions`));

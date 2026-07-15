@@ -238,6 +238,52 @@ public class VaultService {
                 snapshot.createdAt(), snapshot.updatedAt());
     }
 
+    /**
+     * Rotates the item's AES key (crypto-shredding): the caller has already
+     * re-encrypted password/notes with a fresh key and re-wrapped that key for
+     * every remaining holder (owner included). All old {@link ItemKey} rows are
+     * replaced, so anyone not in the new list — typically the recipient whose
+     * access is being revoked — cannot decrypt anything written from now on.
+     */
+    @Transactional
+    public PasswordItemResponse rotateKey(CurrentUser user, UUID id, RotateKeyRequest request) {
+        var access = readableItem(user, id);
+        if (!access.role().isOwner()) {
+            throw new ForbiddenException("Only the owner can rotate the item key");
+        }
+        if (access.item().getCollectionId() != null) {
+            // Item keys of collection items are wrapped by the collection key, not
+            // per-recipient; rotate the collection key instead (see CollectionService).
+            throw new BadRequestException("Rotate the collection key instead for items in a collection");
+        }
+        boolean ownerIncluded = request.wrappedKeys().stream()
+                .anyMatch(entry -> entry.granteeEmail().equalsIgnoreCase(user.email()));
+        if (!ownerIncluded) {
+            throw new BadRequestException("The rotated key must be wrapped for the owner too");
+        }
+        PasswordItem item = access.item();
+        item.setEncryptedPassword(request.encryptedPassword());
+        item.setPasswordIv(request.passwordIv());
+        item.setEncryptedNotes(request.encryptedNotes());
+        item.setNotesIv(request.notesIv());
+        item = itemRepository.save(item);
+
+        itemKeyRepository.deleteByItemId(id);
+        // Force the deletes to hit the DB before the inserts below: Hibernate's
+        // default flush order (inserts, then deletes) would otherwise violate the
+        // (item_id, userEmail) unique constraint whenever a holder — e.g. the
+        // owner — appears in both the old and the new key list.
+        itemKeyRepository.flush();
+        for (RotateKeyRequest.WrappedKeyEntry entry : request.wrappedKeys()) {
+            itemKeyRepository.save(new ItemKey(item, entry.granteeEmail().toLowerCase(Locale.ROOT),
+                    entry.wrappedKey()));
+        }
+
+        auditService.record(user.email(), AuditAction.ITEM_KEY_ROTATED, item.getId(), item.getName(),
+                null, "key rotated for " + request.wrappedKeys().size() + " holder(s)");
+        return PasswordItemResponse.from(item, access.role(), wrappedKeyFor(user, id));
+    }
+
     private String wrappedKeyFor(CurrentUser user, UUID itemId) {
         return itemKeyRepository.findByItemIdAndUserEmail(itemId, user.email())
                 .map(ItemKey::getWrappedKey)

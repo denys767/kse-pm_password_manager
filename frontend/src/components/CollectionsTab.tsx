@@ -3,7 +3,7 @@ import { api, ApiError } from '../api';
 import * as pmc from '../crypto';
 import { unwrapCollectionKey } from '../itemKeys';
 import type { Session } from '../App';
-import type { Collection, CollectionMemberInfo, CollectionRole } from '../types';
+import type { Collection, CollectionMemberInfo, CollectionRole, PasswordItem } from '../types';
 
 interface Props {
     session: Session;
@@ -78,14 +78,55 @@ export function CollectionsTab({ session, collections, onChanged }: Props) {
         }
     }
 
+    /**
+     * Rotates the collection key so the member being removed cannot decrypt
+     * anything from now on, even if they saved the old key: a fresh collection
+     * key is re-wrapped for every remaining member, and every collection
+     * item's (unchanged) item key is re-wrapped with the new collection key.
+     */
+    async function rotateCollectionKeyExcluding(collection: Collection, removedMemberId: string) {
+        const remainingMembers = members.filter((m) => m.id !== removedMemberId);
+        const oldCollectionKey = await unwrapCollectionKey(collection.id, collections, session.keys);
+        const newCollectionKey = await pmc.generateItemKey();
+
+        const memberWrappedKeys = [];
+        for (const member of remainingMembers) {
+            const recipient = await api<{ publicKey: string }>(
+                `/api/keys/${encodeURIComponent(member.memberEmail)}`);
+            const recipientKey = await pmc.importPublicKey(recipient.publicKey);
+            memberWrappedKeys.push({
+                memberId: member.id,
+                wrappedKey: await pmc.wrapItemKey(newCollectionKey, recipientKey),
+            });
+        }
+
+        const allItems = await api<PasswordItem[]>('/api/vault/items');
+        const collectionItems = allItems.filter((item) => item.collectionId === collection.id);
+        const itemWrappedKeys = [];
+        for (const item of collectionItems) {
+            const itemKey = await pmc.unwrapItemKeyWithKek(
+                item.collectionWrappedKey!, item.collectionWrappedKeyIv!, oldCollectionKey);
+            const wrapped = await pmc.wrapItemKeyWithKek(itemKey, newCollectionKey);
+            itemWrappedKeys.push({ itemId: item.id, wrappedKey: wrapped.ct, wrappedKeyIv: wrapped.iv });
+        }
+
+        await api(`/api/collections/${collection.id}/rotate-key`, {
+            method: 'POST',
+            body: JSON.stringify({ memberWrappedKeys, itemWrappedKeys }),
+        });
+    }
+
     async function removeMember(collection: Collection, member: CollectionMemberInfo) {
         setError(null);
         try {
+            if (members.length > 1) {
+                await rotateCollectionKeyExcluding(collection, member.id);
+            }
             await api(`/api/collections/${collection.id}/members/${member.id}`, { method: 'DELETE' });
             setMembers(await api<CollectionMemberInfo[]>(`/api/collections/${collection.id}/members`));
             await onChanged();
         } catch (e) {
-            setError((e as Error).message);
+            setError(`Revoke: ${(e as Error).message}`);
         }
     }
 

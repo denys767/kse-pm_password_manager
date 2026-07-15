@@ -18,6 +18,7 @@ import ua.kse.passwordmanager.collections.CollectionDtos.MemberResponse;
 import ua.kse.passwordmanager.common.BadRequestException;
 import ua.kse.passwordmanager.common.ForbiddenException;
 import ua.kse.passwordmanager.common.NotFoundException;
+import ua.kse.passwordmanager.vault.PasswordItem;
 import ua.kse.passwordmanager.vault.PasswordItemRepository;
 
 @Service
@@ -125,6 +126,45 @@ public class CollectionService {
         memberRepository.delete(member);
         auditService.record(user.email(), AuditAction.COLLECTION_MEMBER_REMOVED, collectionId,
                 me.getCollection().getName(), member.getMemberEmail(), null);
+    }
+
+    /**
+     * Rotates the collection's AES key (crypto-shredding): the caller has
+     * already generated a fresh key, re-wrapped it for every member who keeps
+     * access, and re-wrapped every item's (unchanged) item key with the new
+     * collection key. Members not listed in memberWrappedKeys — typically the
+     * one being removed — lose the ability to decrypt anything from now on.
+     */
+    @Transactional
+    public void rotateKey(CurrentUser user, UUID collectionId, RotateCollectionKeyRequest request) {
+        CollectionMember me = requireMembership(user, collectionId);
+        if (!me.getRole().canManageMembers()) {
+            throw new ForbiddenException("Only a manager can rotate the collection key");
+        }
+        Collection collection = me.getCollection();
+
+        for (RotateCollectionKeyRequest.MemberKeyEntry entry : request.memberWrappedKeys()) {
+            CollectionMember member = memberRepository.findByIdAndCollectionId(entry.memberId(), collectionId)
+                    .orElseThrow(() -> new NotFoundException("Member not found"));
+            member.setWrappedKey(entry.wrappedKey());
+            memberRepository.save(member);
+        }
+
+        for (RotateCollectionKeyRequest.ItemKeyEntry entry : request.itemWrappedKeys()) {
+            PasswordItem item = itemRepository.findById(entry.itemId())
+                    .orElseThrow(() -> new NotFoundException("Item not found"));
+            if (!collectionId.equals(item.getCollectionId())) {
+                throw new BadRequestException("Item does not belong to this collection");
+            }
+            item.setCollectionWrappedKey(entry.wrappedKey());
+            item.setCollectionWrappedKeyIv(entry.wrappedKeyIv());
+            itemRepository.save(item);
+        }
+
+        auditService.record(user.email(), AuditAction.COLLECTION_KEY_ROTATED, collectionId,
+                collection.getName(), null,
+                "rotated for " + request.memberWrappedKeys().size() + " member(s), "
+                        + request.itemWrappedKeys().size() + " item(s)");
     }
 
     @Transactional

@@ -30,13 +30,14 @@ Reverse proxy (nginx / traefik — TLS termination, prod)
 3. При першому вході браузер генерує **RSA-OAEP-2048 keypair**. Публічний ключ (SPKI) зберігається на сервері відкрито; приватний (PKCS8) — зашифрований KEK (AES-GCM). Тому vault працює з будь-якого пристрою: сервер віддає salt і зашифрований приватний ключ, а розшифрувати їх може лише власник passphrase (таблиця `user_keys`).
 4. Кожен запис має власний **item key** (AES-256). Пароль і notes шифруються ним (AES-GCM, окремий IV на поле) ще в браузері.
 5. Item key зберігається лише **загорнутим**: RSA-OAEP публічним ключем кожного, хто має доступ (таблиця `item_keys`, рядок на пару запис-користувач).
-6. **Share (прямий, user-to-user)**: owner розгортає item key своїм приватним ключем, обгортає публічним ключем отримувача (`GET /api/keys/{email}`) і передає разом із permission. **Revoke** видаляє і permission, і wrapped key.
+6. **Share (прямий, user-to-user)**: owner розгортає item key своїм приватним ключем, обгортає публічним ключем отримувача (`GET /api/keys/{email}`) і передає разом із permission. **Revoke** видаляє permission, wrapped key і (якщо лишились інші отримувачі) ротує item key — див. пункт 9.
 7. **Collections (командний доступ)**: колекція має власний **collection key** (AES-256), який зберігається лише обгорнутим публічним ключем кожного члена (таблиця `collection_members.wrapped_key`). Item key записів у колекції обгортається AES-GCM ключем колекції (`password_items.collection_wrapped_key`), а не RSA — тому додавання нового члена не потребує перешифрування жодного запису, лише один RSA-wrap колекційного ключа для новачка. Ланцюжок розшифрування учасника: приватний ключ → (RSA-unwrap) collection key → (AES-unwrap) item key → поля. Додати члена може лише той, хто вже має ключ колекції (MANAGER) — це і є причина, чому склад членів явний (email), а не автоматично синхронізований з Keycloak-групами.
 8. **Local-only** записи не потрапляють на сервер: item key обгортається KEK і лежить поруч із ciphertext у localStorage.
+9. **Ротація ключа (crypto-shredding) при revoke**: клієнт власника генерує новий ключ, перешифровує ним дані і перегортає для всіх, хто лишається доступу — сервер лише зберігає результат. Для прямого share — `POST /api/vault/items/{id}/rotate-key` (новий item key, нові `encryptedPassword`/`encryptedNotes`, нові wrapped-записи в `item_keys` для owner + залишених отримувачів; старі рядки видаляються). Для колекцій — `POST /api/collections/{id}/rotate-key` (новий collection key, нові `wrapped_key` залишених членів, нові `collection_wrapped_key` усіх записів колекції). Обидва endpoints власник/manager викликає **до** видалення permission/membership. Ротація прямого share пропускається для записів у колекції (`PasswordItem.collectionId != null` → 400) — там діє ротація колекційного ключа.
 
 **Обмеження (зафіксовано свідомо, див. [ROADMAP.md](ROADMAP.md)):**
 - Прямий group-share (permission з `granteeType=GROUP`, без колекції) видає лише метадані: член довільної Keycloak-групи бачить запис, але не може розшифрувати без прямого share або колекції. Для реального командного доступу використовуйте Collections.
-- Revoke (і прямого share, і membership колекції) не робить ротацію ключа: колишній отримувач/член, який встиг зберегти ключ, теоретично розшифрує вже отриману ciphertext. Ротація ключа при revoke — наступний крок.
+- Ротація (пункт 9) захищає лише майбутні зміни й майбутні читання через API — не захист від пристрою, що вже мав ciphertext на момент компрометації (властивість crypto-shredding, не баг).
 - Metadata (назва, URL, username, теги) зберігаються відкрито заради пошуку — за потреби їх теж можна шифрувати.
 - KDF — PBKDF2; перехід на Argon2id заплановано (Фаза 5).
 - Синхронізація складу колекції з Keycloak-групами через Admin API — не зроблено; членство поки суто явне.
@@ -69,11 +70,13 @@ Reverse proxy (nginx / traefik — TLS termination, prod)
 | PATCH | `/api/vault/items/{id}/sync-mode` | Toggle "зберігати на сервері" |
 | GET/POST | `/api/vault/items/{id}/permissions` | Доступи (owner) |
 | DELETE | `/api/vault/items/{id}/permissions/{permId}` | Revoke (owner) |
+| POST | `/api/vault/items/{id}/rotate-key` | Ротація item key (owner, перед revoke) |
 | GET | `/api/vault/items/{id}/versions` | Історія версій |
 | PUT | `/api/vault/items/{id}/collection` | Додати/зняти запис з колекції (owner) |
 | GET/POST | `/api/collections` | Мої колекції / створення |
 | GET/POST | `/api/collections/{id}/members` | Члени колекції / додати (manager) |
 | PUT/DELETE | `/api/collections/{id}/members/{memberId}` | Змінити роль / revoke (manager) |
+| POST | `/api/collections/{id}/rotate-key` | Ротація collection key (manager, перед видаленням члена) |
 | DELETE | `/api/collections/{id}` | Видалити порожню колекцію (owner) |
 | GET/PUT | `/api/keys/me`, GET `/api/keys/{email}` | Keypair користувача / публічний ключ іншого |
 | GET | `/api/audit` | Audit log (admin/security) |
