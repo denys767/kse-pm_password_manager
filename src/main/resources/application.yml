@@ -31,3 +31,12 @@ springdoc:
 pm:
   rate-limit:
     requests-per-minute: 300
+
+logging:
+  structured:
+    format:
+      # Elastic Common Schema JSON on stdout — consumable by any log
+      # aggregator (ELK, Datadog, CloudWatch). actorEmail/requestId from
+      # LoggingContextFilter ride along as extra MDC fields on every line,
+      # correlating technical logs with the business audit_events log.
+      console: ecs
