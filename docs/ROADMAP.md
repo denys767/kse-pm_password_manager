@@ -57,4 +57,4 @@
 
 - ⬜ Мобільний клієнт поверх стабілізованого API (React Native), спільна crypto-логіка.
 - ⬜ Browser extension для автозаповнення.
-- ⬜ Argon2id замість PBKDF2 для KDF (коли WebCrypto/WASM-підтримка стане зручною).
+- ✅ **Argon2id замість PBKDF2 для KDF**: нові keypair-и виводять KEK через Argon2id (`hash-wasm`, memory-hard, m=19 MiB/t=2/p=1 — OWASP-рекомендація для constrained/browser середовищ), значно дорожче брутфорсити на GPU/ASIC за той самий wall-clock час unlock, ніж PBKDF2. **Версіонується**: `UserKeys.kdfAlgorithm` (`PBKDF2`/`ARGON2ID`, Flyway V4) — існуючі keypair-и й далі розшифровуються тим алгоритмом, яким були зареєстровані (немає примусової міграції: перевивести KEK можна лише з passphrase користувача, якого сервер не має). Перевірено: backend-тест (обов'язковість поля, збереження/зчитування обох значень), Playwright E2E (unlock ~1с, коректне відхилення невірного passphrase, повний ланцюжок share/decrypt між двома новими ARGON2ID-користувачами), регресія прямого share.

@@ -369,9 +369,16 @@ class VaultApiIntegrationTest {
         mockMvc.perform(as(get("/api/keys/" + carol), ALICE))
                 .andExpect(status().isNotFound());
 
-        String keysJson = """
+        // kdfAlgorithm is required — reject registration without it.
+        mockMvc.perform(as(put("/api/keys/me"), carol).content("""
                 {"publicKey": "cHVibGljS2V5", "encryptedPrivateKey": "ZW5jUHJpdg==",
                  "privateKeyIv": "aXY=", "kdfSalt": "c2FsdA=="}
+                """))
+                .andExpect(status().isBadRequest());
+
+        String keysJson = """
+                {"publicKey": "cHVibGljS2V5", "encryptedPrivateKey": "ZW5jUHJpdg==",
+                 "privateKeyIv": "aXY=", "kdfSalt": "c2FsdA==", "kdfAlgorithm": "ARGON2ID"}
                 """;
         mockMvc.perform(as(put("/api/keys/me"), carol).content(keysJson))
                 .andExpect(status().isCreated());
@@ -379,7 +386,8 @@ class VaultApiIntegrationTest {
         mockMvc.perform(as(get("/api/keys/me"), carol))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.publicKey").value("cHVibGljS2V5"))
-                .andExpect(jsonPath("$.kdfSalt").value("c2FsdA=="));
+                .andExpect(jsonPath("$.kdfSalt").value("c2FsdA=="))
+                .andExpect(jsonPath("$.kdfAlgorithm").value("ARGON2ID"));
 
         // Other users see only the public key.
         String publicView = mockMvc.perform(as(get("/api/keys/" + carol), ALICE))
@@ -390,17 +398,19 @@ class VaultApiIntegrationTest {
         org.junit.jupiter.api.Assertions.assertFalse(node.has("encryptedPrivateKey"),
                 "public view must not expose the encrypted private key");
 
-        // Re-encrypting the same keypair (passphrase change) is allowed.
+        // Re-encrypting the same keypair (passphrase change) is allowed, and can
+        // switch KDF algorithm (e.g. a legacy PBKDF2 keypair moving to Argon2id).
         mockMvc.perform(as(put("/api/keys/me"), carol).content("""
                 {"publicKey": "cHVibGljS2V5", "encryptedPrivateKey": "bmV3RW5jUHJpdg==",
-                 "privateKeyIv": "aXYy", "kdfSalt": "c2FsdDI="}
+                 "privateKeyIv": "aXYy", "kdfSalt": "c2FsdDI=", "kdfAlgorithm": "PBKDF2"}
                 """))
-                .andExpect(status().isOk());
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.kdfAlgorithm").value("PBKDF2"));
 
         // Replacing with a different keypair needs force=true.
         String differentKey = """
                 {"publicKey": "b3RoZXJLZXk=", "encryptedPrivateKey": "eA==",
-                 "privateKeyIv": "aXY=", "kdfSalt": "c2FsdA=="}
+                 "privateKeyIv": "aXY=", "kdfSalt": "c2FsdA==", "kdfAlgorithm": "ARGON2ID"}
                 """;
         mockMvc.perform(as(put("/api/keys/me"), carol).content(differentKey))
                 .andExpect(status().isBadRequest());

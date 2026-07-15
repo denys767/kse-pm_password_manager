@@ -1,4 +1,4 @@
-import type { Encrypted } from './crypto';
+import type { Encrypted, KdfAlgorithm } from './crypto';
 
 export interface FrontendConfig {
     authMode: 'oidc' | 'dev-headers';
@@ -78,6 +78,7 @@ export interface UserKeysDto {
     encryptedPrivateKey: string;
     privateKeyIv: string;
     kdfSalt: string;
+    kdfAlgorithm: KdfAlgorithm;
 }
 
 export interface Settings {

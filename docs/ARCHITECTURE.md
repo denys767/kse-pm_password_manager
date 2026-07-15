@@ -26,7 +26,7 @@ Reverse proxy (nginx / traefik — TLS termination, prod)
 Сервер ніколи не зберігає відкриті паролі й ніколи не бачить незагорнуті ключі.
 
 1. Користувач вводить **vault passphrase** у браузері. Вона ніколи не надсилається на сервер.
-2. З passphrase виводиться **KEK**: PBKDF2 (SHA-256, 210 000 ітерацій, per-user salt) → AES-256.
+2. З passphrase виводиться **KEK** (AES-256): нові keypair-и — через **Argon2id** (`hash-wasm`, m=19 MiB/t=2/p=1, OWASP-рекомендація для constrained/browser середовищ; memory-hard — значно дорожче брутфорсити на GPU/ASIC за той самий wall-clock час unlock, ніж PBKDF2). `UserKeys.kdfAlgorithm` версіонує алгоритм на кожен keypair (`PBKDF2`/`ARGON2ID`) — keypair-и, зареєстровані до появи Argon2id, і далі розшифровуються PBKDF2 (SHA-256, 210k ітерацій), без примусової міграції: перевивести KEK можна лише з passphrase користувача, якого сервер не має.
 3. При першому вході браузер генерує **RSA-OAEP-2048 keypair**. Публічний ключ (SPKI) зберігається на сервері відкрито; приватний (PKCS8) — зашифрований KEK (AES-GCM). Тому vault працює з будь-якого пристрою: сервер віддає salt і зашифрований приватний ключ, а розшифрувати їх може лише власник passphrase (таблиця `user_keys`).
 4. Кожен запис має власний **item key** (AES-256). Пароль і notes шифруються ним (AES-GCM, окремий IV на поле) ще в браузері.
 5. Item key зберігається лише **загорнутим**: RSA-OAEP публічним ключем кожного, хто має доступ (таблиця `item_keys`, рядок на пару запис-користувач).
@@ -39,7 +39,7 @@ Reverse proxy (nginx / traefik — TLS termination, prod)
 - Прямий group-share (permission з `granteeType=GROUP`, без колекції) видає лише метадані: член довільної Keycloak-групи бачить запис, але не може розшифрувати без прямого share або колекції. Для реального командного доступу використовуйте Collections.
 - Ротація (пункт 9) захищає лише майбутні зміни й майбутні читання через API — не захист від пристрою, що вже мав ciphertext на момент компрометації (властивість crypto-shredding, не баг).
 - Metadata (назва, URL, username, теги) зберігаються відкрито заради пошуку — за потреби їх теж можна шифрувати.
-- KDF — PBKDF2; перехід на Argon2id заплановано (Фаза 5).
+- KDF версіонується per-keypair (`PBKDF2`/`ARGON2ID`) — нема глобальної примусової міграції, старі keypair-и лишаються на PBKDF2 назавжди, якщо власник не змінить passphrase (що перевиводить KEK і може оновити алгоритм).
 - Синхронізація складу колекції з Keycloak-групами через Admin API — не зроблено; членство поки суто явне.
 
 ## Модель ролей
@@ -93,7 +93,7 @@ Reverse proxy (nginx / traefik — TLS termination, prod)
 | Insider з роллю admin | Admin бачить audit log, але не може розшифрувати записи |
 | Викрадений пристрій | Vault замкнено passphrase; local-only записи зашифровані в localStorage |
 | Clipboard sniffing | Автоочищення clipboard через N секунд (налаштовується) |
-| Перебір passphrase | PBKDF2 210k ітерацій; далі — Argon2id на наступній ітерації |
+| Перебір passphrase | Argon2id (memory-hard) для нових keypair-ів; PBKDF2 210k ітерацій для старих |
 | Підробка identity headers | Dev-заголовки `X-Dev-*` працюють лише в профілі `dev`; у prod — тільки підписаний JWT від Keycloak |
 
 ## Потік автентифікації
