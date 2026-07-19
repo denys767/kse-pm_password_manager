@@ -1,6 +1,9 @@
 package ua.kse.passwordmanager.audit;
 
 public enum AuditAction {
+    LOGIN,
+    LOGIN_FAILED,
+    LOGOUT,
     ITEM_CREATED,
     ITEM_VIEWED,
     ITEM_UPDATED,

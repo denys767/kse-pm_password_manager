@@ -31,6 +31,10 @@ springdoc:
 pm:
   rate-limit:
     requests-per-minute: 300
+  keycloak:
+    admin-client-secret: ${KEYCLOAK_ADMIN_CLIENT_SECRET:}
+  audit:
+    keycloak-events-secret: ${KEYCLOAK_EVENTS_SECRET:}
 
 logging:
   structured:

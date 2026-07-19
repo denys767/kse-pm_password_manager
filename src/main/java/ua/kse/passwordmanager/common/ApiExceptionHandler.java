@@ -25,6 +25,11 @@ public class ApiExceptionHandler {
         return error(HttpStatus.BAD_REQUEST, e.getMessage());
     }
 
+    @ExceptionHandler(BadGatewayException.class)
+    public ResponseEntity<Map<String, String>> badGateway(BadGatewayException e) {
+        return error(HttpStatus.BAD_GATEWAY, e.getMessage());
+    }
+
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<Map<String, String>> validation(MethodArgumentNotValidException e) {
         var fieldError = e.getBindingResult().getFieldErrors().stream().findFirst();

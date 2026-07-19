@@ -53,6 +53,17 @@ Keycloak завершує SSO-сесію та повертає на застос
 Keycloak/застосунок отримують лише криптографічне підтвердження WebAuthn — сервер
 ніколи не "зберігає біометрію".
 
+### Live-статус (2026-07-19)
+
+У test-realm створено `browser-webauthn` (копія `browser`) з **WebAuthn
+Authenticator** requirement `Required` усередині forms subflow після
+Username/Password; `Webauthn Register` увімкнений як default required action.
+Реєстрація passkey пройшла в headless Chromium через CDP virtual authenticator,
+а наступний вхід доходить до Keycloak-екрана **Passkey login** з зареєстрованим
+credential. Автоматизована відповідь assertion цим virtual authenticator ще не
+завершилась, тому повний повторний вхід і ручні перевірки Touch ID/Windows Hello/
+Safari лишаються обов’язковими перед production rollout.
+
 **Тест-матриця MVP:** Chrome (macOS/Windows), Safari (macOS Touch ID), Windows Hello (Edge/Chrome).
 
 **Обмеження MVP:** один passkey на користувача достатньо; синхронізація passkeys
@@ -70,3 +81,54 @@ mvn spring-boot:run          # профіль за замовчуванням: P
 ```bash
 mvn spring-boot:run -Dspring-boot.run.profiles=dev   # H2 + X-Dev-User headers
 ```
+
+## Collections: read-only group suggestions
+
+`realm-export.json` містить confidential client `kse-pm-admin` з увімкненим
+service account і єдиною роллю `realm-management:view-users`. Перед імпортом/першим
+запуском замініть його `secret` плейсхолдер або після імпорту згенеруйте Client secret
+у **Clients → kse-pm-admin → Credentials** і передайте те саме значення застосунку:
+
+```bash
+export KEYCLOAK_ADMIN_CLIENT_SECRET='...'
+```
+
+Backend отримує access token через `client_credentials`, шукає group і читає її
+members через Admin REST API. Це **лише UX-підказка**: manager все одно явно вибирає
+email-и, а браузер обгортає collection key публічним ключем кожного вибраного
+користувача. Отже, додавання до Keycloak group не надає E2E-доступу автоматично.
+
+## Login/logout audit events: потрібен provider
+
+Висновок для образу `quay.io/keycloak/keycloak:26.0`: вбудована Event Listener SPI є,
+але в стандартній дистрибуції немає готового HTTP/webhook event listener, який можна
+просто увімкнути в realm. Офіційна документація описує Event Listener як SPI, а для
+додаткових provider-ів — розгортання JAR у `providers/` і `kc.sh build`; тому HTTP
+доставку не слід вважати функцією "з коробки". Див. [Keycloak Server Developer
+Guide](https://www.keycloak.org/docs/latest/server_development/#_events) та
+[provider deployment](https://www.keycloak.org/server/configuration-provider).
+
+Для live-середовища оберіть сумісний з Keycloak 26.x, перевірений security-review
+сторонній HTTP event listener або напишіть невеликий власний `EventListenerProvider`
+SPI. Власний SPI тут навмисно не додано без тесту на реальному Keycloak. Він має:
+
+1. Відправляти тільки `LOGIN`, `LOGIN_ERROR`, `LOGOUT` після commit події на
+   `http://app:8080/api/audit/keycloak-events` (не через nginx).
+2. Додавати header `X-Keycloak-Events-Secret` зі значенням `KEYCLOAK_EVENTS_SECRET`.
+3. Надсилати контракт endpoint-а: `{"type":"LOGIN","email":"user@kse.org.ua","details":"..."}`.
+   Стандартна Keycloak event-модель містить ID користувача, тож provider має безпечно
+   розв’язати його в email перед відправкою; endpoint навмисно не приймає довільний
+   user ID як actor email.
+4. Після встановлення provider JAR у `/opt/keycloak/providers/` виконати
+   `kc.sh build`, перезапустити Keycloak, а в **Realm settings → Events → Config**
+   увімкнути Save events, додати provider до Event listeners і вибрати ці три типи.
+
+`nginx/nginx.conf` повертає `404` для public `/api/audit/keycloak-events`; це
+обов’язково зберігає endpoint internal. У `docker-compose.prod.yml` обидва секрети
+`KEYCLOAK_ADMIN_CLIENT_SECRET` та `KEYCLOAK_EVENTS_SECRET` є обов’язковими.
+
+**Live-статус (2026-07-19):** endpoint перевірено реальними HTTP POST з валідним
+shared secret: LOGIN, LOGOUT і шість LOGIN_ERROR збережені, а LOGIN_FAILED
+показав brute-force anomaly у UI; неправильний secret повертає 403. Автоматична
+доставка від самого Keycloak не перевірена, бо HTTP event-listener provider у
+стек не встановлювався.

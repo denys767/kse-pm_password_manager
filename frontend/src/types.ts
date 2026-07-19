@@ -47,6 +47,7 @@ export interface Collection {
     id: string;
     name: string;
     ownerEmail: string;
+    keycloakGroup: string | null;
     myRole: CollectionRole;
     /** Collection key wrapped with my public key. */
     myWrappedKey: string;

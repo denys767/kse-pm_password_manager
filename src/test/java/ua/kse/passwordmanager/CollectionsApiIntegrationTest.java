@@ -15,11 +15,15 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
+import ua.kse.passwordmanager.keycloak.KeycloakAdminClient;
+
+import static org.mockito.Mockito.when;
 
 @SpringBootTest(properties = "pm.allow-insecure-dev=true")
 @AutoConfigureMockMvc
@@ -35,6 +39,9 @@ class CollectionsApiIntegrationTest {
 
     @Autowired
     private ObjectMapper objectMapper;
+
+    @MockBean
+    private KeycloakAdminClient keycloakAdminClient;
 
     private MockHttpServletRequestBuilder as(MockHttpServletRequestBuilder request, String email) {
         return request.header("X-Dev-User", email).contentType(MediaType.APPLICATION_JSON);
@@ -172,6 +179,22 @@ class CollectionsApiIntegrationTest {
                 .get(0).get("id").asText();
         mockMvc.perform(as(delete("/api/collections/" + collectionId + "/members/" + ownerMemberId), ALICE))
                 .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void managerGetsOnlyNewKeycloakGroupSuggestions() throws Exception {
+        String collectionId = createCollection(ALICE, "Suggested");
+        addMember(ALICE, collectionId, BOB, "EDITOR");
+        when(keycloakAdminClient.membersOfGroup("dev-team"))
+                .thenReturn(java.util.List.of(ALICE, BOB, CAROL));
+
+        mockMvc.perform(as(get("/api/collections/" + collectionId
+                        + "/keycloak-suggestions?group=dev-team"), ALICE))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0]").value(CAROL));
+        mockMvc.perform(as(get("/api/collections/" + collectionId
+                        + "/keycloak-suggestions?group=dev-team"), BOB))
+                .andExpect(status().isForbidden());
     }
 
     @Test
