@@ -53,6 +53,17 @@ Keycloak завершує SSO-сесію та повертає на застос
 Keycloak/застосунок отримують лише криптографічне підтвердження WebAuthn — сервер
 ніколи не "зберігає біометрію".
 
+### Live-статус (2026-07-19)
+
+У test-realm створено `browser-webauthn` (копія `browser`) з **WebAuthn
+Authenticator** requirement `Required` усередині forms subflow після
+Username/Password; `Webauthn Register` увімкнений як default required action.
+Реєстрація passkey пройшла в headless Chromium через CDP virtual authenticator,
+а наступний вхід доходить до Keycloak-екрана **Passkey login** з зареєстрованим
+credential. Автоматизована відповідь assertion цим virtual authenticator ще не
+завершилась, тому повний повторний вхід і ручні перевірки Touch ID/Windows Hello/
+Safari лишаються обов’язковими перед production rollout.
+
 **Тест-матриця MVP:** Chrome (macOS/Windows), Safari (macOS Touch ID), Windows Hello (Edge/Chrome).
 
 **Обмеження MVP:** один passkey на користувача достатньо; синхронізація passkeys
@@ -116,6 +127,8 @@ SPI. Власний SPI тут навмисно не додано без тес�
 обов’язково зберігає endpoint internal. У `docker-compose.prod.yml` обидва секрети
 `KEYCLOAK_ADMIN_CLIENT_SECRET` та `KEYCLOAK_EVENTS_SECRET` є обов’язковими.
 
-**Статус:** endpoint і детерміновані тести реалізовано, але live-доставка з Keycloak
-26.0, а також login/logout audit перевірка, ще не пройдені через недоступний Docker
-socket у поточному середовищі.
+**Live-статус (2026-07-19):** endpoint перевірено реальними HTTP POST з валідним
+shared secret: LOGIN, LOGOUT і шість LOGIN_ERROR збережені, а LOGIN_FAILED
+показав brute-force anomaly у UI; неправильний secret повертає 403. Автоматична
+доставка від самого Keycloak не перевірена, бо HTTP event-listener provider у
+стек не встановлювався.

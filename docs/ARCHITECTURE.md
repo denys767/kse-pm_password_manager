@@ -40,8 +40,8 @@ Reverse proxy (nginx / traefik — TLS termination, prod)
 - Ротація (пункт 9) захищає лише майбутні зміни й майбутні читання через API — не захист від пристрою, що вже мав ciphertext на момент компрометації (властивість crypto-shredding, не баг).
 - Metadata (назва, URL, username, теги) зберігаються відкрито заради пошуку — за потреби їх теж можна шифрувати.
 - KDF версіонується per-keypair (`PBKDF2`/`ARGON2ID`) — нема глобальної примусової міграції, старі keypair-и лишаються на PBKDF2 назавжди, якщо власник не змінить passphrase (що перевиводить KEK і може оновити алгоритм).
-- Keycloak Admin API лише підказує склад колекції: `keycloak_group` → diff email-ів; MANAGER явно вибирає адреси, а браузер окремо RSA-обгортає collection key для кожної. Тому Keycloak-група сама по собі не дає доступу до ciphertext. **Live-перевірка Admin API ще не пройдена**, бо в цьому середовищі недоступний Docker socket.
-- Keycloak login audit отримується лише через internal shared-secret endpoint, а не через JWT-користувача. **Live-провайдер подій і реальна доставка ще не верифіковані**; див. [KEYCLOAK.md](KEYCLOAK.md).
+- Keycloak Admin API лише підказує склад колекції: `keycloak_group` → diff email-ів; MANAGER явно вибирає адреси, а браузер окремо RSA-обгортає collection key для кожної. Тому Keycloak-група сама по собі не дає доступу до ciphertext. **Live-перевірка пройдена** з Keycloak 26 `dev-team`: diff містив лише користувача, якого ще не було в колекції, а доступ з’явився тільки після явного browser-side wrapping.
+- Keycloak login audit отримується лише через internal shared-secret endpoint, а не через JWT-користувача. **Live endpoint, збереження та brute-force anomaly перевірені** authenticated `curl`-подіями; **автоматична доставка від Keycloak** лишається не верифікованою, бо для Keycloak 26 потрібен окремий HTTP Event Listener provider. Див. [KEYCLOAK.md](KEYCLOAK.md).
 
 ## Модель ролей
 

@@ -50,9 +50,16 @@
       "standardFlowEnabled": false,
       "directAccessGrantsEnabled": false,
       "serviceAccountsEnabled": true,
-      "fullScopeAllowed": false,
-      "secret": "REPLACE_WITH_KEYCLOAK_ADMIN_CLIENT_SECRET",
-      "serviceAccountClientRoles": {
+      "fullScopeAllowed": true,
+      "secret": "REPLACE_WITH_KEYCLOAK_ADMIN_CLIENT_SECRET"
+    }
+  ],
+  "users": [
+    {
+      "username": "service-account-kse-pm-admin",
+      "enabled": true,
+      "serviceAccountClientId": "kse-pm-admin",
+      "clientRoles": {
         "realm-management": ["view-users"]
       }
     }
