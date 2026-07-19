@@ -59,6 +59,16 @@ public class PasswordItem {
     @Column(nullable = false)
     private SyncMode syncMode;
 
+    /** Collection this item belongs to (nullable). The item key is additionally
+     * wrapped AES-GCM with the collection key so every member can unwrap it. */
+    @Column(name = "collection_id")
+    private UUID collectionId;
+
+    @Column(length = 4096)
+    private String collectionWrappedKey;
+
+    private String collectionWrappedKeyIv;
+
     @Column(nullable = false)
     private Instant createdAt;
 
@@ -166,6 +176,30 @@ public class PasswordItem {
 
     public void setSyncMode(SyncMode syncMode) {
         this.syncMode = syncMode;
+    }
+
+    public UUID getCollectionId() {
+        return collectionId;
+    }
+
+    public void setCollectionId(UUID collectionId) {
+        this.collectionId = collectionId;
+    }
+
+    public String getCollectionWrappedKey() {
+        return collectionWrappedKey;
+    }
+
+    public void setCollectionWrappedKey(String collectionWrappedKey) {
+        this.collectionWrappedKey = collectionWrappedKey;
+    }
+
+    public String getCollectionWrappedKeyIv() {
+        return collectionWrappedKeyIv;
+    }
+
+    public void setCollectionWrappedKeyIv(String collectionWrappedKeyIv) {
+        this.collectionWrappedKeyIv = collectionWrappedKeyIv;
     }
 
     public Instant getCreatedAt() {

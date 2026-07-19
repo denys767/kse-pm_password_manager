@@ -62,6 +62,10 @@ export function UnlockScreen({ devMode, onUnlock }: Props) {
                     <input id="passphrase" type="password" autoComplete="current-password"
                            value={passphrase} onChange={(e) => setPassphrase(e.target.value)} />
                 </label>
+                <p className="hint">
+                    Оберіть довгу фразу (4+ випадкових слова). Passphrase неможливо відновити —
+                    zero-knowledge означає, що без неї записи не розшифрує ніхто, включно з адміністратором.
+                </p>
                 <button id="unlock-btn" type="submit" disabled={busy}>
                     {busy ? 'Unlocking…' : 'Unlock'}
                 </button>

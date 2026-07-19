@@ -70,8 +70,9 @@ export async function loadOrCreateKeys(passphrase: string): Promise<VaultKeys> {
         }
     }
     if (stored === null) {
+        // Every new keypair uses Argon2id — see crypto.ts for why.
         const salt = pmc.generateSalt();
-        const kek = await pmc.deriveKek(passphrase, salt);
+        const kek = await pmc.deriveKek(passphrase, salt, 'ARGON2ID');
         const keypair = await pmc.generateUserKeypair();
         const encPriv = await pmc.exportEncryptedPrivateKey(keypair.privateKey, kek);
         const publicKeyB64 = await pmc.exportPublicKey(keypair.publicKey);
@@ -82,11 +83,14 @@ export async function loadOrCreateKeys(passphrase: string): Promise<VaultKeys> {
                 encryptedPrivateKey: encPriv.ct,
                 privateKeyIv: encPriv.iv,
                 kdfSalt: salt,
+                kdfAlgorithm: 'ARGON2ID',
             } satisfies UserKeysDto),
         });
         return { kek, privateKey: keypair.privateKey, publicKey: await pmc.importPublicKey(publicKeyB64) };
     }
-    const kek = await pmc.deriveKek(passphrase, stored.kdfSalt);
+    // Existing keypairs keep unlocking with whichever KDF they were registered
+    // with — there is no forced migration (see crypto.ts).
+    const kek = await pmc.deriveKek(passphrase, stored.kdfSalt, stored.kdfAlgorithm);
     let privateKey: CryptoKey;
     try {
         privateKey = await pmc.importEncryptedPrivateKey(stored.encryptedPrivateKey, stored.privateKeyIv, kek);

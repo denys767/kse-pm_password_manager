@@ -8,6 +8,7 @@ import org.springframework.transaction.annotation.Transactional;
 import ua.kse.passwordmanager.audit.AuditAction;
 import ua.kse.passwordmanager.audit.AuditService;
 import ua.kse.passwordmanager.auth.CurrentUser;
+import ua.kse.passwordmanager.collections.CollectionMemberRepository;
 import ua.kse.passwordmanager.common.BadRequestException;
 import ua.kse.passwordmanager.common.ForbiddenException;
 import ua.kse.passwordmanager.common.NotFoundException;
@@ -27,15 +28,18 @@ public class SharingService {
     private final PermissionRepository permissionRepository;
     private final PasswordItemRepository itemRepository;
     private final ItemKeyRepository itemKeyRepository;
+    private final CollectionMemberRepository collectionMemberRepository;
     private final AuditService auditService;
 
     public SharingService(PermissionRepository permissionRepository,
                           PasswordItemRepository itemRepository,
                           ItemKeyRepository itemKeyRepository,
+                          CollectionMemberRepository collectionMemberRepository,
                           AuditService auditService) {
         this.permissionRepository = permissionRepository;
         this.itemRepository = itemRepository;
         this.itemKeyRepository = itemKeyRepository;
+        this.collectionMemberRepository = collectionMemberRepository;
         this.auditService = auditService;
     }
 
@@ -59,6 +63,16 @@ public class SharingService {
                     : AccessRole.VIEWER;
             if (granted.ordinal() > best.ordinal()) {
                 best = granted;
+            }
+        }
+        // Collection membership grants access to every item in the collection.
+        if (item.getCollectionId() != null) {
+            AccessRole viaCollection = collectionMemberRepository
+                    .findByCollectionIdAndMemberEmail(item.getCollectionId(), user.email())
+                    .map(member -> member.getRole().canEditItems() ? AccessRole.EDITOR : AccessRole.VIEWER)
+                    .orElse(AccessRole.NONE);
+            if (viaCollection.ordinal() > best.ordinal()) {
+                best = viaCollection;
             }
         }
         return best;

@@ -1,14 +1,16 @@
 import { FormEvent, useEffect, useRef, useState } from 'react';
 import { api, ApiError } from '../api';
 import * as pmc from '../crypto';
+import { unwrapCollectionKey, unwrapItemKeyFor } from '../itemKeys';
 import { loadLocalItems, saveLocalItems } from '../localItems';
 import { estimateStrength, generatePassword, hibpBreachCount } from '../passwords';
 import type { Session } from '../App';
-import type { ItemVersion, PasswordItem, Permission, Settings } from '../types';
+import type { Collection, ItemVersion, PasswordItem, Permission, Settings } from '../types';
 
 interface Props {
     session: Session;
     settings: Settings;
+    collections: Collection[];
     /** null = add mode */
     item: PasswordItem | null;
     onClose: (changed: boolean) => void;
@@ -25,7 +27,7 @@ interface Fields {
     sync: boolean;
 }
 
-export function ItemDialog({ session, settings, item, onClose }: Props) {
+export function ItemDialog({ session, settings, collections, item, onClose }: Props) {
     const dialogRef = useRef<HTMLDialogElement>(null);
     const warningRef = useRef<HTMLDialogElement>(null);
     const warningResolve = useRef<((ok: boolean) => void) | null>(null);
@@ -45,6 +47,7 @@ export function ItemDialog({ session, settings, item, onClose }: Props) {
     const [loaded, setLoaded] = useState(item === null);
     const [hibpStatus, setHibpStatus] = useState<string | null>(null);
     const [versions, setVersions] = useState<ItemVersion[] | null>(null);
+    const [collectionSel, setCollectionSel] = useState<string>(item?.collectionId ?? '');
 
     const isOwner = !current || !current.accessRole || current.accessRole === 'OWNER';
     const canEdit = !current || ((isOwner || current.accessRole === 'EDITOR') && itemKey !== null);
@@ -54,16 +57,10 @@ export function ItemDialog({ session, settings, item, onClose }: Props) {
         dialogRef.current?.showModal();
     }, []);
 
-    /** Unwrap the AES key of an item: RSA for server items, KEK for local-only. */
+    /** Unwrap the AES key of an item through whichever chain applies
+     * (local KEK, direct RSA share, or collection key). */
     async function unwrapKey(target: PasswordItem): Promise<CryptoKey> {
-        if (target.syncMode === 'LOCAL_ONLY') {
-            return pmc.unwrapItemKeyWithKek(target.kekWrappedKey!.ct, target.kekWrappedKey!.iv, session.keys.kek);
-        }
-        if (!target.wrappedKey) {
-            throw new Error('Для вас ще не надано ключ до цього запису '
-                + '(group-share без ключа — попросіть owner-а поділитися напряму).');
-        }
-        return pmc.unwrapItemKey(target.wrappedKey, session.keys.privateKey);
+        return unwrapItemKeyFor(target, collections, session.keys);
     }
 
     useEffect(() => {
@@ -165,14 +162,23 @@ export function ItemDialog({ session, settings, item, onClose }: Props) {
                 syncMode: 'SERVER_SYNCED',
             };
             if (fields.sync) {
+                let itemId: string;
                 if (current && !wasLocal) {
                     await api(`/api/vault/items/${current.id}`, { method: 'PUT', body: JSON.stringify(payload) });
+                    itemId = current.id;
                 } else {
                     payload.wrappedKey = await pmc.wrapItemKey(key, session.keys.publicKey);
-                    await api('/api/vault/items', { method: 'POST', body: JSON.stringify(payload) });
+                    const created = await api<PasswordItem>('/api/vault/items', {
+                        method: 'POST',
+                        body: JSON.stringify(payload),
+                    });
+                    itemId = created.id;
                     if (current && wasLocal) {
                         removeLocal(current.id);
                     }
+                }
+                if (isOwner) {
+                    await assignCollection(itemId, key);
                 }
             } else {
                 await saveLocalOnly(payload, key, wasLocal);
@@ -187,6 +193,32 @@ export function ItemDialog({ session, settings, item, onClose }: Props) {
     function removeLocal(id: string) {
         const email = session.user.email;
         saveLocalItems(email, loadLocalItems(email).filter((i) => i.id !== id));
+    }
+
+    /** Sync the collection assignment with the select: wrap the item key with
+     * the collection key (client-side) and tell the server. */
+    async function assignCollection(itemId: string, key: CryptoKey) {
+        const desired = collectionSel || null;
+        if (desired === (current?.collectionId ?? null)) {
+            return;
+        }
+        if (!desired) {
+            await api(`/api/vault/items/${itemId}/collection`, {
+                method: 'PUT',
+                body: JSON.stringify({ collectionId: null }),
+            });
+            return;
+        }
+        const collectionKey = await unwrapCollectionKey(desired, collections, session.keys);
+        const wrapped = await pmc.wrapItemKeyWithKek(key, collectionKey);
+        await api(`/api/vault/items/${itemId}/collection`, {
+            method: 'PUT',
+            body: JSON.stringify({
+                collectionId: desired,
+                wrappedKey: wrapped.ct,
+                wrappedKeyIv: wrapped.iv,
+            }),
+        });
     }
 
     async function saveLocalOnly(payload: Record<string, unknown>, key: CryptoKey, wasLocal: boolean) {
@@ -292,9 +324,58 @@ export function ItemDialog({ session, settings, item, onClose }: Props) {
         }
     }
 
+    /**
+     * Rotates the item's AES key so the recipient being revoked cannot decrypt
+     * anything written after this point, even if they saved the old wrapped
+     * key. Skipped when there's no one else to re-wrap for, or when the item
+     * lives in a collection (its key is wrapped by the collection key instead
+     * — see CollectionsTab.removeMember for that rotation).
+     */
+    async function rotateItemKeyExcluding(remaining: Permission[]) {
+        if (!current || !itemKey) {
+            return;
+        }
+        const newKey = await pmc.generateItemKey();
+        const password = await pmc.encryptField(newKey, fields.password);
+        const notes = fields.notes ? await pmc.encryptField(newKey, fields.notes) : null;
+        const wrappedKeys = [
+            { granteeEmail: session.user.email, wrappedKey: await pmc.wrapItemKey(newKey, session.keys.publicKey) },
+        ];
+        for (const permission of remaining) {
+            const recipient = await api<{ publicKey: string }>(`/api/keys/${encodeURIComponent(permission.grantee)}`);
+            const recipientKey = await pmc.importPublicKey(recipient.publicKey);
+            wrappedKeys.push({
+                granteeEmail: permission.grantee,
+                wrappedKey: await pmc.wrapItemKey(newKey, recipientKey),
+            });
+        }
+        await api(`/api/vault/items/${current.id}/rotate-key`, {
+            method: 'POST',
+            body: JSON.stringify({
+                encryptedPassword: password.ct,
+                passwordIv: password.iv,
+                encryptedNotes: notes ? notes.ct : null,
+                notesIv: notes ? notes.iv : null,
+                wrappedKeys,
+            }),
+        });
+        setItemKey(newKey);
+    }
+
     async function revoke(permissionId: string) {
         if (!current) {
             return;
+        }
+        const target = permissions.find((p) => p.id === permissionId);
+        const remainingUserShares = permissions.filter(
+            (p) => p.id !== permissionId && p.granteeType === 'USER');
+        if (target?.granteeType === 'USER' && !current.collectionId && remainingUserShares.length > 0) {
+            try {
+                await rotateItemKeyExcluding(remainingUserShares);
+            } catch (e) {
+                setError(`Не вдалося ротувати ключ, revoke скасовано: ${(e as Error).message}`);
+                return;
+            }
         }
         await api(`/api/vault/items/${current.id}/permissions/${permissionId}`, { method: 'DELETE' });
         setPermissions(await api<Permission[]>(`/api/vault/items/${current.id}/permissions`));
@@ -426,9 +507,23 @@ export function ItemDialog({ session, settings, item, onClose }: Props) {
                             <option value="SHARED">Shared</option>
                         </select>
                     </label>
+                    {isOwner && fields.sync && collections.length > 0 && (
+                        <label>Колекція
+                            <select id="f-collection" value={collectionSel}
+                                    onChange={(e) => setCollectionSel(e.target.value)}>
+                                <option value="">— без колекції —</option>
+                                {collections.map((collection) => (
+                                    <option key={collection.id} value={collection.id}
+                                            disabled={collection.myRole === 'VIEWER'}>
+                                        {collection.name}
+                                    </option>
+                                ))}
+                            </select>
+                        </label>
+                    )}
                     <label className="row checkbox-row">
                         <input id="f-sync" type="checkbox" checked={fields.sync}
-                               disabled={sharedType || !isOwner}
+                               disabled={sharedType || !isOwner || collectionSel !== ''}
                                onChange={(e) => set('sync', e.target.checked)} />
                         <span>Зберігати на сервері</span>
                     </label>

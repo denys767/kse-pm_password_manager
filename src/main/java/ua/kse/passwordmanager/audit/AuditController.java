@@ -14,14 +14,23 @@ public class AuditController {
     private static final int MAX_LIMIT = 500;
 
     private final AuditService auditService;
+    private final AuditAnomalyService anomalyService;
 
-    public AuditController(AuditService auditService) {
+    public AuditController(AuditService auditService, AuditAnomalyService anomalyService) {
         this.auditService = auditService;
+        this.anomalyService = anomalyService;
     }
 
     @GetMapping
     @PreAuthorize("hasAnyRole('ADMIN', 'SECURITY')")
     public List<AuditEvent> latest(@RequestParam(defaultValue = "100") int limit) {
         return auditService.latest(Math.clamp(limit, 1, MAX_LIMIT));
+    }
+
+    /** Threshold-based anomalies (mass copy/share/revoke) over recent activity. */
+    @GetMapping("/anomalies")
+    @PreAuthorize("hasAnyRole('ADMIN', 'SECURITY')")
+    public List<AnomalyDto> anomalies() {
+        return anomalyService.detect();
     }
 }

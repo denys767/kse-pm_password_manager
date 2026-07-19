@@ -52,8 +52,28 @@ find backups/ -name 'pm-*.dump' -mtime +30 -delete
     (можливий brute-force);
   - `hikaricp_connections_pending > 0` тривалий час — вичерпання пулу БД.
 - Аномалії в audit log (сплески `ITEM_COPIED`/`ACCESS_REVOKED`/`ITEM_SHARED` по одному
-  користувачу) — поки ручна перевірка через `/api/audit`; автоматичні алерти заплановано
-  (див. [ROADMAP.md](ROADMAP.md), Фаза 4).
+  користувачу) — автоматично: `GET /api/audit/anomalies` (admin/security), порогова
+  евристика без scheduler; банер в UI на вкладці Audit. Деталі — [ARCHITECTURE.md](ARCHITECTURE.md).
+
+## Логи
+
+Поза межами `dev`-профілю застосунок пише на stdout структуровані JSON-логи у форматі
+**Elastic Common Schema (ECS)** — вбудована можливість Spring Boot 3.4
+(`logging.structured.format.console: ecs` у `application.yml`), без додаткових залежностей
+типу logstash-encoder. Кожен рядок — валідний JSON з полями `@timestamp`, `log.level`,
+`log.logger`, `message`, `service.name` та ін. Такий формат приймає будь-який агрегатор
+(ELK, Datadog, CloudWatch) без кастомного парсера.
+
+`LoggingContextFilter` додає до кожного рядка логу за час обробки запиту:
+- `actorEmail` — email автентифікованого користувача (якщо є);
+- `requestId` — UUID, спільний для всіх рядків одного HTTP-запиту.
+
+Це дозволяє корелювати технічні логи (Spring/Hibernate/наші `log.*`) із конкретним
+запитом і користувачем — на відміну від `audit_events`, який фіксує лише бізнес-події
+(create/share/revoke тощо), а не технічні деталі обробки запиту.
+
+Профіль `dev` (`application-dev.yml`) повертає звичайний людино-читний консольний вивід —
+зручніше для локальної розробки; `logging.structured.format.console` там навмисно порожній.
 
 ## Чекліст перед запуском у прод
 

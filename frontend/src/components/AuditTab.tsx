@@ -1,20 +1,40 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
-import type { AuditEvent } from '../types';
+import type { Anomaly, AuditEvent } from '../types';
 
 export function AuditTab() {
     const [events, setEvents] = useState<AuditEvent[]>([]);
+    const [anomalies, setAnomalies] = useState<Anomaly[]>([]);
     const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
-        api<AuditEvent[]>('/api/audit?limit=200')
-            .then(setEvents)
+        Promise.all([
+            api<AuditEvent[]>('/api/audit?limit=200'),
+            api<Anomaly[]>('/api/audit/anomalies'),
+        ])
+            .then(([auditEvents, detected]) => {
+                setEvents(auditEvents);
+                setAnomalies(detected);
+            })
             .catch((e) => setError((e as Error).message));
     }, []);
 
     return (
         <section id="tab-audit" className="tab-panel">
             {error && <p className="error">{error}</p>}
+            {anomalies.length > 0 && (
+                <div id="anomaly-banner" className="error" style={{ marginBottom: 12 }}>
+                    <strong>⚠ Виявлено аномальну активність:</strong>
+                    <ul style={{ margin: '4px 0 0 20px' }}>
+                        {anomalies.map((a, i) => (
+                            <li key={i}>
+                                {a.actorEmail}: {a.count}× {a.action} за останні {a.windowMinutes} хв
+                                {' '}(поріг {a.threshold})
+                            </li>
+                        ))}
+                    </ul>
+                </div>
+            )}
             <table className="audit-table">
                 <thead>
                 <tr><th>Час</th><th>Користувач</th><th>Дія</th><th>Запис</th><th>Кому</th><th>Деталі</th></tr>

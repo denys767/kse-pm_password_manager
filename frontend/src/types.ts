@@ -1,4 +1,4 @@
-import type { Encrypted } from './crypto';
+import type { Encrypted, KdfAlgorithm } from './crypto';
 
 export interface FrontendConfig {
     authMode: 'oidc' | 'dev-headers';
@@ -33,9 +33,33 @@ export interface PasswordItem {
     syncMode: SyncMode;
     accessRole: AccessRole | null;
     wrappedKey: string | null;
+    collectionId: string | null;
+    collectionWrappedKey: string | null;
+    collectionWrappedKeyIv: string | null;
     updatedAt: string;
     /** Present only on local-only items (stored in localStorage). */
     kekWrappedKey?: Encrypted;
+}
+
+export type CollectionRole = 'VIEWER' | 'EDITOR' | 'MANAGER';
+
+export interface Collection {
+    id: string;
+    name: string;
+    ownerEmail: string;
+    myRole: CollectionRole;
+    /** Collection key wrapped with my public key. */
+    myWrappedKey: string;
+    memberCount: number;
+    createdAt: string;
+}
+
+export interface CollectionMemberInfo {
+    id: string;
+    memberEmail: string;
+    role: CollectionRole;
+    addedBy: string;
+    createdAt: string;
 }
 
 export interface Permission {
@@ -54,6 +78,7 @@ export interface UserKeysDto {
     encryptedPrivateKey: string;
     privateKeyIv: string;
     kdfSalt: string;
+    kdfAlgorithm: KdfAlgorithm;
 }
 
 export interface Settings {
@@ -72,6 +97,14 @@ export interface ItemVersion {
     notesIv: string | null;
     replacedBy: string;
     replacedAt: string;
+}
+
+export interface Anomaly {
+    actorEmail: string;
+    action: string;
+    count: number;
+    windowMinutes: number;
+    threshold: number;
 }
 
 export interface AuditEvent {

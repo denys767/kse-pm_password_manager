@@ -62,6 +62,7 @@ public class KeysController {
         keys.setEncryptedPrivateKey(dto.encryptedPrivateKey());
         keys.setPrivateKeyIv(dto.privateKeyIv());
         keys.setKdfSalt(dto.kdfSalt());
+        keys.setKdfAlgorithm(dto.kdfAlgorithm());
         keys = repository.save(keys);
         return ResponseEntity.status(created ? HttpStatus.CREATED : HttpStatus.OK)
                 .body(UserKeysDto.from(keys));

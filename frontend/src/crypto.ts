@@ -3,8 +3,13 @@
  * Phase 1 crypto.js — logic unchanged).
  *
  * Model (Bitwarden-style E2E):
- *  - KEK: AES-256 derived from the vault passphrase (PBKDF2-SHA256, 210k
- *    iterations, per-user salt stored server-side). Never leaves the browser.
+ *  - KEK: AES-256 derived from the vault passphrase. New keypairs use
+ *    Argon2id (memory-hard, OWASP-recommended — resists GPU/ASIC brute force
+ *    far better than PBKDF2 at the same wall-clock unlock time); PBKDF2 is
+ *    kept only to keep unlocking keypairs registered before Argon2id existed
+ *    (see kdfAlgorithm on UserKeys — there is no forced migration, since
+ *    re-deriving requires the user's passphrase, which the server never has).
+ *    Never leaves the browser.
  *  - User keypair: RSA-OAEP-2048. Public key (SPKI) is stored in the clear;
  *    private key (PKCS8) is AES-GCM-encrypted with the KEK before upload.
  *  - Item key: random AES-256 per vault item; encrypts the password/notes
@@ -12,11 +17,14 @@
  *    each recipient's public key (server items) or AES-GCM with the KEK
  *    (local-only items).
  */
+import { argon2id } from 'hash-wasm';
 
 export interface Encrypted {
     ct: string;
     iv: string;
 }
+
+export type KdfAlgorithm = 'PBKDF2' | 'ARGON2ID';
 
 const te = new TextEncoder();
 const td = new TextDecoder();
@@ -36,6 +44,12 @@ const unb64 = (str: string): Uint8Array<ArrayBuffer> => {
 };
 
 const PBKDF2_ITERATIONS = 210000;
+// OWASP's second recommendation for Argon2id — tuned for constrained
+// environments (a browser tab competing for CPU/memory) rather than a
+// dedicated server: m=19 MiB, t=2, p=1.
+const ARGON2ID_MEMORY_KIB = 19456;
+const ARGON2ID_ITERATIONS = 2;
+const ARGON2ID_PARALLELISM = 1;
 const RSA_PARAMS: RsaHashedKeyGenParams = {
     name: 'RSA-OAEP',
     modulusLength: 2048,
@@ -47,7 +61,7 @@ export function generateSalt(): string {
     return b64(crypto.getRandomValues(new Uint8Array(16)));
 }
 
-export async function deriveKek(passphrase: string, saltB64: string): Promise<CryptoKey> {
+async function deriveKekPbkdf2(passphrase: string, saltB64: string): Promise<CryptoKey> {
     const material = await crypto.subtle.importKey(
         'raw', te.encode(passphrase), 'PBKDF2', false, ['deriveKey']);
     return crypto.subtle.deriveKey(
@@ -56,6 +70,37 @@ export async function deriveKek(passphrase: string, saltB64: string): Promise<Cr
         { name: 'AES-GCM', length: 256 },
         false,
         ['encrypt', 'decrypt']);
+}
+
+async function deriveKekArgon2id(passphrase: string, saltB64: string): Promise<CryptoKey> {
+    const raw = await argon2id({
+        password: passphrase,
+        salt: unb64(saltB64),
+        iterations: ARGON2ID_ITERATIONS,
+        parallelism: ARGON2ID_PARALLELISM,
+        memorySize: ARGON2ID_MEMORY_KIB,
+        hashLength: 32,
+        outputType: 'binary',
+    });
+    // Same ArrayBuffer<->ArrayBufferLike coercion as unb64: hash-wasm's return
+    // type isn't narrowed to Uint8Array<ArrayBuffer>, which BufferSource-typed
+    // WebCrypto APIs require under TS 5.7+.
+    return crypto.subtle.importKey('raw', new Uint8Array(raw), { name: 'AES-GCM' }, false,
+        ['encrypt', 'decrypt']);
+}
+
+/** Dispatches to the KDF the keypair was actually registered with — fails
+ * closed on an unrecognized value rather than silently falling back. */
+export async function deriveKek(
+    passphrase: string, saltB64: string, algorithm: KdfAlgorithm): Promise<CryptoKey> {
+    switch (algorithm) {
+        case 'ARGON2ID':
+            return deriveKekArgon2id(passphrase, saltB64);
+        case 'PBKDF2':
+            return deriveKekPbkdf2(passphrase, saltB64);
+        default:
+            throw new Error(`Unknown KDF algorithm: ${algorithm}`);
+    }
 }
 
 async function aesEncrypt(key: CryptoKey, bytes: BufferSource): Promise<Encrypted> {
