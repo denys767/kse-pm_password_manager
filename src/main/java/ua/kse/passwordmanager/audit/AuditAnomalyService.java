@@ -26,6 +26,7 @@ public class AuditAnomalyService {
             AuditAction.ITEM_SHARED, 10L,
             AuditAction.ACCESS_REVOKED, 5L,
             AuditAction.COLLECTION_MEMBER_REMOVED, 5L,
+            AuditAction.LOGIN_FAILED, 5L,
             AuditAction.ITEM_VIEWED, 30L);
 
     private static final long DEFAULT_THRESHOLD = 20L;

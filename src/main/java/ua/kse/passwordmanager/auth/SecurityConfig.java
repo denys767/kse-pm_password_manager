@@ -32,7 +32,7 @@ public class SecurityConfig {
                 .csrf(csrf -> csrf.disable())
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/api/health", "/api/config", "/actuator/health").permitAll()
+                        .requestMatchers("/api/health", "/api/config", "/api/audit/keycloak-events", "/actuator/health").permitAll()
                         // Swagger UI and non-API actuator endpoints fall through to
                         // anyRequest().permitAll(); the reverse proxy blocks /actuator/*
                         // (except health) from the outside.

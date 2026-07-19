@@ -13,10 +13,13 @@ interface Props {
 
 export function CollectionsTab({ session, collections, onChanged }: Props) {
     const [name, setName] = useState('');
+    const [keycloakGroup, setKeycloakGroup] = useState('');
     const [error, setError] = useState<string | null>(null);
     const [expanded, setExpanded] = useState<string | null>(null);
     const [members, setMembers] = useState<CollectionMemberInfo[]>([]);
     const [memberForm, setMemberForm] = useState({ email: '', role: 'VIEWER' as CollectionRole });
+    const [suggestions, setSuggestions] = useState<string[]>([]);
+    const [selectedSuggestions, setSelectedSuggestions] = useState<string[]>([]);
 
     async function create() {
         if (!name.trim()) {
@@ -29,9 +32,10 @@ export function CollectionsTab({ session, collections, onChanged }: Props) {
             const wrappedKeyForSelf = await pmc.wrapItemKey(collectionKey, session.keys.publicKey);
             await api('/api/collections', {
                 method: 'POST',
-                body: JSON.stringify({ name: name.trim(), wrappedKeyForSelf }),
+                body: JSON.stringify({ name: name.trim(), keycloakGroup: keycloakGroup.trim() || null, wrappedKeyForSelf }),
             });
             setName('');
+            setKeycloakGroup('');
             await onChanged();
         } catch (e) {
             setError((e as Error).message);
@@ -45,32 +49,67 @@ export function CollectionsTab({ session, collections, onChanged }: Props) {
         }
         setError(null);
         setMembers(await api<CollectionMemberInfo[]>(`/api/collections/${collection.id}/members`));
+        setSuggestions([]);
+        setSelectedSuggestions([]);
         setExpanded(collection.id);
     }
 
-    async function addMember(collection: Collection) {
-        const email = memberForm.email.trim().toLowerCase();
+    async function provisionMember(collection: Collection, rawEmail: string, role: CollectionRole) {
+        const email = rawEmail.trim().toLowerCase();
         if (!email) {
             return;
         }
+        let recipient: { publicKey: string };
+        try {
+            recipient = await api(`/api/keys/${encodeURIComponent(email)}`);
+        } catch (e) {
+            throw (e as ApiError).status === 404
+                ? new Error(`У ${email} ще немає ключів — користувач має увійти у vault хоча б раз.`)
+                : e;
+        }
+        // A suggestion never grants access: manager's browser explicitly wraps
+        // the collection key with every selected recipient's public key.
+        const collectionKey = await unwrapCollectionKey(collection.id, collections, session.keys);
+        const recipientKey = await pmc.importPublicKey(recipient.publicKey);
+        const wrappedKey = await pmc.wrapItemKey(collectionKey, recipientKey);
+        await api(`/api/collections/${collection.id}/members`, {
+            method: 'POST',
+            body: JSON.stringify({ email, role, wrappedKey }),
+        });
+    }
+
+    async function addMember(collection: Collection) {
         setError(null);
         try {
-            let recipient: { publicKey: string };
-            try {
-                recipient = await api(`/api/keys/${encodeURIComponent(email)}`);
-            } catch (e) {
-                throw (e as ApiError).status === 404
-                    ? new Error(`У ${email} ще немає ключів — користувач має увійти у vault хоча б раз.`)
-                    : e;
-            }
-            const collectionKey = await unwrapCollectionKey(collection.id, collections, session.keys);
-            const recipientKey = await pmc.importPublicKey(recipient.publicKey);
-            const wrappedKey = await pmc.wrapItemKey(collectionKey, recipientKey);
-            await api(`/api/collections/${collection.id}/members`, {
-                method: 'POST',
-                body: JSON.stringify({ email, role: memberForm.role, wrappedKey }),
-            });
+            await provisionMember(collection, memberForm.email, memberForm.role);
             setMemberForm({ ...memberForm, email: '' });
+            setMembers(await api<CollectionMemberInfo[]>(`/api/collections/${collection.id}/members`));
+            await onChanged();
+        } catch (e) {
+            setError((e as Error).message);
+        }
+    }
+
+    async function suggestMembers(collection: Collection) {
+        if (!collection.keycloakGroup) return;
+        setError(null);
+        try {
+            const found = await api<string[]>(`/api/collections/${collection.id}/keycloak-suggestions?group=${encodeURIComponent(collection.keycloakGroup)}`);
+            setSuggestions(found);
+            setSelectedSuggestions(found);
+        } catch (e) {
+            setError((e as Error).message);
+        }
+    }
+
+    async function addSuggestedMembers(collection: Collection) {
+        setError(null);
+        try {
+            for (const email of selectedSuggestions) {
+                await provisionMember(collection, email, memberForm.role);
+            }
+            setSuggestions([]);
+            setSelectedSuggestions([]);
             setMembers(await api<CollectionMemberInfo[]>(`/api/collections/${collection.id}/members`));
             await onChanged();
         } catch (e) {
@@ -149,6 +188,8 @@ export function CollectionsTab({ session, collections, onChanged }: Props) {
             <div className="toolbar">
                 <input id="collection-name" placeholder="Назва нової колекції (напр. Infra)"
                        value={name} onChange={(e) => setName(e.target.value)} />
+                <input id="keycloak-group" placeholder="Keycloak group (optional)"
+                       value={keycloakGroup} onChange={(e) => setKeycloakGroup(e.target.value)} />
                 <button id="create-collection-btn" onClick={create}>+ Create collection</button>
             </div>
             <p className="hint">
@@ -191,7 +232,7 @@ export function CollectionsTab({ session, collections, onChanged }: Props) {
                                             </li>
                                         ))}
                                     </ul>
-                                    {collection.myRole === 'MANAGER' && (
+                                    {collection.myRole === 'MANAGER' && (<>
                                         <div className="row">
                                             <input id="member-email" placeholder="email колеги"
                                                    value={memberForm.email}
@@ -204,8 +245,22 @@ export function CollectionsTab({ session, collections, onChanged }: Props) {
                                             </select>
                                             <button type="button" id="add-member-btn" className="secondary"
                                                     onClick={() => addMember(collection)}>Add</button>
+                                            {collection.keycloakGroup && <button type="button" id="suggest-members-btn" className="secondary"
+                                                    onClick={() => suggestMembers(collection)}>Suggest members</button>}
                                         </div>
-                                    )}
+                                        {suggestions.length > 0 && <div className="hint" id="keycloak-suggestions">
+                                            <p>Keycloak group <strong>{collection.keycloakGroup}</strong>: select members to provision explicitly.</p>
+                                            {suggestions.map((email) => <label key={email} className="row">
+                                                <input type="checkbox" checked={selectedSuggestions.includes(email)}
+                                                       onChange={(e) => setSelectedSuggestions(e.target.checked
+                                                           ? [...selectedSuggestions, email]
+                                                           : selectedSuggestions.filter((selected) => selected !== email))} />
+                                                {email}
+                                            </label>)}
+                                            <button type="button" className="secondary small" disabled={selectedSuggestions.length === 0}
+                                                    onClick={() => addSuggestedMembers(collection)}>Add selected</button>
+                                        </div>}
+                                    </>)}
                                 </div>
                             )}
                         </div>

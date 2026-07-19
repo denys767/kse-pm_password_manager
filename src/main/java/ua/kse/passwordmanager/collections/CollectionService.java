@@ -18,6 +18,7 @@ import ua.kse.passwordmanager.collections.CollectionDtos.MemberResponse;
 import ua.kse.passwordmanager.common.BadRequestException;
 import ua.kse.passwordmanager.common.ForbiddenException;
 import ua.kse.passwordmanager.common.NotFoundException;
+import ua.kse.passwordmanager.keycloak.KeycloakAdminClient;
 import ua.kse.passwordmanager.vault.PasswordItem;
 import ua.kse.passwordmanager.vault.PasswordItemRepository;
 
@@ -28,21 +29,24 @@ public class CollectionService {
     private final CollectionMemberRepository memberRepository;
     private final PasswordItemRepository itemRepository;
     private final AuditService auditService;
+    private final KeycloakAdminClient keycloakAdminClient;
 
     public CollectionService(CollectionRepository collectionRepository,
                              CollectionMemberRepository memberRepository,
                              PasswordItemRepository itemRepository,
-                             AuditService auditService) {
+                             AuditService auditService,
+                             KeycloakAdminClient keycloakAdminClient) {
         this.collectionRepository = collectionRepository;
         this.memberRepository = memberRepository;
         this.itemRepository = itemRepository;
         this.auditService = auditService;
+        this.keycloakAdminClient = keycloakAdminClient;
     }
 
     @Transactional
     public CollectionResponse create(CurrentUser user, CreateCollectionRequest request) {
         Collection collection = collectionRepository.save(
-                new Collection(request.name().trim(), user.email()));
+                new Collection(request.name().trim(), user.email(), normalizedOptional(request.keycloakGroup())));
         CollectionMember self = memberRepository.save(new CollectionMember(
                 collection, user.email(), CollectionRole.MANAGER,
                 request.wrappedKeyForSelf(), user.email()));
@@ -63,6 +67,32 @@ public class CollectionService {
         requireMembership(user, collectionId);
         return memberRepository.findByCollectionId(collectionId).stream()
                 .map(MemberResponse::from)
+                .toList();
+    }
+
+    /**
+     * Looks up a Keycloak group only after authorizing the manager. The returned
+     * emails are suggestions: adding each one still requires client-side key
+     * wrapping in {@link #addMember(CurrentUser, UUID, AddMemberRequest)}.
+     */
+    @Transactional(readOnly = true)
+    public List<String> keycloakSuggestions(CurrentUser user, UUID collectionId, String group) {
+        CollectionMember me = requireMembership(user, collectionId);
+        if (!me.getRole().canManageMembers()) {
+            throw new ForbiddenException("Only a manager can request member suggestions");
+        }
+        String normalizedGroup = normalizedOptional(group);
+        if (normalizedGroup == null) {
+            throw new BadRequestException("group is required");
+        }
+        var existing = memberRepository.findByCollectionId(collectionId).stream()
+                .map(member -> member.getMemberEmail().toLowerCase(Locale.ROOT))
+                .collect(Collectors.toSet());
+        return keycloakAdminClient.membersOfGroup(normalizedGroup).stream()
+                .map(email -> email.toLowerCase(Locale.ROOT))
+                .filter(email -> !existing.contains(email))
+                .distinct()
+                .sorted()
                 .toList();
     }
 
@@ -201,5 +231,12 @@ public class CollectionService {
         return memberRepository.findByCollectionIdAndMemberEmail(collectionId, user.email())
                 // Hide the collection's existence from non-members.
                 .orElseThrow(() -> new NotFoundException("Collection not found"));
+    }
+
+    private static String normalizedOptional(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        return value.trim();
     }
 }

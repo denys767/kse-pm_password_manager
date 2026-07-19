@@ -40,6 +40,21 @@
           }
         }
       ]
+    },
+    {
+      "clientId": "kse-pm-admin",
+      "name": "KSE Password Manager Admin API (read-only)",
+      "description": "Service account used only to suggest Keycloak group members for Collections.",
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": false,
+      "secret": "REPLACE_WITH_KEYCLOAK_ADMIN_CLIENT_SECRET",
+      "serviceAccountClientRoles": {
+        "realm-management": ["view-users"]
+      }
     }
   ],
   "identityProviders": [

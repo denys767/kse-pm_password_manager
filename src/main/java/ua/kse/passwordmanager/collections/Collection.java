@@ -32,6 +32,10 @@ public class Collection {
     @Column(nullable = false)
     private String ownerEmail;
 
+    /** Optional Keycloak group used only to suggest explicit members. */
+    @Column
+    private String keycloakGroup;
+
     @Column(nullable = false)
     private Instant createdAt;
 
@@ -41,9 +45,10 @@ public class Collection {
     protected Collection() {
     }
 
-    public Collection(String name, String ownerEmail) {
+    public Collection(String name, String ownerEmail, String keycloakGroup) {
         this.name = name;
         this.ownerEmail = ownerEmail;
+        this.keycloakGroup = keycloakGroup;
     }
 
     @PrePersist
@@ -71,6 +76,10 @@ public class Collection {
 
     public String getOwnerEmail() {
         return ownerEmail;
+    }
+
+    public String getKeycloakGroup() {
+        return keycloakGroup;
     }
 
     public Instant getCreatedAt() {

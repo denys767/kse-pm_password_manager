@@ -70,3 +70,52 @@ mvn spring-boot:run          # профіль за замовчуванням: P
 ```bash
 mvn spring-boot:run -Dspring-boot.run.profiles=dev   # H2 + X-Dev-User headers
 ```
+
+## Collections: read-only group suggestions
+
+`realm-export.json` містить confidential client `kse-pm-admin` з увімкненим
+service account і єдиною роллю `realm-management:view-users`. Перед імпортом/першим
+запуском замініть його `secret` плейсхолдер або після імпорту згенеруйте Client secret
+у **Clients → kse-pm-admin → Credentials** і передайте те саме значення застосунку:
+
+```bash
+export KEYCLOAK_ADMIN_CLIENT_SECRET='...'
+```
+
+Backend отримує access token через `client_credentials`, шукає group і читає її
+members через Admin REST API. Це **лише UX-підказка**: manager все одно явно вибирає
+email-и, а браузер обгортає collection key публічним ключем кожного вибраного
+користувача. Отже, додавання до Keycloak group не надає E2E-доступу автоматично.
+
+## Login/logout audit events: потрібен provider
+
+Висновок для образу `quay.io/keycloak/keycloak:26.0`: вбудована Event Listener SPI є,
+але в стандартній дистрибуції немає готового HTTP/webhook event listener, який можна
+просто увімкнути в realm. Офіційна документація описує Event Listener як SPI, а для
+додаткових provider-ів — розгортання JAR у `providers/` і `kc.sh build`; тому HTTP
+доставку не слід вважати функцією "з коробки". Див. [Keycloak Server Developer
+Guide](https://www.keycloak.org/docs/latest/server_development/#_events) та
+[provider deployment](https://www.keycloak.org/server/configuration-provider).
+
+Для live-середовища оберіть сумісний з Keycloak 26.x, перевірений security-review
+сторонній HTTP event listener або напишіть невеликий власний `EventListenerProvider`
+SPI. Власний SPI тут навмисно не додано без тесту на реальному Keycloak. Він має:
+
+1. Відправляти тільки `LOGIN`, `LOGIN_ERROR`, `LOGOUT` після commit події на
+   `http://app:8080/api/audit/keycloak-events` (не через nginx).
+2. Додавати header `X-Keycloak-Events-Secret` зі значенням `KEYCLOAK_EVENTS_SECRET`.
+3. Надсилати контракт endpoint-а: `{"type":"LOGIN","email":"user@kse.org.ua","details":"..."}`.
+   Стандартна Keycloak event-модель містить ID користувача, тож provider має безпечно
+   розв’язати його в email перед відправкою; endpoint навмисно не приймає довільний
+   user ID як actor email.
+4. Після встановлення provider JAR у `/opt/keycloak/providers/` виконати
+   `kc.sh build`, перезапустити Keycloak, а в **Realm settings → Events → Config**
+   увімкнути Save events, додати provider до Event listeners і вибрати ці три типи.
+
+`nginx/nginx.conf` повертає `404` для public `/api/audit/keycloak-events`; це
+обов’язково зберігає endpoint internal. У `docker-compose.prod.yml` обидва секрети
+`KEYCLOAK_ADMIN_CLIENT_SECRET` та `KEYCLOAK_EVENTS_SECRET` є обов’язковими.
+
+**Статус:** endpoint і детерміновані тести реалізовано, але live-доставка з Keycloak
+26.0, а також login/logout audit перевірка, ще не пройдені через недоступний Docker
+socket у поточному середовищі.
