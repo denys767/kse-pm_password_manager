@@ -63,7 +63,14 @@ export function oidcLogout(): void {
 }
 
 export function reauthenticateForVaultReset(): void {
-    keycloak?.login({ prompt: 'login', redirectUri: window.location.href });
+    sessionStorage.setItem('pm.vault-reset', '1');
+    keycloak?.login({ prompt: 'login', maxAge: 0, redirectUri: window.location.href });
+}
+
+export function consumeVaultResetIntent(): boolean {
+    const requested = sessionStorage.getItem('pm.vault-reset') === '1';
+    sessionStorage.removeItem('pm.vault-reset');
+    return requested;
 }
 
 async function createKeys(passphrase: string, force = false): Promise<VaultKeys> {

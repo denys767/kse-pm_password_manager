@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from './api';
-import { createVault, fetchConfig, initOidc, loadOrCreateKeys, oidcLogout, resetVault, setDevIdentity, VaultKeys } from './auth';
+import { consumeVaultResetIntent, createVault, fetchConfig, initOidc, loadOrCreateKeys, oidcLogout, resetVault, setDevIdentity, VaultKeys } from './auth';
 import { clearLocalItems } from './localItems';
 import { UnlockScreen } from './components/UnlockScreen';
 import { VaultTab } from './components/VaultTab';
@@ -29,6 +29,7 @@ export default function App() {
     const [fatal, setFatal] = useState<string | null>(null);
     const [bootstrapUser, setBootstrapUser] = useState<Me | null>(null);
     const [hasVault, setHasVault] = useState(true);
+    const [resetRequested, setResetRequested] = useState(false);
 
     useEffect(() => {
         fetchConfig()
@@ -38,6 +39,7 @@ export default function App() {
                     await initOidc(cfg);
                     const me = await api<Me>('/api/me');
                     setBootstrapUser(me);
+                    setResetRequested(consumeVaultResetIntent());
                     try { await api('/api/keys/me'); setHasVault(true); }
                     catch (e) { if ((e as { status?: number }).status === 404) setHasVault(false); else throw e; }
                 }
@@ -101,7 +103,7 @@ export default function App() {
     return (
         <div className="app-shell">
             <header className="topbar">
-                <div className="brand"><span className="brand-mark">K</span><span>KSE Password Manager</span><small>WORKSPACE</small></div>
+                <div className="brand"><span>KSE Password Manager</span><small>WORKSPACE</small></div>
                 <div className="header-right">
                     {session && <span id="user-badge">{session.user.email}</span>}
                     {session && <button id="lock-btn" className="secondary" onClick={lock}>Lock</button>}
@@ -111,7 +113,7 @@ export default function App() {
             </header>
 
             {!session && <UnlockScreen devMode={config.authMode === 'dev-headers'} user={bootstrapUser}
-                                      hasVault={hasVault} onUnlock={unlock} onCreate={create} onReset={recover} />}
+                                      hasVault={hasVault} startRecovery={resetRequested} onUnlock={unlock} onCreate={create} onReset={recover} />}
 
             {session && <div className="workspace-shell">
                 <aside className="sidebar">

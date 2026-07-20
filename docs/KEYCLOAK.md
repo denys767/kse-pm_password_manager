@@ -35,12 +35,18 @@ Keycloak завершує SSO-сесію та повертає на застос
 
 ## WebAuthn / passkey як другий фактор (Epic 7)
 
+> `realm-export.json` створює базовий realm, але не містить кастомного Browser
+> flow. Імпорт також не оновлює realm, який уже існує. Тому ці кроки потрібно
+> виконати у **кожному** запущеному Keycloak realm `kse-pm` вручну.
+
 У Keycloak Admin Console, realm `kse-pm`:
 
 1. **Authentication → Flows** → скопіюйте `browser` flow → у копії після
    Username/Password (у нашому випадку — після Identity Provider Redirector)
    додайте step **WebAuthn Authenticator** з requirement `Required` →
-   Bind flow як Browser flow.
+   У списку flow відкрийте **Action menu** (`⋮`) біля нового flow → **Bind flow** →
+   у полі **Browser Flow** виберіть цей flow і натисніть **Save**. У Keycloak 26
+   це не окрема вкладка `Bindings`.
 2. **Authentication → Required actions** → увімкніть **Webauthn Register**
    і позначте `Default action`, щоб кожен новий користувач реєстрував passkey
    при першому вході.

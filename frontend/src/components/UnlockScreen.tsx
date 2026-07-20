@@ -8,6 +8,7 @@ interface Props {
     devMode: boolean;
     user: Me | null;
     hasVault: boolean;
+    startRecovery: boolean;
     onUnlock: (passphrase: string, dev?: { email: string; roles: string; groups: string }) => Promise<void>;
     onCreate: (passphrase: string) => Promise<void>;
     onReset: (passphrase: string) => Promise<void>;
@@ -15,7 +16,7 @@ interface Props {
 
 type Impact = { allowed: boolean; ownedItemsToDelete: number; incomingSharesToRemove: number; membershipsToRemove: number; blockers: { kind: string; id: string; name: string; reason: string }[] };
 
-export function UnlockScreen({ devMode, user, hasVault, onUnlock, onCreate, onReset }: Props) {
+export function UnlockScreen({ devMode, user, hasVault, startRecovery, onUnlock, onCreate, onReset }: Props) {
     const [email, setEmail] = useState(''); const [roles, setRoles] = useState(''); const [groups, setGroups] = useState('');
     const [passphrase, setPassphrase] = useState(''); const [confirmation, setConfirmation] = useState('');
     const [assessment, setAssessment] = useState<PassphraseAssessment | null>(null);
@@ -52,6 +53,20 @@ export function UnlockScreen({ devMode, user, hasVault, onUnlock, onCreate, onRe
         catch (e) { setError(`${(e as Error).message}. Після повторного входу спробуйте ще раз.`); }
     }
 
+    useEffect(() => {
+        if (startRecovery && hasVault && !devMode) beginRecovery();
+        // The intent is consumed by App; this component only starts the recovery screen once.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [startRecovery]);
+
+    function requestRecovery() {
+        if (devMode) {
+            void beginRecovery();
+        } else {
+            reauthenticateForVaultReset();
+        }
+    }
+
     async function transfer(blocker: Impact['blockers'][number]) {
         const successorEmail = successors[blocker.id]?.trim();
         if (!successorEmail) { setError('Вкажіть email нового власника.'); return; }
@@ -63,7 +78,7 @@ export function UnlockScreen({ devMode, user, hasVault, onUnlock, onCreate, onRe
     }
 
     return <section id="unlock-screen" className="unlock-layout">
-        <div className="unlock-brand"><span className="brand-mark">K</span><div><strong>KSE Password Manager</strong><span>Private team vault</span></div></div>
+        <div className="unlock-brand"><div><strong>KSE Password Manager</strong><span>Private team vault</span></div></div>
         <div className="card narrow unlock-card">
             <p className="eyebrow">{creating ? 'ЗАХИЩЕНИЙ VAULT' : 'ПОВЕРНЕННЯ ДО VAULT'}</p>
             <h1>{recovering ? 'Створіть новий Vault' : !hasVault ? 'Створіть Vault Passphrase' : 'Розблокуйте Vault'}</h1>
@@ -77,8 +92,8 @@ export function UnlockScreen({ devMode, user, hasVault, onUnlock, onCreate, onRe
                 <button id="unlock-btn" type="submit" disabled={busy}>{busy ? 'Зачекайте…' : recovering ? 'Скинути та створити Vault' : !hasVault ? 'Створити Vault' : 'Розблокувати Vault'}</button>
                 {error && <p id="unlock-error" className="error">{error}</p>}
             </form>
-            {hasVault && !recovering && <button className="linklike recovery-link" onClick={beginRecovery}>Забули Vault Passphrase?</button>}
-            {recovering && <div className="recovery-box">{impact?.blockers.length ? <><strong>Спершу передайте командні ресурси</strong><p>Новий власник уже має бути користувачем із доступом до запису або членом колекції.</p>{impact.blockers.map((b) => <div className="transfer-row" key={b.id}><span>{b.name} <small>({b.reason})</small></span><input type="email" placeholder="new.owner@kse.org.ua" value={successors[b.id] || ''} onChange={(e) => setSuccessors((s) => ({ ...s, [b.id]: e.target.value }))} /><button type="button" className="secondary small" disabled={busy} onClick={() => transfer(b)}>Передати</button></div>)}<p>Ця дія потребує свіжого SSO-входу.</p><button type="button" className="secondary" onClick={reauthenticateForVaultReset}>Повторно увійти через SSO</button></> : <><strong>Незворотна дія</strong><p>Буде видалено {impact?.ownedItemsToDelete ?? 0} ваших записів і відкликано доступи. Team resources не видаляються.</p><p>Перед підтвердженням повторно увійдіть через SSO — це захищає від випадкового reset.</p><button type="button" className="secondary" onClick={reauthenticateForVaultReset}>Повторно увійти через SSO</button></>}</div>}
+            {hasVault && !recovering && <button className="linklike recovery-link" onClick={requestRecovery}>Забули Vault Passphrase?</button>}
+            {recovering && <div className="recovery-box">{impact?.blockers.length ? <><strong>Спершу передайте командні ресурси</strong><p>Новий власник уже має бути користувачем із доступом до запису або членом колекції.</p>{impact.blockers.map((b) => <div className="transfer-row" key={b.id}><span>{b.name} <small>({b.reason})</small></span><input type="email" placeholder="new.owner@kse.org.ua" value={successors[b.id] || ''} onChange={(e) => setSuccessors((s) => ({ ...s, [b.id]: e.target.value }))} /><button type="button" className="secondary small" disabled={busy} onClick={() => transfer(b)}>Передати</button></div>)}</> : <><strong>Незворотна дія</strong><p>Буде видалено {impact?.ownedItemsToDelete ?? 0} ваших записів і відкликано доступи. Team resources не видаляються.</p></>}</div>}
         </div>
     </section>;
 }
