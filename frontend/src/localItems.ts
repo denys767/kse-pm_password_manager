@@ -16,3 +16,7 @@ export function loadLocalItems(email: string): PasswordItem[] {
 export function saveLocalItems(email: string, items: PasswordItem[]): void {
     localStorage.setItem(key(email), JSON.stringify(items));
 }
+
+export function clearLocalItems(email: string): void {
+    localStorage.removeItem(key(email));
+}

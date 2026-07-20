@@ -14,4 +14,6 @@ public interface ItemKeyRepository extends JpaRepository<ItemKey, UUID> {
     void deleteByItemId(UUID itemId);
 
     void deleteByItemIdAndUserEmail(UUID itemId, String userEmail);
+
+    void deleteByUserEmail(String userEmail);
 }

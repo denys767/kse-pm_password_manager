@@ -78,6 +78,10 @@ public class Collection {
         return ownerEmail;
     }
 
+    public void setOwnerEmail(String ownerEmail) {
+        this.ownerEmail = ownerEmail;
+    }
+
     public String getKeycloakGroup() {
         return keycloakGroup;
     }

@@ -15,4 +15,6 @@ public interface PermissionRepository extends JpaRepository<Permission, UUID> {
     Optional<Permission> findByIdAndItemId(UUID id, UUID itemId);
 
     void deleteByItemId(UUID itemId);
+
+    List<Permission> findByGranteeTypeAndGrantee(GranteeType granteeType, String grantee);
 }

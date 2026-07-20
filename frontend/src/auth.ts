@@ -31,7 +31,15 @@ export async function initOidc(config: FrontendConfig): Promise<void> {
         realm: config.realm!,
         clientId: config.clientId!,
     });
-    await keycloak.init({ onLoad: 'login-required', pkceMethod: 'S256' });
+    await keycloak.init({
+        onLoad: 'login-required',
+        pkceMethod: 'S256',
+        // The hidden third-party-cookie iframe can time out under modern browser
+        // privacy policies. This app always requires an interactive login and
+        // refreshes its token before API calls, so the iframe session check is
+        // unnecessary.
+        checkLoginIframe: false,
+    });
     setAuthHeaderProvider(async () => {
         try {
             await keycloak!.updateToken(30);
@@ -54,6 +62,40 @@ export function oidcLogout(): void {
     keycloak?.logout({ redirectUri: window.location.origin });
 }
 
+export function reauthenticateForVaultReset(): void {
+    keycloak?.login({ prompt: 'login', redirectUri: window.location.href });
+}
+
+async function createKeys(passphrase: string, force = false): Promise<VaultKeys> {
+    const salt = pmc.generateSalt();
+    const kek = await pmc.deriveKek(passphrase, salt, 'ARGON2ID');
+    const keypair = await pmc.generateUserKeypair();
+    const encPriv = await pmc.exportEncryptedPrivateKey(keypair.privateKey, kek);
+    const publicKeyB64 = await pmc.exportPublicKey(keypair.publicKey);
+    const dto: UserKeysDto = {
+        publicKey: publicKeyB64, encryptedPrivateKey: encPriv.ct, privateKeyIv: encPriv.iv,
+        kdfSalt: salt, kdfAlgorithm: 'ARGON2ID',
+    };
+    await api(`/api/keys/me${force ? '?force=true' : ''}`, { method: 'PUT', body: JSON.stringify(dto) });
+    return { kek, privateKey: keypair.privateKey, publicKey: await pmc.importPublicKey(publicKeyB64) };
+}
+
+export async function createVault(passphrase: string): Promise<VaultKeys> {
+    return createKeys(passphrase);
+}
+
+export async function resetVault(passphrase: string): Promise<VaultKeys> {
+    const salt = pmc.generateSalt();
+    const kek = await pmc.deriveKek(passphrase, salt, 'ARGON2ID');
+    const keypair = await pmc.generateUserKeypair();
+    const encrypted = await pmc.exportEncryptedPrivateKey(keypair.privateKey, kek);
+    const publicKey = await pmc.exportPublicKey(keypair.publicKey);
+    await api('/api/vault/reset', { method: 'POST', body: JSON.stringify({ confirmation: 'RESET VAULT', keys: {
+        publicKey, encryptedPrivateKey: encrypted.ct, privateKeyIv: encrypted.iv, kdfSalt: salt, kdfAlgorithm: 'ARGON2ID',
+    } }) });
+    return { kek, privateKey: keypair.privateKey, publicKey: await pmc.importPublicKey(publicKey) };
+}
+
 /**
  * First unlock generates the keypair and uploads it (private key encrypted
  * with the KEK); later unlocks download and decrypt it — a wrong passphrase
@@ -70,23 +112,7 @@ export async function loadOrCreateKeys(passphrase: string): Promise<VaultKeys> {
         }
     }
     if (stored === null) {
-        // Every new keypair uses Argon2id — see crypto.ts for why.
-        const salt = pmc.generateSalt();
-        const kek = await pmc.deriveKek(passphrase, salt, 'ARGON2ID');
-        const keypair = await pmc.generateUserKeypair();
-        const encPriv = await pmc.exportEncryptedPrivateKey(keypair.privateKey, kek);
-        const publicKeyB64 = await pmc.exportPublicKey(keypair.publicKey);
-        await api('/api/keys/me', {
-            method: 'PUT',
-            body: JSON.stringify({
-                publicKey: publicKeyB64,
-                encryptedPrivateKey: encPriv.ct,
-                privateKeyIv: encPriv.iv,
-                kdfSalt: salt,
-                kdfAlgorithm: 'ARGON2ID',
-            } satisfies UserKeysDto),
-        });
-        return { kek, privateKey: keypair.privateKey, publicKey: await pmc.importPublicKey(publicKeyB64) };
+        return createVault(passphrase);
     }
     // Existing keypairs keep unlocking with whichever KDF they were registered
     // with — there is no forced migration (see crypto.ts).

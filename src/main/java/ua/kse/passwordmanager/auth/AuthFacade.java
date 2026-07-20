@@ -2,6 +2,7 @@ package ua.kse.passwordmanager.auth;
 
 import java.util.List;
 import java.util.Set;
+import java.time.Instant;
 import java.util.stream.Collectors;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.GrantedAuthority;
@@ -39,6 +40,21 @@ public class AuthFacade {
             return new CurrentUser(email.toLowerCase(), name, roles, groups);
         }
         throw new IllegalStateException("Unsupported authentication type: " + auth.getClass());
+    }
+
+    /** Destructive vault recovery requires a recent interactive SSO login. */
+    public boolean hasRecentAuthentication() {
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        if (auth != null && auth.getPrincipal() instanceof CurrentUser) {
+            return true; // Explicitly insecure development profile.
+        }
+        if (auth instanceof JwtAuthenticationToken jwtAuth) {
+            Object authTime = jwtAuth.getToken().getClaim("auth_time");
+            if (authTime instanceof Number seconds) {
+                return Instant.now().minusSeconds(300).isBefore(Instant.ofEpochSecond(seconds.longValue()));
+            }
+        }
+        return false;
     }
 
     private static Set<String> rolesFrom(Iterable<? extends GrantedAuthority> authorities) {

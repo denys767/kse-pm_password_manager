@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from './api';
-import { fetchConfig, initOidc, loadOrCreateKeys, oidcLogout, setDevIdentity, VaultKeys } from './auth';
+import { createVault, fetchConfig, initOidc, loadOrCreateKeys, oidcLogout, resetVault, setDevIdentity, VaultKeys } from './auth';
+import { clearLocalItems } from './localItems';
 import { UnlockScreen } from './components/UnlockScreen';
 import { VaultTab } from './components/VaultTab';
 import { CollectionsTab } from './components/CollectionsTab';
@@ -26,6 +27,8 @@ export default function App() {
     });
     const [tab, setTab] = useState<Tab>('vault');
     const [fatal, setFatal] = useState<string | null>(null);
+    const [bootstrapUser, setBootstrapUser] = useState<Me | null>(null);
+    const [hasVault, setHasVault] = useState(true);
 
     useEffect(() => {
         fetchConfig()
@@ -33,6 +36,10 @@ export default function App() {
                 setConfig(cfg);
                 if (cfg.authMode === 'oidc') {
                     await initOidc(cfg);
+                    const me = await api<Me>('/api/me');
+                    setBootstrapUser(me);
+                    try { await api('/api/keys/me'); setHasVault(true); }
+                    catch (e) { if ((e as { status?: number }).status === 404) setHasVault(false); else throw e; }
                 }
                 setOidcReady(true);
             })
@@ -53,6 +60,20 @@ export default function App() {
         setSettings(await api<Settings>('/api/settings'));
         await refreshCollections();
     }, [refreshCollections]);
+
+    const create = useCallback(async (passphrase: string) => {
+        const user = bootstrapUser ?? await api<Me>('/api/me');
+        const keys = await createVault(passphrase);
+        setSession({ user, keys }); setHasVault(true);
+        setSettings(await api<Settings>('/api/settings')); await refreshCollections();
+    }, [bootstrapUser, refreshCollections]);
+
+    const recover = useCallback(async (passphrase: string) => {
+        const user = bootstrapUser ?? await api<Me>('/api/me');
+        const keys = await resetVault(passphrase);
+        clearLocalItems(user.email); setSession({ user, keys }); setHasVault(true);
+        setCollections([]); setSettings(await api<Settings>('/api/settings'));
+    }, [bootstrapUser]);
 
     const lock = useCallback(() => {
         setSession(null);
@@ -78,9 +99,9 @@ export default function App() {
         && (session.user.roles.includes('ADMIN') || session.user.roles.includes('SECURITY'));
 
     return (
-        <>
-            <header>
-                <div className="brand">🔐 KSE Password Manager</div>
+        <div className="app-shell">
+            <header className="topbar">
+                <div className="brand"><span className="brand-mark">K</span><span>KSE Password Manager</span><small>WORKSPACE</small></div>
                 <div className="header-right">
                     {session && <span id="user-badge">{session.user.email}</span>}
                     {session && <button id="lock-btn" className="secondary" onClick={lock}>Lock</button>}
@@ -89,23 +110,19 @@ export default function App() {
                 </div>
             </header>
 
-            {!session && <UnlockScreen devMode={config.authMode === 'dev-headers'} onUnlock={unlock} />}
+            {!session && <UnlockScreen devMode={config.authMode === 'dev-headers'} user={bootstrapUser}
+                                      hasVault={hasVault} onUnlock={unlock} onCreate={create} onReset={recover} />}
 
-            {session && (
-                <main id="app">
-                    <nav className="tabs">
-                        <button className={`tab ${tab === 'vault' ? 'active' : ''}`}
-                                onClick={() => setTab('vault')}>Vault</button>
-                        <button id="collections-tab-btn"
-                                className={`tab ${tab === 'collections' ? 'active' : ''}`}
-                                onClick={() => setTab('collections')}>Collections</button>
-                        {isAuditor && (
-                            <button id="audit-tab-btn" className={`tab ${tab === 'audit' ? 'active' : ''}`}
-                                    onClick={() => setTab('audit')}>Audit log</button>
-                        )}
-                        <button className={`tab ${tab === 'settings' ? 'active' : ''}`}
-                                onClick={() => setTab('settings')}>Settings</button>
-                    </nav>
+            {session && <div className="workspace-shell">
+                <aside className="sidebar">
+                    <p className="sidebar-label">VAULT</p>
+                    <button className={`nav-item ${tab === 'vault' ? 'active' : ''}`} onClick={() => setTab('vault')}>⌂ <span>Усі записи</span></button>
+                    <button id="collections-tab-btn" className={`nav-item ${tab === 'collections' ? 'active' : ''}`} onClick={() => setTab('collections')}>▦ <span>Колекції</span></button>
+                    {isAuditor && <><p className="sidebar-label">SECURITY</p><button id="audit-tab-btn" className={`nav-item ${tab === 'audit' ? 'active' : ''}`} onClick={() => setTab('audit')}>◷ <span>Активність</span></button></>}
+                    <div className="sidebar-bottom"><button className={`nav-item ${tab === 'settings' ? 'active' : ''}`} onClick={() => setTab('settings')}>⚙ <span>Налаштування</span></button></div>
+                </aside>
+                <main id="app" className="workspace-main">
+                    <div className="page-heading"><div><p className="eyebrow">KSE WORKSPACE</p><h1>{tab === 'vault' ? 'Усі записи' : tab === 'collections' ? 'Колекції' : tab === 'audit' ? 'Активність' : 'Налаштування'}</h1></div></div>
                     {tab === 'vault' && (
                         <VaultTab session={session} settings={settings} collections={collections} />
                     )}
@@ -116,7 +133,7 @@ export default function App() {
                     {tab === 'audit' && <AuditTab />}
                     {tab === 'settings' && <SettingsTab settings={settings} onSaved={setSettings} />}
                 </main>
-            )}
-        </>
+            </div>}
+        </div>
     );
 }

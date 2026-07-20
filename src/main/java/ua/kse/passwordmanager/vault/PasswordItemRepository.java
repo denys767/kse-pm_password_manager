@@ -11,6 +11,8 @@ public interface PasswordItemRepository extends JpaRepository<PasswordItem, UUID
 
     List<PasswordItem> findByOwnerEmailOrderByNameAsc(String ownerEmail);
 
+    List<PasswordItem> findByOwnerEmail(String ownerEmail);
+
     List<PasswordItem> findByCollectionIdInOrderByNameAsc(Collection<UUID> collectionIds);
 
     long countByCollectionId(UUID collectionId);
