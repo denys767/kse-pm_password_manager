@@ -122,6 +122,27 @@ class VaultApiIntegrationTest {
     }
 
     @Test
+    void storesOnlyTemplateDiscriminatorAndReturnsIt() throws Exception {
+        String body = mockMvc.perform(as(post("/api/vault/items"), ALICE)
+                        .content("""
+                                {"name":"Deploy key","encryptedPassword":"Y2lwaGVydGV4dA==",
+                                 "passwordIv":"aXZpdml2aXZpdg==",
+                                 "encryptedNotes":"ZW5jcnlwdGVkLXBheWxvYWQ=","notesIv":"aXY=",
+                                 "type":"SSH_KEY","itemType":"PERSONAL","syncMode":"SERVER_SYNCED",
+                                 "wrappedKey":"b3duZXJXcmFwcGVkS2V5"}
+                                """))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.type").value("SSH_KEY"))
+                .andReturn().getResponse().getContentAsString();
+        String id = objectMapper.readTree(body).get("id").asText();
+
+        mockMvc.perform(as(get("/api/vault/items/" + id), ALICE))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.type").value("SSH_KEY"))
+                .andExpect(jsonPath("$.encryptedNotes").value("ZW5jcnlwdGVkLXBheWxvYWQ="));
+    }
+
+    @Test
     void createRequiresWrappedKey() throws Exception {
         mockMvc.perform(as(post("/api/vault/items"), ALICE)
                         .content("""
