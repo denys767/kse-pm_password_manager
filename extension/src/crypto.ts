@@ -48,3 +48,48 @@ export async function unwrapItemKeyWithKek(ctB64: string, ivB64: string, kek: Cr
     return crypto.subtle.importKey('raw', await aesDecrypt(kek, ctB64, ivB64), { name: 'AES-GCM' }, true, ['encrypt', 'decrypt']);
 }
 export async function decryptField(itemKey: CryptoKey, ctB64: string, ivB64: string): Promise<string> { return td.decode(await aesDecrypt(itemKey, ctB64, ivB64)); }
+export async function encryptField(itemKey: CryptoKey, plaintext: string): Promise<Encrypted> {
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, itemKey, te.encode(plaintext));
+    return { ct: b64(ct), iv: b64(iv) };
+}
+export async function generateItemKey(): Promise<CryptoKey> {
+    return crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
+}
+export async function wrapItemKey(itemKey: CryptoKey, publicKey: CryptoKey): Promise<string> {
+    const raw = await crypto.subtle.exportKey('raw', itemKey);
+    return b64(await crypto.subtle.encrypt({ name: 'RSA-OAEP' }, publicKey, raw));
+}
+
+// ------------------------------------------------------------------ TOTP ---
+
+/** Same RFC 6238 implementation as frontend/src/crypto.ts — kept in sync manually. */
+export function decodeTotpSeed(seedOrUri: string): Uint8Array<ArrayBuffer> {
+    let seed = seedOrUri.trim();
+    if (seed.toLowerCase().startsWith('otpauth://')) {
+        try { seed = new URL(seed).searchParams.get('secret') ?? ''; } catch { seed = ''; }
+    }
+    seed = seed.replace(/[\s-]/g, '').replace(/=+$/, '').toUpperCase();
+    if (!seed || !/^[A-Z2-7]+$/.test(seed)) {
+        throw new Error('TOTP seed має бути Base32 або otpauth URI.');
+    }
+    let bits = 0; let value = 0;
+    const bytes: number[] = [];
+    for (const character of seed) {
+        value = (value << 5) | 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'.indexOf(character);
+        bits += 5;
+        if (bits >= 8) { bytes.push((value >>> (bits - 8)) & 0xff); bits -= 8; }
+    }
+    return new Uint8Array(bytes);
+}
+export async function generateTotp(seedOrUri: string, timestamp = Date.now()): Promise<string> {
+    const key = await crypto.subtle.importKey('raw', decodeTotpSeed(seedOrUri), { name: 'HMAC', hash: 'SHA-1' }, false, ['sign']);
+    const counter = Math.floor(timestamp / 30_000);
+    const message = new Uint8Array(8);
+    let remaining = counter;
+    for (let i = 7; i >= 0; i--) { message[i] = remaining & 0xff; remaining = Math.floor(remaining / 256); }
+    const mac = new Uint8Array(await crypto.subtle.sign('HMAC', key, message));
+    const offset = mac[mac.length - 1] & 0x0f;
+    const value = ((mac[offset] & 0x7f) << 24) | (mac[offset + 1] << 16) | (mac[offset + 2] << 8) | mac[offset + 3];
+    return String(value % 1_000_000).padStart(6, '0');
+}

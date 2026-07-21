@@ -34,6 +34,11 @@ public class AllowedKeycloakGroupsController {
     @PreAuthorize("hasRole('ADMIN')")
     public List<String> allowlist() { return groups.allowlist(); }
 
+    /** Every group that exists in Keycloak right now, so an admin can pick a name instead of typing it blind. */
+    @GetMapping("/api/admin/collection-groups/keycloak")
+    @PreAuthorize("hasRole('ADMIN')")
+    public List<String> keycloakGroups() { return groups.keycloakGroups(); }
+
     @PostMapping("/api/admin/collection-groups")
     @PreAuthorize("hasRole('ADMIN')")
     @ResponseStatus(HttpStatus.CREATED)

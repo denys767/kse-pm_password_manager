@@ -206,6 +206,22 @@ export async function decryptExternalShare<T>(fragmentKey: string, encryptedPack
 
 // ------------------------------------------------------------------ TOTP ---
 
+/**
+ * Builds an otpauth:// URI for rendering as a QR code so a phone authenticator
+ * (Google Authenticator, Authy, etc.) can scan and hold the same secret. If the
+ * stored value is already a full otpauth URI, it's reused as-is; otherwise a
+ * fresh URI is built around the normalized Base32 secret. Never leaves the browser.
+ */
+export function buildOtpAuthUri(seedOrUri: string, accountLabel: string, issuer = 'KSE Password Manager'): string {
+    const trimmed = seedOrUri.trim();
+    if (trimmed.toLowerCase().startsWith('otpauth://')) {
+        return trimmed;
+    }
+    const secret = trimmed.replace(/[\s-]/g, '').replace(/=+$/, '').toUpperCase();
+    const label = `${encodeURIComponent(issuer)}:${encodeURIComponent(accountLabel || 'account')}`;
+    return `otpauth://totp/${label}?secret=${secret}&issuer=${encodeURIComponent(issuer)}&algorithm=SHA1&digits=6&period=30`;
+}
+
 /** Decode a Base32 seed locally. Accepts a copied otpauth URI as a convenience. */
 export function decodeTotpSeed(seedOrUri: string): Uint8Array<ArrayBuffer> {
     let seed = seedOrUri.trim();

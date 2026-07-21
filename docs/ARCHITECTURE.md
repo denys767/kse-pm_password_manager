@@ -94,7 +94,7 @@ Reverse proxy (nginx / traefik — TLS termination, prod)
 | Компрометація БД / бекап | Паролі зашифровані на клієнті AES-GCM; сервер не має ключа |
 | Компрометація backend | Те саме: plaintext секрети через backend не проходять |
 | Пересилання паролів у чатах | Sharing через permissions + revoke, все в audit log |
-| Викрадений акаунт Google | WebAuthn/passkey як другий фактор у Keycloak |
+| Викрадений акаунт Google | Vault Passphrase (client-side KEK) — окремий фактор поза Google/Keycloak. Додатково: passkey — обов'язковий required action при першому вході нового акаунту (не при кожному наступному — спроба зробити його 2FA на кожен вхід через post broker login flow зламала створення нових акаунтів і була відкочена, див. KEYCLOAK.md). Наявні користувачі, залогінені до того, як ця вимога стала default, лишаються без нього, доки не зареєструють добровільно |
 | Insider з роллю admin | Admin бачить audit log, але не може розшифрувати записи |
 | Викрадений пристрій | Vault замкнено passphrase; local-only записи зашифровані в localStorage |
 | Clipboard sniffing | Автоочищення clipboard через N секунд (налаштовується) |
@@ -104,6 +104,11 @@ Reverse proxy (nginx / traefik — TLS termination, prod)
 ## Потік автентифікації
 
 Користувач → застосунок → redirect на Keycloak → "Sign in with Google" → Google Workspace
-підтверджує особу → Keycloak створює сесію, пропонує зареєструвати passkey (required action)
-→ видає JWT → SPA викликає API з `Authorization: Bearer <token>` → Spring Boot валідує підпис,
-issuer і мапить realm roles + groups.
+підтверджує особу → якщо це **новий** користувач, required action одразу змушує зареєструвати
+passkey (`webauthn-register-passwordless`, default required action), перш ніж Keycloak створить
+сесію → видає JWT → SPA викликає API з `Authorization: Bearer <token>` → Spring Boot валідує
+підпис, issuer і мапить realm roles + groups. Passkey зараз перевіряється лише при реєстрації,
+не повторно при кожному наступному вході (спроба зробити його 2FA на кожен вхід через post
+broker login flow ламала створення нових акаунтів — див. KEYCLOAK.md). Наявні користувачі,
+залогінені до того, як ця вимога стала default, самі вирішують, чи реєструвати passkey через
+Account Console.

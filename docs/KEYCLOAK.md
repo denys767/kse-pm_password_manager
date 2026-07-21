@@ -35,6 +35,50 @@ Keycloak завершує SSO-сесію та повертає на застос
 
 ## WebAuthn / passkey як другий фактор (Epic 7)
 
+> **Поточний стан входу (2026-07-21):** `browser-passwordless forms` (username
+> + REQUIRED WebAuthn, без жодного fallback) лишається вимкненим (`DISABLED`) як
+> top-level execution — цей username-крок дав глухий кут "We are sorry... Cannot
+> login, credential setup required" для будь-кого без passkey, тож єдиний шлях
+> входу — **Google SSO** (`identity-provider-redirector` з `authenticatorConfig`
+> `google-auto-redirect`, логін-сторінка одразу редіректить на Google).
+>
+> **Реєстрація passkey знову обов'язкова для нових користувачів**
+> (`webauthn-register-passwordless`: `defaultAction: true`). Required actions в
+> Keycloak виконуються одразу після *будь-якої* успішної автентифікації,
+> незалежно від того, який step у flow її забезпечив — тобто після першого
+> входу через Google SSO новий користувач одразу отримує екран реєстрації
+> passkey, перш ніж потрапити в застосунок. Це не залежить від того, що
+> username+webauthn-форма для логіну вимкнена: required action — окремий
+> механізм, що спрацьовує вже після успішної Google-автентифікації.
+> Наявні користувачі, що вже логінились раніше (коли `defaultAction` був
+> `false`), нічого в черзі не мають і passkey реєструють лише добровільно
+> через Account Console — required action не проставляється заднім числом.
+>
+> **Спроба зробити passkey 2FA на кожному вході — відкочена (2026-07-21).**
+> Пробували `postBrokerLoginFlowAlias` на Google IdP з conditional subflow
+> (`Condition - user configured` → `WebAuthn Passwordless Authenticator`,
+> щоб вимагати passkey лише в тих, хто вже його зареєстрував). **Зламало
+> створення нових акаунтів**: під час першого логіну нового користувача
+> (коли ще навіть просить Last Name у "First Broker Login" — Google-профіль
+> без прізвища) `postBrokerLoginGet`/`brokerLoginFlow` виконується з
+> `userId="null"` — локального Keycloak-юзера ще не існує на цьому етапі,
+> тож `Condition - user configured` не може коректно визначити "немає
+> credential" і НЕ скіпає subflow; далі `webauthn-authenticator-passwordless`
+> падає з `AuthenticationFlowException` → те саме "Cannot login, credential
+> setup required", але тепер для НОВИХ акаунтів під час створення. Підтверджено
+> живими логами Keycloak (`IDENTITY_PROVIDER_POST_LOGIN_ERROR`,
+> `error="invalid_user_credentials"`, `userId="null"`). Post Broker Login Flow
+> у Keycloak 26 виконується до завершення First Broker Login (лінкування/
+> створення юзера), тому будь-яка умова, що читає credential-стан
+> користувача, там ненадійна для щойно створених акаунтів. `postBrokerLoginFlowAlias`
+> знято з Google IdP, flow `post-broker-passkey`/`passkey-if-configured`
+> видалені. Passkey зараз перевіряється **лише** через required action при
+> першому вході (реєстрація), не як повторна 2FA-перевірка на кожному
+> наступному вході — цього наразі свідомо не робимо, доки не знайдеться
+> надійніший механізм (можливий напрямок: власний Keycloak SPI/authenticator
+> замість вбудованого `conditional-user-configured`, що явно перевіряє
+> `context.getUser() != null` перед оцінкою умови).
+
 > `realm-export.json` створює базовий realm, але не містить кастомного Browser
 > flow. Імпорт також не оновлює realm, який уже існує. Тому ці кроки потрібно
 > виконати у **кожному** запущеному Keycloak realm `kse-pm` вручну.
@@ -47,9 +91,17 @@ Keycloak завершує SSO-сесію та повертає на застос
    У списку flow відкрийте **Action menu** (`⋮`) біля нового flow → **Bind flow** →
    у полі **Browser Flow** виберіть цей flow і натисніть **Save**. У Keycloak 26
    це не окрема вкладка `Bindings`.
-2. **Authentication → Required actions** → увімкніть **Webauthn Register**
-   і позначте `Default action`, щоб кожен новий користувач реєстрував passkey
-   при першому вході.
+2. **Authentication → Required actions** → увімкніть **Webauthn Register
+   Passwordless** і позначте `Default action` — кожен новий користувач
+   реєструє passkey одразу після першого входу через Google SSO, перш ніж
+   потрапити в застосунок. `realm-export.json` вже імпортує це так
+   (`"enabled": true, "defaultAction": true`). Наявні користувачі, що
+   логінились ще до цього, нічого в черзі не мають (required action не
+   проставляється заднім числом) — вони реєструють passkey добровільно
+   через Account Console (`Signing in → Set up passkey`). Посилання на
+   Account Console (`{keycloakUrl}/realms/{realm}/account/`) не треба шукати
+   вручну — воно в топбарі застосунку ("Account Console") і в Налаштуваннях
+   ("Відкрити Account Console"), обидва читають адресу з `/api/config`.
 3. **Authentication → Policies → WebAuthn Policy**: Relying Party Name —
    `KSE Password Manager`, User Verification Requirement — `preferred`.
 4. Fallback: **Recovery Authentication Code (recovery codes)** як альтернативний

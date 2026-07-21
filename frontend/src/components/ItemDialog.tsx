@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useRef, useState } from 'react';
+import qrcode from 'qrcode-generator';
 import { api, ApiError } from '../api';
 import * as pmc from '../crypto';
 import { unwrapCollectionKey, unwrapItemKeyFor } from '../itemKeys';
@@ -6,6 +7,7 @@ import { loadLocalItems, saveLocalItems } from '../localItems';
 import { estimateStrength, generatePassword, hibpBreachCount } from '../passwords';
 import { emptyPayload, parsePayload, serializePayload } from '../payload';
 import { encryptShareSnapshot } from '../externalShare';
+import { IconCheck, IconEye, IconEyeOff, IconRefresh, IconUser, IconUsers, IconWarning } from './Icons';
 import type { Session } from '../App';
 import type { Collection, ItemVersion, PasswordItem, Permission, SecretType, Settings } from '../types';
 
@@ -58,11 +60,12 @@ export function ItemDialog({ session, settings, collections, item, onClose }: Pr
     const [showPassword, setShowPassword] = useState(false);
     const [copyLabel, setCopyLabel] = useState('Copy');
     const [loaded, setLoaded] = useState(item === null);
-    const [hibpStatus, setHibpStatus] = useState<string | null>(null);
+    const [hibpStatus, setHibpStatus] = useState<{ kind: 'checking' | 'clean' | 'breached' | 'error'; message: string } | null>(null);
     const [versions, setVersions] = useState<ItemVersion[] | null>(null);
     const [collectionSel, setCollectionSel] = useState<string>(item?.collectionId ?? '');
     const [totpCode, setTotpCode] = useState('');
     const [totpSeconds, setTotpSeconds] = useState(30);
+    const [totpQr, setTotpQr] = useState<string | null>(null);
     const [externalTtl, setExternalTtl] = useState('3600');
     const [externalOneTime, setExternalOneTime] = useState(false);
     const [externalLink, setExternalLink] = useState<{ id: string; url: string } | null>(null);
@@ -132,7 +135,27 @@ export function ItemDialog({ session, settings, collections, item, onClose }: Pr
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
+    /** Debounced auto-check: HIBP k-anonymity lookup fires shortly after typing stops. */
     useEffect(() => {
+        if (fields.secretType !== 'LOGIN' || !fields.password) {
+            setHibpStatus(null);
+            return;
+        }
+        let cancelled = false;
+        setHibpStatus({ kind: 'checking', message: 'Перевіряю…' });
+        const timer = window.setTimeout(() => {
+            hibpBreachCount(fields.password).then((count) => {
+                if (cancelled) return;
+                setHibpStatus(count === 0
+                    ? { kind: 'clean', message: 'Не знайдено у відомих витоках.' }
+                    : { kind: 'breached', message: `Знайдено у витоках ${count.toLocaleString()} разів — змініть пароль!` });
+            }).catch((e: Error) => { if (!cancelled) setHibpStatus({ kind: 'error', message: e.message }); });
+        }, 600);
+        return () => { cancelled = true; window.clearTimeout(timer); };
+    }, [fields.secretType, fields.password]);
+
+    useEffect(() => {
+        setTotpQr(null);
         if (fields.secretType !== 'LOGIN' || !fields.totpSeed) {
             setTotpCode('');
             return;
@@ -341,6 +364,19 @@ export function ItemDialog({ session, settings, collections, item, onClose }: Pr
         await navigator.clipboard.writeText(totpCode);
     }
 
+    /** Renders the same seed as an otpauth QR so a phone authenticator can scan and hold it too. */
+    function toggleTotpQr() {
+        if (totpQr) {
+            setTotpQr(null);
+            return;
+        }
+        const uri = pmc.buildOtpAuthUri(fields.totpSeed, fields.username || fields.name);
+        const qr = qrcode(0, 'M');
+        qr.addData(uri);
+        qr.make();
+        setTotpQr(qr.createDataURL(6, 8));
+    }
+
     async function share() {
         const grantee = shareForm.grantee.trim().toLowerCase();
         if (!grantee || !current) {
@@ -373,7 +409,7 @@ export function ItemDialog({ session, settings, collections, item, onClose }: Pr
                 body: JSON.stringify(body),
             });
             if (created.warning) {
-                setError(`⚠ ${created.warning}`);
+                setError(created.warning);
             }
             setShareForm({ ...shareForm, grantee: '' });
             setCurrent({ ...current, itemType: 'SHARED' });
@@ -489,22 +525,6 @@ export function ItemDialog({ session, settings, collections, item, onClose }: Pr
     function generate() {
         set('password', generatePassword());
         setShowPassword(true);
-        setHibpStatus(null);
-    }
-
-    async function checkBreach() {
-        if (!fields.password) {
-            return;
-        }
-        setHibpStatus('Перевіряю…');
-        try {
-            const count = await hibpBreachCount(fields.password);
-            setHibpStatus(count === 0
-                ? '✅ Не знайдено у відомих витоках.'
-                : `⚠ Знайдено у витоках ${count.toLocaleString()} разів — змініть пароль!`);
-        } catch (e) {
-            setHibpStatus((e as Error).message);
-        }
     }
 
     async function toggleHistory() {
@@ -568,12 +588,14 @@ export function ItemDialog({ session, settings, collections, item, onClose }: Pr
                             <input id="f-password" type={showPassword ? 'text' : 'password'} required
                                    autoComplete="new-password" readOnly={!canEdit}
                                    value={fields.password}
-                                   onChange={(e) => { set('password', e.target.value); setHibpStatus(null); }} />
-                            <button type="button" id="toggle-pass" className="secondary small"
-                                    onClick={() => setShowPassword((v) => !v)}>👁</button>
+                                   onChange={(e) => set('password', e.target.value)} />
+                            <button type="button" id="toggle-pass" className="secondary small icon-btn"
+                                    title={showPassword ? 'Приховати пароль' : 'Показати пароль'}
+                                    aria-label={showPassword ? 'Приховати пароль' : 'Показати пароль'}
+                                    onClick={() => setShowPassword((v) => !v)}>{showPassword ? <IconEyeOff /> : <IconEye />}</button>
                             {canEdit && (
-                                <button type="button" id="generate-pass" className="secondary small"
-                                        title="Згенерувати пароль" onClick={generate}>🎲</button>
+                                <button type="button" id="generate-pass" className="secondary small icon-btn"
+                                        title="Згенерувати пароль" aria-label="Згенерувати пароль" onClick={generate}><IconRefresh /></button>
                             )}
                             {current && itemKey && (
                                 <button type="button" id="copy-pass" className="secondary small"
@@ -589,12 +611,14 @@ export function ItemDialog({ session, settings, collections, item, onClose }: Pr
                                     <div className={`strength-bar s${s.score}`}
                                          style={{ width: `${(s.score + 1) * 20}%` }} />
                                 </div>
-                                <span className="hint">
-                                    {s.label} (~{s.bits} біт){' '}
-                                    <button type="button" id="hibp-btn" className="linklike"
-                                            onClick={checkBreach}>перевірити витік</button>
-                                </span>
-                                {hibpStatus && <span className="hint" id="hibp-status"> {hibpStatus}</span>}
+                                <span className="hint">{s.label} (~{s.bits} біт)</span>
+                                {hibpStatus && (
+                                    <span className={`hint hibp-status hibp-${hibpStatus.kind}`} id="hibp-status">
+                                        {hibpStatus.kind === 'clean' && <IconCheck />}
+                                        {(hibpStatus.kind === 'breached' || hibpStatus.kind === 'error') && <IconWarning />}
+                                        {hibpStatus.message}
+                                    </span>
+                                )}
                             </div>
                         );
                     })()}
@@ -652,6 +676,12 @@ export function ItemDialog({ session, settings, collections, item, onClose }: Pr
                             <span className="hint">оновлення через {totpSeconds} с</span>
                             {totpCode && <button type="button" id="copy-totp" className="secondary small"
                                                  onClick={copyTotp}>Copy</button>}
+                            {totpCode && <button type="button" id="show-totp-qr" className="secondary small"
+                                                 onClick={toggleTotpQr}>{totpQr ? 'Приховати QR' : 'Показати QR'}</button>}
+                        </div>}
+                        {totpQr && <div className="totp-qr">
+                            <img src={totpQr} alt="TOTP QR code" width={160} height={160} />
+                            <span className="hint">Відскануйте в Google Authenticator / Authy, щоб мати той самий код на телефоні.</span>
                         </div>}
                     </>}
                     <label>Notes
@@ -701,7 +731,7 @@ export function ItemDialog({ session, settings, collections, item, onClose }: Pr
                             <ul id="permission-list" className="permission-list">
                                 {permissions.map((p) => (
                                     <li key={p.id}>
-                                        <span>{p.granteeType === 'GROUP' ? '👥' : '👤'} {p.grantee} — {p.role.toLowerCase()}</span>
+                                        <span className="row">{p.granteeType === 'GROUP' ? <IconUsers /> : <IconUser />} {p.grantee} — {p.role.toLowerCase()}</span>
                                         <button type="button" className="secondary small"
                                                 onClick={() => revoke(p.id)}>Revoke</button>
                                     </li>

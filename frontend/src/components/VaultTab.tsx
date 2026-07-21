@@ -6,6 +6,7 @@ import { emptyPayload, parsePayload, serializePayload } from '../payload';
 import { unwrapItemKeyFor } from '../itemKeys';
 import { loadLocalItems } from '../localItems';
 import { ItemDialog } from './ItemDialog';
+import { IconFolder } from './Icons';
 import type { Session } from '../App';
 import type { Collection, PasswordItem, Settings } from '../types';
 
@@ -185,7 +186,7 @@ export function VaultTab({ session, settings, collections, openItemId, onItemOpe
                             {item.syncMode === 'LOCAL_ONLY' && <span className="badge local">local-only</span>}
                             {item.collectionId && (
                                 <span className="badge shared">
-                                    📁 {collections.find((c) => c.id === item.collectionId)?.name ?? 'collection'}
+                                    <IconFolder width={11} height={11} /> {collections.find((c) => c.id === item.collectionId)?.name ?? 'collection'}
                                 </span>
                             )}
                             {item.accessRole && item.accessRole !== 'OWNER'

@@ -23,6 +23,10 @@ public class UserSettings {
     @Column(nullable = false)
     private int clipboardClearSeconds = 20;
 
+    /** Client-resized data: URI (PNG/JPEG), shown in the topbar and to other members in Collections. */
+    @Column(name = "avatar_data_url", columnDefinition = "text")
+    private String avatarDataUrl;
+
     protected UserSettings() {
     }
 
@@ -48,5 +52,13 @@ public class UserSettings {
 
     public void setClipboardClearSeconds(int clipboardClearSeconds) {
         this.clipboardClearSeconds = clipboardClearSeconds;
+    }
+
+    public String getAvatarDataUrl() {
+        return avatarDataUrl;
+    }
+
+    public void setAvatarDataUrl(String avatarDataUrl) {
+        this.avatarDataUrl = avatarDataUrl;
     }
 }

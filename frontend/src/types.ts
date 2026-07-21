@@ -91,6 +91,7 @@ export interface UserKeysDto {
 export interface Settings {
     defaultSyncMode: SyncMode;
     clipboardClearSeconds: number;
+    avatarDataUrl: string | null;
 }
 
 export interface ItemVersion {

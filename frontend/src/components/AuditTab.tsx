@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
+import { IconWarning } from './Icons';
 import type { Anomaly, AuditEvent } from '../types';
 
 export function AuditTab() {
@@ -24,7 +25,7 @@ export function AuditTab() {
             {error && <p className="error">{error}</p>}
             {anomalies.length > 0 && (
                 <div id="anomaly-banner" className="error" style={{ marginBottom: 12 }}>
-                    <strong>⚠ Виявлено аномальну активність:</strong>
+                    <strong className="row"><IconWarning /> Виявлено аномальну активність:</strong>
                     <ul style={{ margin: '4px 0 0 20px' }}>
                         {anomalies.map((a, i) => (
                             <li key={i}>

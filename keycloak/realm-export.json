@@ -31,19 +31,20 @@
   "authenticationFlows": [
     {
       "alias": "browser-passwordless",
-      "description": "Passkey/biometric or Google login only, no password.",
+      "description": "Google login only; passkey registered as a required action right after, not a login step. See docs/KEYCLOAK.md.",
       "providerId": "basic-flow",
       "topLevel": true,
       "builtIn": false,
       "authenticationExecutions": [
         { "authenticator": "auth-cookie", "requirement": "ALTERNATIVE", "priority": 10, "userSetupAllowed": false, "autheticatorFlow": false },
-        { "authenticator": "identity-provider-redirector", "requirement": "ALTERNATIVE", "priority": 25, "userSetupAllowed": false, "autheticatorFlow": false },
-        { "authenticatorFlow": true, "requirement": "ALTERNATIVE", "priority": 30, "flowAlias": "browser-passwordless forms", "userSetupAllowed": false }
+        { "authenticator": "identity-provider-redirector", "requirement": "ALTERNATIVE", "priority": 25, "userSetupAllowed": false, "autheticatorFlow": false,
+          "authenticatorConfig": "google-auto-redirect" },
+        { "authenticatorFlow": true, "requirement": "DISABLED", "priority": 30, "flowAlias": "browser-passwordless forms", "userSetupAllowed": false }
       ]
     },
     {
       "alias": "browser-passwordless forms",
-      "description": "Username lookup followed by WebAuthn passkey/biometric verification.",
+      "description": "Disabled — no-fallback username+WebAuthn step; kept for a future conditional rework.",
       "providerId": "basic-flow",
       "topLevel": false,
       "builtIn": false,
@@ -52,6 +53,9 @@
         { "authenticator": "webauthn-authenticator-passwordless", "requirement": "REQUIRED", "priority": 20, "userSetupAllowed": false, "autheticatorFlow": false }
       ]
     }
+  ],
+  "authenticatorConfig": [
+    { "alias": "google-auto-redirect", "config": { "defaultProvider": "google" } }
   ],
   "roles": {
     "realm": [
@@ -101,7 +105,7 @@
       "directAccessGrantsEnabled": false,
       "serviceAccountsEnabled": true,
       "fullScopeAllowed": true,
-      "secret": "REPLACE_WITH_KEYCLOAK_ADMIN_CLIENT_SECRET"
+      "secret": "jtp1A0OYbuI5lCDqxZ3HJAmFcRhiac97"
     }
   ],
   "users": [

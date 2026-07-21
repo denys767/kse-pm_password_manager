@@ -9,6 +9,7 @@ import { AuditTab } from './components/AuditTab';
 import { SettingsTab } from './components/SettingsTab';
 import { DashboardTab } from './components/DashboardTab';
 import { ExternalSharePage } from './components/ExternalSharePage';
+import { IconActivity, IconCollections, IconDashboard, IconLock, IconSettings, IconVault } from './components/Icons';
 import type { Collection, FrontendConfig, Me, Settings } from './types';
 
 export interface Session {
@@ -28,6 +29,7 @@ export default function App() {
     const [settings, setSettings] = useState<Settings>({
         defaultSyncMode: 'SERVER_SYNCED',
         clipboardClearSeconds: 20,
+        avatarDataUrl: null,
     });
     const [tab, setTab] = useState<Tab>('vault');
     const [vaultItemToOpen, setVaultItemToOpen] = useState<string | null>(null);
@@ -111,8 +113,24 @@ export default function App() {
             <header className="topbar">
                 <div className="brand"><span>KSE Password Manager</span></div>
                 <div className="header-right">
-                    {session && <span id="user-badge">{session.user.email}</span>}
-                    {session && <button id="lock-btn" className="secondary" onClick={lock}>Lock</button>}
+                    {session && (
+                        config.authMode === 'oidc' ? (
+                            <a id="user-badge" className="topbar-user" href={`${config.keycloakUrl}/realms/${encodeURIComponent(config.realm ?? '')}/account/`}
+                               target="_blank" rel="noopener noreferrer" title="Керування акаунтом Keycloak (пароль, passkey, сесії)">
+                                {settings.avatarDataUrl
+                                    ? <img className="avatar" src={settings.avatarDataUrl} alt="" width={28} height={28} />
+                                    : <span className="avatar">{session.user.email.slice(0, 1).toUpperCase()}</span>}
+                                {session.user.email}
+                            </a>
+                        ) : (
+                            <span id="user-badge" className="topbar-user">
+                                {settings.avatarDataUrl
+                                    ? <img className="avatar" src={settings.avatarDataUrl} alt="" width={28} height={28} />
+                                    : <span className="avatar">{session.user.email.slice(0, 1).toUpperCase()}</span>}
+                                {session.user.email}
+                            </span>
+                        )
+                    )}
                     {(session || bootstrapUser) && config.authMode === 'oidc'
                         && <button id="logout-btn" className="secondary" onClick={logout}>Logout</button>}
                 </div>
@@ -124,14 +142,17 @@ export default function App() {
             {session && <div className="workspace-shell">
                 <aside className="sidebar">
                     <p className="sidebar-label">VAULT</p>
-                    <button className={`nav-item ${tab === 'vault' ? 'active' : ''}`} onClick={() => setTab('vault')}>⌂ <span>Усі записи</span></button>
-                    <button id="dashboard-tab-btn" className={`nav-item ${tab === 'dashboard' ? 'active' : ''}`} onClick={() => setTab('dashboard')}>◈ <span>Dashboard</span></button>
-                    <button id="collections-tab-btn" className={`nav-item ${tab === 'collections' ? 'active' : ''}`} onClick={() => setTab('collections')}>▦ <span>Колекції</span></button>
-                    {isAuditor && <><p className="sidebar-label">SECURITY</p><button id="audit-tab-btn" className={`nav-item ${tab === 'audit' ? 'active' : ''}`} onClick={() => setTab('audit')}>◷ <span>Активність</span></button></>}
-                    <div className="sidebar-bottom"><button className={`nav-item ${tab === 'settings' ? 'active' : ''}`} onClick={() => setTab('settings')}>⚙ <span>Налаштування</span></button></div>
+                    <button className={`nav-item ${tab === 'vault' ? 'active' : ''}`} onClick={() => setTab('vault')}><IconVault /> <span>Усі записи</span></button>
+                    <button id="dashboard-tab-btn" className={`nav-item ${tab === 'dashboard' ? 'active' : ''}`} onClick={() => setTab('dashboard')}><IconDashboard /> <span>Dashboard</span></button>
+                    <button id="collections-tab-btn" className={`nav-item ${tab === 'collections' ? 'active' : ''}`} onClick={() => setTab('collections')}><IconCollections /> <span>Колекції</span></button>
+                    {isAuditor && <><p className="sidebar-label">SECURITY</p><button id="audit-tab-btn" className={`nav-item ${tab === 'audit' ? 'active' : ''}`} onClick={() => setTab('audit')}><IconActivity /> <span>Активність</span></button></>}
+                    <div className="sidebar-bottom"><button className={`nav-item ${tab === 'settings' ? 'active' : ''}`} onClick={() => setTab('settings')}><IconSettings /> <span>Налаштування</span></button></div>
                 </aside>
                 <main id="app" className="workspace-main">
-                    <div className="page-heading"><div><p className="eyebrow">KSE WORKSPACE</p><h1>{tab === 'vault' ? 'Усі записи' : tab === 'dashboard' ? 'Security dashboard' : tab === 'collections' ? 'Колекції' : tab === 'audit' ? 'Активність' : 'Налаштування'}</h1></div></div>
+                    <div className="page-heading">
+                        <div><h1>{tab === 'vault' ? 'Усі записи' : tab === 'dashboard' ? 'Security dashboard' : tab === 'collections' ? 'Колекції' : tab === 'audit' ? 'Активність' : 'Налаштування'}</h1></div>
+                        {tab === 'vault' && <button id="lock-btn" className="secondary icon-btn" onClick={lock} title="Lock" aria-label="Lock"><IconLock /></button>}
+                    </div>
                     {tab === 'vault' && (
                         <VaultTab session={session} settings={settings} collections={collections}
                                   openItemId={vaultItemToOpen} onItemOpened={() => setVaultItemToOpen(null)} />
@@ -143,7 +164,7 @@ export default function App() {
                                         onChanged={refreshCollections} />
                     )}
                     {tab === 'audit' && <AuditTab />}
-                    {tab === 'settings' && <SettingsTab settings={settings} onSaved={setSettings} />}
+                    {tab === 'settings' && <SettingsTab settings={settings} onSaved={setSettings} isAdmin={session.user.roles.includes('ADMIN')} config={config} />}
                 </main>
             </div>}
         </div>

@@ -41,6 +41,9 @@ public class CollectionGroupService {
     @Transactional(readOnly = true)
     public List<String> allowlist() { return repository.findAllByOrderByGroupNameAsc().stream().map(AllowedKeycloakGroup::getGroupName).toList(); }
 
+    /** Every group that currently exists in Keycloak, allowlisted or not — lets an admin pick from real groups instead of typing blind. */
+    public List<String> keycloakGroups() { return keycloak.groups(); }
+
     @Transactional
     public String allow(CurrentUser user, String rawName) {
         String name = normalize(rawName);

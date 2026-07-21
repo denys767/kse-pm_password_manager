@@ -1,9 +1,10 @@
 import { API_ORIGIN, DEFAULT_CLIPBOARD_CLEAR_SECONDS, OIDC_CLIENT_ID } from './config';
 import * as pmc from './crypto';
 import { matchesOrigin } from './origin';
+import { emptyPayload, parsePayload, serializePayload } from './payload';
 import type { Collection, FrontendConfig, PasswordItem, Settings, UserKeysDto } from './types';
 
-interface VaultKeys { kek: CryptoKey; privateKey: CryptoKey; }
+interface VaultKeys { kek: CryptoKey; privateKey: CryptoKey; publicKey: CryptoKey; }
 let token: string | undefined;
 let vaultKeys: VaultKeys | undefined;
 let creatingOffscreen: Promise<void> | undefined;
@@ -43,8 +44,13 @@ async function login(): Promise<void> {
 async function unlock(passphrase: string): Promise<void> {
     const stored = await request<UserKeysDto>('/api/keys/me');
     const kek = await pmc.deriveKek(passphrase, stored.kdfSalt, stored.kdfAlgorithm);
-    try { vaultKeys = { kek, privateKey: await pmc.importEncryptedPrivateKey(stored.encryptedPrivateKey, stored.privateKeyIv, kek) }; }
-    catch { throw new Error('Невірний passphrase для цього vault.'); }
+    try {
+        vaultKeys = {
+            kek,
+            privateKey: await pmc.importEncryptedPrivateKey(stored.encryptedPrivateKey, stored.privateKeyIv, kek),
+            publicKey: await pmc.importPublicKey(stored.publicKey),
+        };
+    } catch { throw new Error('Невірний passphrase для цього vault.'); }
 }
 async function itemKey(item: PasswordItem, collections: Collection[]): Promise<CryptoKey> {
     if (!vaultKeys) throw new Error('Vault заблокований.');
@@ -62,6 +68,56 @@ async function secrets(item: PasswordItem): Promise<{ username: string; password
     const collections = await request<Collection[]>('/api/collections');
     const key = await itemKey(item, collections);
     return { username: item.username ?? '', password: await pmc.decryptField(key, item.encryptedPassword, item.passwordIv) };
+}
+async function totpCode(item: PasswordItem): Promise<string | null> {
+    if (!item.encryptedNotes || !item.notesIv) return null;
+    const collections = await request<Collection[]>('/api/collections');
+    const key = await itemKey(item, collections);
+    const payload = parsePayload(await pmc.decryptField(key, item.encryptedNotes, item.notesIv));
+    return payload.totpSeed ? pmc.generateTotp(payload.totpSeed) : null;
+}
+/** Only ever creates a new item — never silently overwrites an existing saved password. */
+async function saveCredentials(url: string, username: string, password: string): Promise<{ saved: boolean }> {
+    if (!vaultKeys) throw new Error('Vault заблокований — відкрийте extension і розблокуйте його.');
+    const items = await request<PasswordItem[]>('/api/vault/items');
+    const exists = items.some((item) => matchesOrigin(item.url, url) && (item.username ?? '') === username);
+    if (exists) return { saved: false };
+    const settings = await request<Settings>('/api/settings');
+    const itemKeyMaterial = await pmc.generateItemKey();
+    const passwordField = await pmc.encryptField(itemKeyMaterial, password);
+    const notesField = await pmc.encryptField(itemKeyMaterial, serializePayload(emptyPayload()));
+    let name: string;
+    try { name = new URL(url).hostname; } catch { name = url; }
+    await request('/api/vault/items', {
+        method: 'POST',
+        body: JSON.stringify({
+            name, url, username: username || null,
+            encryptedPassword: passwordField.ct, passwordIv: passwordField.iv,
+            encryptedNotes: notesField.ct, notesIv: notesField.iv,
+            type: 'LOGIN', itemType: 'PERSONAL', syncMode: settings.defaultSyncMode,
+            wrappedKey: await pmc.wrapItemKey(itemKeyMaterial, vaultKeys.publicKey),
+        }),
+    });
+    return { saved: true };
+}
+/** Merges a scanned otpauth URI into the item's existing encrypted payload without touching its other fields. */
+async function attachTotp(item: PasswordItem, otpauthUri: string): Promise<void> {
+    const collections = await request<Collection[]>('/api/collections');
+    const key = await itemKey(item, collections);
+    const payload = item.encryptedNotes && item.notesIv
+        ? parsePayload(await pmc.decryptField(key, item.encryptedNotes, item.notesIv))
+        : emptyPayload();
+    payload.totpSeed = otpauthUri;
+    const notesField = await pmc.encryptField(key, serializePayload(payload));
+    await request(`/api/vault/items/${item.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+            name: item.name, url: item.url, username: item.username,
+            encryptedPassword: item.encryptedPassword, passwordIv: item.passwordIv,
+            encryptedNotes: notesField.ct, notesIv: notesField.iv,
+            tags: item.tags, type: item.type, itemType: item.itemType, syncMode: item.syncMode,
+        }),
+    });
 }
 function fillFields(username: string, password: string): void {
     const visible = (element: HTMLInputElement) => element.offsetParent !== null && !element.disabled && !element.readOnly;
@@ -103,6 +159,15 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
             if (!tab?.id) throw new Error('Немає активної вкладки.');
             const value = await secrets(m.item); await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: fillFields, args: [value.username, value.password] });
             return { filled: true };
+        }
+        if (m.type === 'totp' && m.item) return { code: await totpCode(m.item) };
+        if (m.type === 'save-credentials') {
+            const { url, username, password } = message as { url: string; username: string; password: string };
+            return await saveCredentials(url, username, password);
+        }
+        if (m.type === 'attach-totp' && m.item) {
+            await attachTotp(m.item, (message as { otpauthUri: string }).otpauthUri);
+            return { attached: true };
         }
         throw new Error('Unknown extension message.');
     })().then(sendResponse, (error: Error) => sendResponse({ error: error.message }));

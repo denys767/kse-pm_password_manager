@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { api, ApiError } from '../api';
 import * as pmc from '../crypto';
 import { unwrapCollectionKey } from '../itemKeys';
+import { IconUser } from './Icons';
 import type { Session } from '../App';
 import type { Collection, CollectionMemberInfo, CollectionRole, PasswordItem } from '../types';
 
@@ -19,10 +20,20 @@ export function CollectionsTab({ session, collections, onChanged }: Props) {
     const [expanded, setExpanded] = useState<string | null>(null);
     const [members, setMembers] = useState<CollectionMemberInfo[]>([]);
     const [memberForm, setMemberForm] = useState({ email: '', role: 'VIEWER' as CollectionRole });
+    const [avatars, setAvatars] = useState<Record<string, string | null>>({});
 
     useEffect(() => {
         api<string[]>('/api/collection-groups').then(setAvailableGroups).catch((e) => setError(e.message));
     }, []);
+
+    useEffect(() => {
+        const missing = members.map((m) => m.memberEmail.toLowerCase()).filter((email) => !(email in avatars));
+        if (missing.length === 0) return;
+        Promise.all(missing.map((email) => api<{ avatarDataUrl: string | null }>(`/api/settings/${encodeURIComponent(email)}/avatar`)
+            .then((r) => [email, r.avatarDataUrl] as const)
+            .catch(() => [email, null] as const)))
+            .then((pairs) => setAvatars((prev) => ({ ...prev, ...Object.fromEntries(pairs) })));
+    }, [members, avatars]);
 
     async function create() {
         if (!name.trim()) {
@@ -213,7 +224,12 @@ export function CollectionsTab({ session, collections, onChanged }: Props) {
                                     <ul className="permission-list" id="member-list">
                                         {members.map((member) => (
                                             <li key={member.id}>
-                                                <span>👤 {member.memberEmail} — {member.role.toLowerCase()} {member.status !== 'ACTIVE' && `(${member.status.toLowerCase().replace('_', ' ')})`}</span>
+                                                <span className="row">
+                                                    {avatars[member.memberEmail.toLowerCase()]
+                                                        ? <img className="avatar" src={avatars[member.memberEmail.toLowerCase()]!} alt="" width={20} height={20} />
+                                                        : <IconUser />}
+                                                    {' '}{member.memberEmail} — {member.role.toLowerCase()} {member.status !== 'ACTIVE' && `(${member.status.toLowerCase().replace('_', ' ')})`}
+                                                </span>
                                                 {collection.myRole === 'MANAGER'
                                                     && member.memberEmail !== collection.ownerEmail && (
                                                     <button type="button" className="secondary small"
