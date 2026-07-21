@@ -1,16 +1,32 @@
 /** Minimal RFC-4180-ish CSV support for vault import/export.
- * Columns: name,url,username,password,notes,tags */
+ * Sensitive template fields are intentionally present only in this explicit,
+ * user-requested plaintext export — never as server-side columns. */
+import type { SecretType } from './types';
 
 export interface CsvRow {
     name: string;
+    secretType: SecretType;
     url: string;
     username: string;
     password: string;
     notes: string;
     tags: string;
+    apiKey: string;
+    apiSecret: string;
+    sshPrivateKey: string;
+    cardNumber: string;
+    cardCvv: string;
+    cardHolder: string;
+    cardExpiry: string;
+    totpSeed: string;
 }
 
-const HEADER: (keyof CsvRow)[] = ['name', 'url', 'username', 'password', 'notes', 'tags'];
+const HEADER = [
+    'name', 'type', 'url', 'username', 'password', 'notes', 'tags', 'apiKey', 'apiSecret',
+    'sshPrivateKey', 'cardNumber', 'cardCvv', 'cardHolder', 'cardExpiry', 'totpSeed',
+];
+
+const TYPES: SecretType[] = ['LOGIN', 'API_CREDENTIALS', 'SSH_KEY', 'CARD', 'SECURE_NOTE'];
 
 function escapeCell(value: string): string {
     return /[",\n\r]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
@@ -19,7 +35,9 @@ function escapeCell(value: string): string {
 export function toCsv(rows: CsvRow[]): string {
     const lines = [HEADER.join(',')];
     for (const row of rows) {
-        lines.push(HEADER.map((column) => escapeCell(row[column] ?? '')).join(','));
+        lines.push(HEADER.map((column) => escapeCell(
+            column === 'type' ? row.secretType : row[column as keyof CsvRow] ?? '',
+        )).join(','));
     }
     return lines.join('\r\n');
 }
@@ -68,28 +86,39 @@ export function parseCsv(text: string): CsvRow[] {
     }
     // Header row: map columns by name; unknown columns are ignored.
     const header = cells[0].map((h) => h.trim().toLowerCase());
-    const index = new Map<keyof CsvRow, number>();
+    const index = new Map<string, number>();
     for (const column of HEADER) {
-        const at = header.indexOf(column);
+        const at = header.indexOf(column.toLowerCase());
         if (at >= 0) {
-            index.set(column, at);
+            index.set(column.toLowerCase(), at);
         }
     }
-    if (!index.has('name') || !index.has('password')) {
-        throw new Error('CSV має містити колонки name і password');
+    if (!index.has('name')) {
+        throw new Error('CSV має містити колонку name');
     }
     return cells.slice(1).map((line) => {
-        const value = (column: keyof CsvRow) => {
-            const at = index.get(column);
+        const value = (column: string) => {
+            const at = index.get(column.toLowerCase());
             return at === undefined ? '' : (line[at] ?? '').trim();
         };
+        const rawType = value('type').toUpperCase();
+        const secretType = TYPES.includes(rawType as SecretType) ? rawType as SecretType : 'LOGIN';
         return {
             name: value('name'),
+            secretType,
             url: value('url'),
             username: value('username'),
             password: value('password'),
             notes: value('notes'),
             tags: value('tags'),
+            apiKey: value('apiKey'),
+            apiSecret: value('apiSecret'),
+            sshPrivateKey: value('sshPrivateKey'),
+            cardNumber: value('cardNumber'),
+            cardCvv: value('cardCvv'),
+            cardHolder: value('cardHolder'),
+            cardExpiry: value('cardExpiry'),
+            totpSeed: value('totpSeed'),
         };
-    }).filter((r) => r.name && r.password);
+    }).filter((r) => r.name && (r.secretType !== 'LOGIN' || Boolean(r.password)));
 }

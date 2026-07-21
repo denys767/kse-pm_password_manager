@@ -15,6 +15,7 @@ export interface Me {
 }
 
 export type ItemType = 'PERSONAL' | 'SHARED';
+export type SecretType = 'LOGIN' | 'API_CREDENTIALS' | 'SSH_KEY' | 'CARD' | 'SECURE_NOTE';
 export type SyncMode = 'SERVER_SYNCED' | 'LOCAL_ONLY';
 export type AccessRole = 'NONE' | 'VIEWER' | 'EDITOR' | 'OWNER';
 
@@ -29,6 +30,7 @@ export interface PasswordItem {
     notesIv: string | null;
     tags: string | null;
     ownerEmail: string;
+    type: SecretType;
     itemType: ItemType;
     syncMode: SyncMode;
     accessRole: AccessRole | null;

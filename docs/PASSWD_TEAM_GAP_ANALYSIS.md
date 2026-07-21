@@ -6,16 +6,19 @@
 - Client-side AES-GCM, Argon2id для нових vault і per-item key wrapping.
 - Personal/shared records, Collections, revoke, audit, history, генератор,
   HIBP k-anonymity і CSV import/export.
+- Secret templates (`LOGIN`, API credentials, SSH key, card, secure note) і TOTP
+  для LOGIN: усі template-specific значення, включно з seed, лише в encrypted
+  payload; TOTP RFC 6238 обчислюється WebCrypto в браузері.
 
 ## Наступні пріоритети
 
 1. Browser extension та autofill — найбільше щоденне UX-покращення.
-2. TOTP і secret templates (API credentials, SSH keys, cards, secure notes).
-3. Локальний security dashboard: weak, reused, old і breached secrets.
-4. Керований lifecycle Google Groups з явним E2E provisioning.
-5. Timed external sharing; його потрібно проєктувати як окремий encrypted package.
-6. Mobile client та enterprise policies (IP allowlist, recovery/admin controls).
+2. Локальний security dashboard: weak, reused, old і breached secrets.
+3. Керований lifecycle Google Groups з явним E2E provisioning.
+4. Timed external sharing; його потрібно проєктувати як окремий encrypted package.
+5. Mobile client та enterprise policies (IP allowlist, recovery/admin controls).
 
 Цей пріоритетний список порівнює продукт з публічно описаними можливостями
 passwd.team: templates, TOTP, temporary sharing, audit та browser extension.
-Поточна версія навмисно не додає ці можливості разом із UX/redesign релізом.
+Templates і TOTP вже закрито без зміни E2E boundary; наступні пункти лишаються
+окремими етапами, а не частиною UX/redesign релізу.
