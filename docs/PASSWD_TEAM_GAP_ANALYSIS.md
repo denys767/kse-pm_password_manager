@@ -9,7 +9,7 @@
 
 ## Наступні пріоритети
 
-1. Browser extension та autofill — найбільше щоденне UX-покращення.
+1. ✅ Browser extension MVP та strict-origin autofill: Chrome MV3 popup працює з існуючим E2E vault, підтримує OIDC+PKCE, Argon2id/PBKDF2 unlock, пошук, fill і clipboard auto-clear. Залишаються auto-save, Firefox/Safari та enterprise deployment policy.
 2. TOTP і secret templates (API credentials, SSH keys, cards, secure notes).
 3. Локальний security dashboard: weak, reused, old і breached secrets.
 4. Керований lifecycle Google Groups з явним E2E provisioning.
