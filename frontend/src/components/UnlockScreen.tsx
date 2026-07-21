@@ -78,7 +78,6 @@ export function UnlockScreen({ devMode, user, hasVault, startRecovery, onUnlock,
     }
 
     return <section id="unlock-screen" className="unlock-layout">
-        <div className="unlock-brand"><div><strong>KSE Password Manager</strong><span>Private team vault</span></div></div>
         <div className="card narrow unlock-card">
             <p className="eyebrow">{creating ? 'ЗАХИЩЕНИЙ VAULT' : 'ПОВЕРНЕННЯ ДО VAULT'}</p>
             <h1>{recovering ? 'Створіть новий Vault' : !hasVault ? 'Створіть Vault Passphrase' : 'Розблокуйте Vault'}</h1>

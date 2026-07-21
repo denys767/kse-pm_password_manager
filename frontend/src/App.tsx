@@ -109,11 +109,11 @@ export default function App() {
     return (
         <div className="app-shell">
             <header className="topbar">
-                <div className="brand"><span>KSE Password Manager</span><small>WORKSPACE</small></div>
+                <div className="brand"><span>KSE Password Manager</span></div>
                 <div className="header-right">
                     {session && <span id="user-badge">{session.user.email}</span>}
                     {session && <button id="lock-btn" className="secondary" onClick={lock}>Lock</button>}
-                    {session && config.authMode === 'oidc'
+                    {(session || bootstrapUser) && config.authMode === 'oidc'
                         && <button id="logout-btn" className="secondary" onClick={logout}>Logout</button>}
                 </div>
             </header>
