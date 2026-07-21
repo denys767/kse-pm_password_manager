@@ -73,8 +73,8 @@
       "trustEmail": true,
       "firstBrokerLoginFlowAlias": "first broker login",
       "config": {
-        "clientId": "REPLACE_WITH_GOOGLE_CLIENT_ID",
-        "clientSecret": "REPLACE_WITH_GOOGLE_CLIENT_SECRET",
+        "clientId": "59264947390-tqkrc2i2ppsmvnc0sepnp2ggfvanpbts.apps.googleusercontent.com",
+        "clientSecret": "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",
         "hostedDomain": "kse.org.ua",
         "syncMode": "IMPORT",
         "defaultScope": "openid profile email"
