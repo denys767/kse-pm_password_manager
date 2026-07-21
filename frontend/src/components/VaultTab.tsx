@@ -12,11 +12,13 @@ interface Props {
     session: Session;
     settings: Settings;
     collections: Collection[];
+    openItemId?: string | null;
+    onItemOpened?: () => void;
 }
 
 type DialogState = { mode: 'add' } | { mode: 'edit'; item: PasswordItem } | null;
 
-export function VaultTab({ session, settings, collections }: Props) {
+export function VaultTab({ session, settings, collections, openItemId, onItemOpened }: Props) {
     const [serverItems, setServerItems] = useState<PasswordItem[]>([]);
     const [localItems, setLocalItems] = useState<PasswordItem[]>([]);
     const [search, setSearch] = useState('');
@@ -125,6 +127,15 @@ export function VaultTab({ session, settings, collections }: Props) {
         .filter((item) => !query || [item.name, item.url, item.username, item.tags]
             .some((v) => v && v.toLowerCase().includes(query)))
         .sort((a, b) => a.name.localeCompare(b.name));
+
+    useEffect(() => {
+        if (!openItemId) return;
+        const item = [...serverItems, ...localItems].find((candidate) => candidate.id === openItemId);
+        if (item) {
+            setDialog({ mode: 'edit', item });
+            onItemOpened?.();
+        }
+    }, [localItems, onItemOpened, openItemId, serverItems]);
 
     return (
         <section id="tab-vault" className="tab-panel">

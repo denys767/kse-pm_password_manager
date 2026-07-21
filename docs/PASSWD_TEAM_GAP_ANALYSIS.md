@@ -11,7 +11,7 @@
 
 1. Browser extension та autofill — найбільше щоденне UX-покращення.
 2. TOTP і secret templates (API credentials, SSH keys, cards, secure notes).
-3. Локальний security dashboard: weak, reused, old і breached secrets.
+3. ✅ Локальний security dashboard: після unlock weak, reused, old (90+ днів) і breached secrets аналізуються локально; HIBP бачить лише 5-символьні SHA-1-префікси. Далі: browser extension та autofill.
 4. Керований lifecycle Google Groups з явним E2E provisioning.
 5. Timed external sharing; його потрібно проєктувати як окремий encrypted package.
 6. Mobile client та enterprise policies (IP allowlist, recovery/admin controls).

@@ -73,11 +73,45 @@ export function estimateStrength(password: string): Strength {
 /** Returns how many times the password appears in known breaches (0 = clean).
  * k-anonymity: only the 5-char SHA-1 prefix is sent to HIBP. */
 export async function hibpBreachCount(password: string): Promise<number> {
-    const digest = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(password));
-    const hex = [...new Uint8Array(digest)]
-        .map((b) => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+    const hex = await sha1Hex(password);
     const prefix = hex.slice(0, 5);
     const suffix = hex.slice(5);
+    const matches = await hibpRange(prefix);
+    return matches.get(suffix) ?? 0;
+}
+
+/**
+ * Checks many already-decrypted passwords without exposing them. Passwords are
+ * SHA-1 hashed locally, then equal five-character prefixes share one HIBP
+ * range request. Requests are deliberately sequential and throttled so opening
+ * the dashboard does not burst the public HIBP service.
+ */
+export async function hibpBreachCounts(passwords: string[]): Promise<Map<string, number>> {
+    const hashes = await Promise.all(passwords.map(async (password) => ({
+        password,
+        hash: await sha1Hex(password),
+    })));
+    const prefixes = [...new Set(hashes.map(({ hash }) => hash.slice(0, 5)))];
+    const ranges = new Map<string, Map<string, number>>();
+    for (let i = 0; i < prefixes.length; i++) {
+        if (i > 0) {
+            await new Promise<void>((resolve) => window.setTimeout(resolve, 120));
+        }
+        ranges.set(prefixes[i], await hibpRange(prefixes[i]));
+    }
+    return new Map(hashes.map(({ password, hash }) => [
+        password,
+        ranges.get(hash.slice(0, 5))?.get(hash.slice(5)) ?? 0,
+    ]));
+}
+
+async function sha1Hex(password: string): Promise<string> {
+    const digest = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(password));
+    return [...new Uint8Array(digest)]
+        .map((b) => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+}
+
+async function hibpRange(prefix: string): Promise<Map<string, number>> {
     const response = await fetch(`https://api.pwnedpasswords.com/range/${prefix}`, {
         headers: { 'Add-Padding': 'true' },
     });
@@ -85,11 +119,12 @@ export async function hibpBreachCount(password: string): Promise<number> {
         throw new Error(`HIBP недоступний (HTTP ${response.status})`);
     }
     const body = await response.text();
+    const matches = new Map<string, number>();
     for (const line of body.split('\n')) {
         const [candidate, count] = line.trim().split(':');
-        if (candidate === suffix) {
-            return parseInt(count, 10) || 0;
+        if (candidate && count) {
+            matches.set(candidate, parseInt(count, 10) || 0);
         }
     }
-    return 0;
+    return matches;
 }
