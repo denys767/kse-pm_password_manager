@@ -30,36 +30,42 @@ public class CollectionService {
     private final PasswordItemRepository itemRepository;
     private final AuditService auditService;
     private final KeycloakAdminClient keycloakAdminClient;
+    private final CollectionGroupService groupService;
 
     public CollectionService(CollectionRepository collectionRepository,
                              CollectionMemberRepository memberRepository,
                              PasswordItemRepository itemRepository,
-                             AuditService auditService,
-                             KeycloakAdminClient keycloakAdminClient) {
+                             AuditService auditService, KeycloakAdminClient keycloakAdminClient,
+                             CollectionGroupService groupService) {
         this.collectionRepository = collectionRepository;
         this.memberRepository = memberRepository;
         this.itemRepository = itemRepository;
         this.auditService = auditService;
         this.keycloakAdminClient = keycloakAdminClient;
+        this.groupService = groupService;
     }
 
     @Transactional
     public CollectionResponse create(CurrentUser user, CreateCollectionRequest request) {
+        String group = normalizedOptional(request.keycloakGroup());
+        if (group != null && !groupService.isAllowed(group)) {
+            throw new BadRequestException("Keycloak group is not allowed for collections");
+        }
         Collection collection = collectionRepository.save(
-                new Collection(request.name().trim(), user.email(), normalizedOptional(request.keycloakGroup())));
+                new Collection(request.name().trim(), user.email(), group));
         CollectionMember self = memberRepository.save(new CollectionMember(
                 collection, user.email(), CollectionRole.MANAGER,
                 request.wrappedKeyForSelf(), user.email()));
         auditService.record(user.email(), AuditAction.COLLECTION_CREATED, collection.getId(),
                 collection.getName(), null, null);
-        return CollectionResponse.from(collection, self, 1);
+        return response(collection, self);
     }
 
     @Transactional(readOnly = true)
     public List<CollectionResponse> listMine(CurrentUser user) {
         return memberRepository.findByMemberEmail(user.email()).stream()
-                .map(member -> CollectionResponse.from(member.getCollection(), member,
-                        memberRepository.findByCollectionId(member.getCollection().getId()).size()))
+                .filter(member -> member.getStatus().hasCryptographicAccess())
+                .map(member -> response(member.getCollection(), member))
                 .toList();
     }
 
@@ -85,6 +91,9 @@ public class CollectionService {
         if (normalizedGroup == null) {
             throw new BadRequestException("group is required");
         }
+        if (!normalizedGroup.equals(me.getCollection().getKeycloakGroup()) || !groupService.isAllowed(normalizedGroup)) {
+            throw new BadRequestException("group is not configured for this collection");
+        }
         var existing = memberRepository.findByCollectionId(collectionId).stream()
                 .map(member -> member.getMemberEmail().toLowerCase(Locale.ROOT))
                 .collect(Collectors.toSet());
@@ -94,6 +103,14 @@ public class CollectionService {
                 .distinct()
                 .sorted()
                 .toList();
+    }
+
+    @Transactional
+    public void syncGroup(CurrentUser user, UUID collectionId) {
+        CollectionMember me = requireMembership(user, collectionId);
+        if (!me.getRole().canManageMembers()) throw new ForbiddenException("Only a manager can sync group membership");
+        if (me.getCollection().getKeycloakGroup() == null) throw new BadRequestException("Collection has no Keycloak group");
+        groupService.sync(me.getCollection(), user.email());
     }
 
     @Transactional
@@ -137,11 +154,7 @@ public class CollectionService {
         return MemberResponse.from(memberRepository.save(member));
     }
 
-    /**
-     * Removes a member. Limitation (documented in the roadmap): the collection
-     * key is not rotated, so a removed member who saved the key could still
-     * decrypt ciphertext they had already fetched.
-     */
+    /** The manager client rotates the collection key before calling this endpoint. */
     @Transactional
     public void removeMember(CurrentUser user, UUID collectionId, UUID memberId) {
         CollectionMember me = requireMembership(user, collectionId);
@@ -176,6 +189,9 @@ public class CollectionService {
         for (RotateCollectionKeyRequest.MemberKeyEntry entry : request.memberWrappedKeys()) {
             CollectionMember member = memberRepository.findByIdAndCollectionId(entry.memberId(), collectionId)
                     .orElseThrow(() -> new NotFoundException("Member not found"));
+            if (!member.getStatus().hasCryptographicAccess()) {
+                throw new BadRequestException("Pending member cannot receive a rotated collection key");
+            }
             member.setWrappedKey(entry.wrappedKey());
             memberRepository.save(member);
         }
@@ -215,6 +231,7 @@ public class CollectionService {
 
     public Optional<CollectionRole> roleFor(UUID collectionId, String email) {
         return memberRepository.findByCollectionIdAndMemberEmail(collectionId, email)
+                .filter(member -> member.getStatus().hasCryptographicAccess())
                 .map(CollectionMember::getRole);
     }
 
@@ -222,6 +239,7 @@ public class CollectionService {
     @Transactional(readOnly = true)
     public Map<UUID, CollectionRole> membershipsOf(String email) {
         return memberRepository.findByMemberEmail(email).stream()
+                .filter(member -> member.getStatus().hasCryptographicAccess())
                 .collect(Collectors.toMap(m -> m.getCollection().getId(), CollectionMember::getRole));
     }
 
@@ -229,6 +247,7 @@ public class CollectionService {
         collectionRepository.findById(collectionId)
                 .orElseThrow(() -> new NotFoundException("Collection not found"));
         return memberRepository.findByCollectionIdAndMemberEmail(collectionId, user.email())
+                .filter(member -> member.getStatus().hasCryptographicAccess())
                 // Hide the collection's existence from non-members.
                 .orElseThrow(() -> new NotFoundException("Collection not found"));
     }
@@ -238,5 +257,13 @@ public class CollectionService {
             return null;
         }
         return value.trim();
+    }
+
+    private CollectionResponse response(Collection collection, CollectionMember me) {
+        List<CollectionMember> all = memberRepository.findByCollectionId(collection.getId());
+        return CollectionResponse.from(collection, me,
+                (int) all.stream().filter(member -> member.getStatus().hasCryptographicAccess()).count(),
+                (int) all.stream().filter(member -> member.getStatus() == CollectionMemberStatus.PENDING_PROVISIONING).count(),
+                (int) all.stream().filter(member -> member.getStatus() == CollectionMemberStatus.PENDING_REMOVAL).count());
     }
 }

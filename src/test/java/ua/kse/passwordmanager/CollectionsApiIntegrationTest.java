@@ -22,6 +22,8 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import ua.kse.passwordmanager.keycloak.KeycloakAdminClient;
+import ua.kse.passwordmanager.collections.AllowedKeycloakGroup;
+import ua.kse.passwordmanager.collections.AllowedKeycloakGroupRepository;
 
 import static org.mockito.Mockito.when;
 
@@ -42,6 +44,9 @@ class CollectionsApiIntegrationTest {
 
     @MockBean
     private KeycloakAdminClient keycloakAdminClient;
+
+    @Autowired
+    private AllowedKeycloakGroupRepository allowedGroups;
 
     private MockHttpServletRequestBuilder as(MockHttpServletRequestBuilder request, String email) {
         return request.header("X-Dev-User", email).contentType(MediaType.APPLICATION_JSON);
@@ -183,7 +188,12 @@ class CollectionsApiIntegrationTest {
 
     @Test
     void managerGetsOnlyNewKeycloakGroupSuggestions() throws Exception {
-        String collectionId = createCollection(ALICE, "Suggested");
+        allowedGroups.save(new AllowedKeycloakGroup("dev-team"));
+        String collectionId = objectMapper.readTree(mockMvc.perform(as(post("/api/collections"), ALICE)
+                        .content("""
+                                {"name":"Suggested","keycloakGroup":"dev-team","wrappedKeyForSelf":"c2VsZg=="}
+                                """))
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString()).get("id").asText();
         addMember(ALICE, collectionId, BOB, "EDITOR");
         when(keycloakAdminClient.membersOfGroup("dev-team"))
                 .thenReturn(java.util.List.of(ALICE, BOB, CAROL));
@@ -195,6 +205,51 @@ class CollectionsApiIntegrationTest {
         mockMvc.perform(as(get("/api/collections/" + collectionId
                         + "/keycloak-suggestions?group=dev-team"), BOB))
                 .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void groupSyncKeepsNewMemberPendingThenBlocksRemovedMemberUntilManagerRotates() throws Exception {
+        allowedGroups.save(new AllowedKeycloakGroup("dev-team"));
+        String collectionId = objectMapper.readTree(mockMvc.perform(as(post("/api/collections"), ALICE)
+                        .content("""
+                                {"name":"Managed by group","keycloakGroup":"dev-team","wrappedKeyForSelf":"c2VsZg=="}
+                                """))
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString()).get("id").asText();
+        when(keycloakAdminClient.membersOfGroup("dev-team")).thenReturn(java.util.List.of(ALICE, BOB));
+
+        mockMvc.perform(as(post("/api/collections/" + collectionId + "/sync-group"), ALICE))
+                .andExpect(status().isNoContent());
+        JsonNode syncedMembers = objectMapper.readTree(mockMvc.perform(as(get("/api/collections/" + collectionId + "/members"), ALICE))
+                        .andExpect(status().isOk()).andExpect(jsonPath("$[?(@.memberEmail == '" + BOB + "')].status")
+                                .value("PENDING_PROVISIONING"))
+                        .andReturn().getResponse().getContentAsString());
+        String pendingId = memberId(syncedMembers, BOB);
+        mockMvc.perform(as(get("/api/collections"), BOB))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[?(@.id == '" + collectionId + "')]", hasSize(0)));
+
+        mockMvc.perform(as(post("/api/collections/" + collectionId + "/members"), ALICE)
+                        .content("{\"email\":\"" + BOB + "\",\"role\":\"VIEWER\",\"wrappedKey\":\"Ym9i\"}"))
+                .andExpect(status().isCreated()).andExpect(jsonPath("$.status").value("ACTIVE"));
+        mockMvc.perform(as(get("/api/collections"), BOB)).andExpect(status().isOk())
+                .andExpect(jsonPath("$[?(@.id == '" + collectionId + "')]", hasSize(1)));
+
+        when(keycloakAdminClient.membersOfGroup("dev-team")).thenReturn(java.util.List.of(ALICE));
+        mockMvc.perform(as(post("/api/collections/" + collectionId + "/sync-group"), ALICE))
+                .andExpect(status().isNoContent());
+        mockMvc.perform(as(get("/api/collections"), BOB)).andExpect(status().isOk())
+                .andExpect(jsonPath("$[?(@.id == '" + collectionId + "')]", hasSize(0)));
+        mockMvc.perform(as(get("/api/collections/" + collectionId + "/members"), ALICE))
+                .andExpect(status().isOk()).andExpect(jsonPath("$[?(@.memberEmail == '" + BOB + "')].status")
+                        .value("PENDING_REMOVAL"));
+
+        String ownerId = memberId(objectMapper.readTree(mockMvc.perform(as(get("/api/collections/" + collectionId + "/members"), ALICE))
+                .andReturn().getResponse().getContentAsString()), ALICE);
+        mockMvc.perform(as(post("/api/collections/" + collectionId + "/rotate-key"), ALICE)
+                        .content("{\"memberWrappedKeys\":[{\"memberId\":\"" + ownerId + "\",\"wrappedKey\":\"bmV3\"}],\"itemWrappedKeys\":[]}"))
+                .andExpect(status().isNoContent());
+        mockMvc.perform(as(delete("/api/collections/" + collectionId + "/members/" + pendingId), ALICE))
+                .andExpect(status().isNoContent());
     }
 
     @Test
@@ -311,5 +366,12 @@ class CollectionsApiIntegrationTest {
         mockMvc.perform(as(post("/api/collections/" + collectionId + "/rotate-key"), ALICE)
                         .content(badBody))
                 .andExpect(status().isBadRequest());
+    }
+
+    private static String memberId(JsonNode members, String email) {
+        for (JsonNode member : members) {
+            if (email.equals(member.get("memberEmail").asText())) return member.get("id").asText();
+        }
+        throw new AssertionError("Member not found: " + email);
     }
 }

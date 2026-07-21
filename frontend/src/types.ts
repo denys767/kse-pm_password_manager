@@ -15,6 +15,7 @@ export interface Me {
 }
 
 export type ItemType = 'PERSONAL' | 'SHARED';
+export type SecretType = 'LOGIN' | 'API_CREDENTIALS' | 'SSH_KEY' | 'CARD' | 'SECURE_NOTE';
 export type SyncMode = 'SERVER_SYNCED' | 'LOCAL_ONLY';
 export type AccessRole = 'NONE' | 'VIEWER' | 'EDITOR' | 'OWNER';
 
@@ -29,6 +30,7 @@ export interface PasswordItem {
     notesIv: string | null;
     tags: string | null;
     ownerEmail: string;
+    type: SecretType;
     itemType: ItemType;
     syncMode: SyncMode;
     accessRole: AccessRole | null;
@@ -42,6 +44,7 @@ export interface PasswordItem {
 }
 
 export type CollectionRole = 'VIEWER' | 'EDITOR' | 'MANAGER';
+export type CollectionMemberStatus = 'ACTIVE' | 'PENDING_PROVISIONING' | 'PENDING_REMOVAL';
 
 export interface Collection {
     id: string;
@@ -52,6 +55,8 @@ export interface Collection {
     /** Collection key wrapped with my public key. */
     myWrappedKey: string;
     memberCount: number;
+    pendingProvisioningCount: number;
+    pendingRemovalCount: number;
     createdAt: string;
 }
 
@@ -59,6 +64,7 @@ export interface CollectionMemberInfo {
     id: string;
     memberEmail: string;
     role: CollectionRole;
+    status: CollectionMemberStatus;
     addedBy: string;
     createdAt: string;
 }

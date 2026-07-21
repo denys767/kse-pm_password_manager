@@ -7,6 +7,7 @@ import { VaultTab } from './components/VaultTab';
 import { CollectionsTab } from './components/CollectionsTab';
 import { AuditTab } from './components/AuditTab';
 import { SettingsTab } from './components/SettingsTab';
+import { DashboardTab } from './components/DashboardTab';
 import type { Collection, FrontendConfig, Me, Settings } from './types';
 
 export interface Session {
@@ -14,7 +15,7 @@ export interface Session {
     keys: VaultKeys;
 }
 
-type Tab = 'vault' | 'collections' | 'audit' | 'settings';
+type Tab = 'vault' | 'dashboard' | 'collections' | 'audit' | 'settings';
 
 export default function App() {
     const [config, setConfig] = useState<FrontendConfig | null>(null);
@@ -26,6 +27,7 @@ export default function App() {
         clipboardClearSeconds: 20,
     });
     const [tab, setTab] = useState<Tab>('vault');
+    const [vaultItemToOpen, setVaultItemToOpen] = useState<string | null>(null);
     const [fatal, setFatal] = useState<string | null>(null);
     const [bootstrapUser, setBootstrapUser] = useState<Me | null>(null);
     const [hasVault, setHasVault] = useState(true);
@@ -81,6 +83,7 @@ export default function App() {
         setSession(null);
         setCollections([]);
         setTab('vault');
+        setVaultItemToOpen(null);
     }, []);
 
     const logout = useCallback(() => {
@@ -119,15 +122,19 @@ export default function App() {
                 <aside className="sidebar">
                     <p className="sidebar-label">VAULT</p>
                     <button className={`nav-item ${tab === 'vault' ? 'active' : ''}`} onClick={() => setTab('vault')}>⌂ <span>Усі записи</span></button>
+                    <button id="dashboard-tab-btn" className={`nav-item ${tab === 'dashboard' ? 'active' : ''}`} onClick={() => setTab('dashboard')}>◈ <span>Dashboard</span></button>
                     <button id="collections-tab-btn" className={`nav-item ${tab === 'collections' ? 'active' : ''}`} onClick={() => setTab('collections')}>▦ <span>Колекції</span></button>
                     {isAuditor && <><p className="sidebar-label">SECURITY</p><button id="audit-tab-btn" className={`nav-item ${tab === 'audit' ? 'active' : ''}`} onClick={() => setTab('audit')}>◷ <span>Активність</span></button></>}
                     <div className="sidebar-bottom"><button className={`nav-item ${tab === 'settings' ? 'active' : ''}`} onClick={() => setTab('settings')}>⚙ <span>Налаштування</span></button></div>
                 </aside>
                 <main id="app" className="workspace-main">
-                    <div className="page-heading"><div><p className="eyebrow">KSE WORKSPACE</p><h1>{tab === 'vault' ? 'Усі записи' : tab === 'collections' ? 'Колекції' : tab === 'audit' ? 'Активність' : 'Налаштування'}</h1></div></div>
+                    <div className="page-heading"><div><p className="eyebrow">KSE WORKSPACE</p><h1>{tab === 'vault' ? 'Усі записи' : tab === 'dashboard' ? 'Security dashboard' : tab === 'collections' ? 'Колекції' : tab === 'audit' ? 'Активність' : 'Налаштування'}</h1></div></div>
                     {tab === 'vault' && (
-                        <VaultTab session={session} settings={settings} collections={collections} />
+                        <VaultTab session={session} settings={settings} collections={collections}
+                                  openItemId={vaultItemToOpen} onItemOpened={() => setVaultItemToOpen(null)} />
                     )}
+                    {tab === 'dashboard' && <DashboardTab session={session} collections={collections}
+                        onOpenItem={(id) => { setVaultItemToOpen(id); setTab('vault'); }} />}
                     {tab === 'collections' && (
                         <CollectionsTab session={session} collections={collections}
                                         onChanged={refreshCollections} />

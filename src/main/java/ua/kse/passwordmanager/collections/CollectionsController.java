@@ -54,6 +54,12 @@ public class CollectionsController {
         return collectionService.keycloakSuggestions(authFacade.current(), id, group);
     }
 
+    @PostMapping("/{id}/sync-group")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void syncGroup(@PathVariable UUID id) {
+        collectionService.syncGroup(authFacade.current(), id);
+    }
+
     @PostMapping("/{id}/members")
     @ResponseStatus(HttpStatus.CREATED)
     public MemberResponse addMember(@PathVariable UUID id,

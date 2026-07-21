@@ -233,7 +233,7 @@ public class VaultService {
         return new PasswordItemResponse(snapshot.id(), snapshot.name(), snapshot.url(),
                 snapshot.username(), snapshot.encryptedPassword(), snapshot.passwordIv(),
                 snapshot.encryptedNotes(), snapshot.notesIv(), snapshot.tags(),
-                snapshot.ownerEmail(), snapshot.itemType(), SyncMode.LOCAL_ONLY,
+                snapshot.ownerEmail(), snapshot.type(), snapshot.itemType(), SyncMode.LOCAL_ONLY,
                 snapshot.accessRole(), snapshot.wrappedKey(), null, null, null,
                 snapshot.createdAt(), snapshot.updatedAt());
     }
@@ -310,6 +310,8 @@ public class VaultService {
         item.setEncryptedNotes(request.encryptedNotes());
         item.setNotesIv(request.notesIv());
         item.setTags(request.tags());
+        // Old API clients predate templates; migrate their semantics to LOGIN.
+        item.setType(request.type() == null ? SecretType.LOGIN : request.type());
         item.setItemType(request.itemType());
         item.setSyncMode(SyncMode.SERVER_SYNCED);
     }
