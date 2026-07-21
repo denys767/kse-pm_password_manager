@@ -72,6 +72,8 @@ Reverse proxy (nginx / traefik — TLS termination, prod)
 | GET/POST | `/api/vault/items/{id}/permissions` | Доступи (owner) |
 | DELETE | `/api/vault/items/{id}/permissions/{permId}` | Revoke (owner) |
 | POST | `/api/vault/items/{id}/rotate-key` | Ротація item key (owner, перед revoke) |
+| POST/DELETE | `/api/vault/items/{id}/external-shares[/{shareId}]` | Створити / відкликати зовнішній encrypted snapshot (owner) |
+| GET | `/api/external-shares/{shareId}` | Public, rate-limited read opaque package; ключ передається тільки у URL fragment |
 | GET | `/api/vault/items/{id}/versions` | Історія версій |
 | PUT | `/api/vault/items/{id}/collection` | Додати/зняти запис з колекції (owner) |
 | GET/POST | `/api/collections` | Мої колекції / створення |

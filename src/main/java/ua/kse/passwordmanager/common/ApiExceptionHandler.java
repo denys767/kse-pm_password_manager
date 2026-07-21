@@ -15,6 +15,11 @@ public class ApiExceptionHandler {
         return error(HttpStatus.NOT_FOUND, e.getMessage());
     }
 
+    @ExceptionHandler(GoneException.class)
+    public ResponseEntity<Map<String, String>> gone(GoneException e) {
+        return error(HttpStatus.GONE, e.getMessage());
+    }
+
     @ExceptionHandler(ForbiddenException.class)
     public ResponseEntity<Map<String, String>> forbidden(ForbiddenException e) {
         return error(HttpStatus.FORBIDDEN, e.getMessage());

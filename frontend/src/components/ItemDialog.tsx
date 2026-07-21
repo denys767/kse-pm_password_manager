@@ -5,6 +5,7 @@ import { unwrapCollectionKey, unwrapItemKeyFor } from '../itemKeys';
 import { loadLocalItems, saveLocalItems } from '../localItems';
 import { estimateStrength, generatePassword, hibpBreachCount } from '../passwords';
 import { emptyPayload, parsePayload, serializePayload } from '../payload';
+import { encryptShareSnapshot } from '../externalShare';
 import type { Session } from '../App';
 import type { Collection, ItemVersion, PasswordItem, Permission, SecretType, Settings } from '../types';
 
@@ -62,6 +63,9 @@ export function ItemDialog({ session, settings, collections, item, onClose }: Pr
     const [collectionSel, setCollectionSel] = useState<string>(item?.collectionId ?? '');
     const [totpCode, setTotpCode] = useState('');
     const [totpSeconds, setTotpSeconds] = useState(30);
+    const [externalTtl, setExternalTtl] = useState('3600');
+    const [externalOneTime, setExternalOneTime] = useState(false);
+    const [externalLink, setExternalLink] = useState<{ id: string; url: string } | null>(null);
 
     const isOwner = !current || !current.accessRole || current.accessRole === 'OWNER';
     const canEdit = !current || ((isOwner || current.accessRole === 'EDITOR') && itemKey !== null);
@@ -380,6 +384,40 @@ export function ItemDialog({ session, settings, collections, item, onClose }: Pr
         }
     }
 
+    async function shareExternally() {
+        if (!current || !itemKey) return;
+        setError(null);
+        try {
+            const encrypted = await encryptShareSnapshot({
+                version: 1, name: fields.name, url: fields.url, username: fields.username,
+                tags: fields.tags, type: fields.secretType, password: fields.password,
+                payload: {
+                    version: 1, notes: fields.notes, apiKey: fields.apiKey, apiSecret: fields.apiSecret,
+                    sshPrivateKey: fields.sshPrivateKey, cardNumber: fields.cardNumber,
+                    cardCvv: fields.cardCvv, cardHolder: fields.cardHolder,
+                    cardExpiry: fields.cardExpiry, totpSeed: fields.totpSeed,
+                },
+            });
+            const created = await api<{ id: string }>(`/api/vault/items/${current.id}/external-shares`, {
+                method: 'POST',
+                body: JSON.stringify({
+                    encryptedPackage: encrypted.encryptedPackage, packageIv: encrypted.packageIv,
+                    expiresAt: new Date(Date.now() + Number(externalTtl) * 1000).toISOString(),
+                    oneTime: externalOneTime,
+                }),
+            });
+            setExternalLink({ id: created.id, url: `${window.location.origin}/share/${created.id}#${encrypted.fragmentKey}` });
+        } catch (e) { setError((e as Error).message); }
+    }
+
+    async function revokeExternalShare() {
+        if (!current || !externalLink) return;
+        try {
+            await api(`/api/vault/items/${current.id}/external-shares/${externalLink.id}`, { method: 'DELETE' });
+            setExternalLink(null);
+        } catch (e) { setError((e as Error).message); }
+    }
+
     /**
      * Rotates the item's AES key so the recipient being revoked cannot decrypt
      * anything written after this point, even if they saved the old wrapped
@@ -687,6 +725,21 @@ export function ItemDialog({ session, settings, collections, item, onClose }: Pr
                             </div>
                         </div>
                     )}
+                    {showShare && <section id="external-share-section">
+                        <h4>Share externally</h4>
+                        <p className="hint">Окремий зашифрований снапшот; AES-ключ є лише після <code>#</code> у посиланні.</p>
+                        <div className="row">
+                            <label>Строк дії<select id="external-share-ttl" value={externalTtl} onChange={(e) => setExternalTtl(e.target.value)}>
+                                <option value="900">15 хвилин</option><option value="3600">1 година</option>
+                                <option value="86400">24 години</option><option value="604800">7 днів</option>
+                            </select></label>
+                            <label className="checkbox-row"><input id="external-share-one-time" type="checkbox" checked={externalOneTime} onChange={(e) => setExternalOneTime(e.target.checked)} /> Одноразовий перегляд</label>
+                            <button type="button" id="external-share-create" className="secondary" onClick={shareExternally}>Create link</button>
+                        </div>
+                        {externalLink && <div className="external-link"><input readOnly value={externalLink.url} aria-label="External share link" />
+                            <button type="button" className="secondary small" onClick={() => navigator.clipboard.writeText(externalLink.url)}>Copy</button>
+                            <button type="button" className="secondary small" onClick={revokeExternalShare}>Revoke</button></div>}
+                    </section>}
 
                     {current && current.syncMode !== 'LOCAL_ONLY' && itemKey && (
                         <div id="history-section">
