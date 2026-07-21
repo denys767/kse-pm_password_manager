@@ -55,7 +55,7 @@ export function ItemDialog({ session, settings, collections, item, onClose }: Pr
     });
     const [itemKey, setItemKey] = useState<CryptoKey | null>(null);
     const [permissions, setPermissions] = useState<Permission[]>([]);
-    const [shareForm, setShareForm] = useState({ type: 'USER', grantee: '', role: 'VIEWER' });
+    const [shareForm, setShareForm] = useState({ grantee: '', role: 'VIEWER' });
     const [error, setError] = useState<string | null>(null);
     const [showPassword, setShowPassword] = useState(false);
     const [copyLabel, setCopyLabel] = useState('Copy');
@@ -384,26 +384,24 @@ export function ItemDialog({ session, settings, collections, item, onClose }: Pr
         }
         setError(null);
         try {
+            if (!itemKey) {
+                throw new Error('Немає ключа запису — розшифруйте запис перед шерингом.');
+            }
+            let recipient: { publicKey: string };
+            try {
+                recipient = await api(`/api/keys/${encodeURIComponent(grantee)}`);
+            } catch (e) {
+                throw (e as ApiError).status === 404
+                    ? new Error(`У ${grantee} ще немає ключів — користувач має увійти у vault хоча б раз.`)
+                    : e;
+            }
+            const recipientKey = await pmc.importPublicKey(recipient.publicKey);
             const body: Record<string, unknown> = {
-                granteeType: shareForm.type,
+                granteeType: 'USER',
                 grantee,
                 role: shareForm.role,
+                wrappedKey: await pmc.wrapItemKey(itemKey, recipientKey),
             };
-            if (shareForm.type === 'USER') {
-                if (!itemKey) {
-                    throw new Error('Немає ключа запису — розшифруйте запис перед шерингом.');
-                }
-                let recipient: { publicKey: string };
-                try {
-                    recipient = await api(`/api/keys/${encodeURIComponent(grantee)}`);
-                } catch (e) {
-                    throw (e as ApiError).status === 404
-                        ? new Error(`У ${grantee} ще немає ключів — користувач має увійти у vault хоча б раз.`)
-                        : e;
-                }
-                const recipientKey = await pmc.importPublicKey(recipient.publicKey);
-                body.wrappedKey = await pmc.wrapItemKey(itemKey, recipientKey);
-            }
             const created = await api<Permission>(`/api/vault/items/${current.id}/permissions`, {
                 method: 'POST',
                 body: JSON.stringify(body),
@@ -738,12 +736,7 @@ export function ItemDialog({ session, settings, collections, item, onClose }: Pr
                                 ))}
                             </ul>
                             <div className="row">
-                                <select id="share-type" value={shareForm.type}
-                                        onChange={(e) => setShareForm({ ...shareForm, type: e.target.value })}>
-                                    <option value="USER">Користувач</option>
-                                    <option value="GROUP">Група</option>
-                                </select>
-                                <input id="share-grantee" placeholder="email або назва групи"
+                                <input id="share-grantee" type="email" placeholder="email користувача"
                                        value={shareForm.grantee}
                                        onChange={(e) => setShareForm({ ...shareForm, grantee: e.target.value })} />
                                 <select id="share-role" value={shareForm.role}
