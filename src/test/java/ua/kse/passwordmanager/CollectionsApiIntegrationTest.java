@@ -188,7 +188,12 @@ class CollectionsApiIntegrationTest {
 
     @Test
     void managerGetsOnlyNewKeycloakGroupSuggestions() throws Exception {
-        String collectionId = createCollection(ALICE, "Suggested");
+        allowedGroups.save(new AllowedKeycloakGroup("dev-team"));
+        String collectionId = objectMapper.readTree(mockMvc.perform(as(post("/api/collections"), ALICE)
+                        .content("""
+                                {"name":"Suggested","keycloakGroup":"dev-team","wrappedKeyForSelf":"c2VsZg=="}
+                                """))
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString()).get("id").asText();
         addMember(ALICE, collectionId, BOB, "EDITOR");
         when(keycloakAdminClient.membersOfGroup("dev-team"))
                 .thenReturn(java.util.List.of(ALICE, BOB, CAROL));
@@ -220,19 +225,20 @@ class CollectionsApiIntegrationTest {
                         .andReturn().getResponse().getContentAsString());
         String pendingId = memberId(syncedMembers, BOB);
         mockMvc.perform(as(get("/api/collections"), BOB))
-                .andExpect(status().isOk()).andExpect(jsonPath("$", hasSize(0)));
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[?(@.id == '" + collectionId + "')]", hasSize(0)));
 
         mockMvc.perform(as(post("/api/collections/" + collectionId + "/members"), ALICE)
                         .content("{\"email\":\"" + BOB + "\",\"role\":\"VIEWER\",\"wrappedKey\":\"Ym9i\"}"))
                 .andExpect(status().isCreated()).andExpect(jsonPath("$.status").value("ACTIVE"));
         mockMvc.perform(as(get("/api/collections"), BOB)).andExpect(status().isOk())
-                .andExpect(jsonPath("$[0].id").value(collectionId));
+                .andExpect(jsonPath("$[?(@.id == '" + collectionId + "')]", hasSize(1)));
 
         when(keycloakAdminClient.membersOfGroup("dev-team")).thenReturn(java.util.List.of(ALICE));
         mockMvc.perform(as(post("/api/collections/" + collectionId + "/sync-group"), ALICE))
                 .andExpect(status().isNoContent());
         mockMvc.perform(as(get("/api/collections"), BOB)).andExpect(status().isOk())
-                .andExpect(jsonPath("$", hasSize(0)));
+                .andExpect(jsonPath("$[?(@.id == '" + collectionId + "')]", hasSize(0)));
         mockMvc.perform(as(get("/api/collections/" + collectionId + "/members"), ALICE))
                 .andExpect(status().isOk()).andExpect(jsonPath("$[?(@.memberEmail == '" + BOB + "')].status")
                         .value("PENDING_REMOVAL"));
