@@ -2,6 +2,7 @@ import { ChangeEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { api } from './../api';
 import * as pmc from '../crypto';
 import { parseCsv, toCsv, CsvRow } from '../csv';
+import { emptyPayload, parsePayload, serializePayload } from '../payload';
 import { unwrapItemKeyFor } from '../itemKeys';
 import { loadLocalItems } from '../localItems';
 import { ItemDialog } from './ItemDialog';
@@ -51,15 +52,25 @@ export function VaultTab({ session, settings, collections, openItemId, onItemOpe
             for (const item of [...serverItems, ...localItems]) {
                 try {
                     const key = await unwrapItemKeyFor(item, collections, session.keys);
+                    const payload = parsePayload(item.encryptedNotes
+                        ? await pmc.decryptField(key, item.encryptedNotes, item.notesIv!)
+                        : '');
                     rows.push({
                         name: item.name,
+                        secretType: item.type ?? 'LOGIN',
                         url: item.url || '',
                         username: item.username || '',
                         password: await pmc.decryptField(key, item.encryptedPassword, item.passwordIv),
-                        notes: item.encryptedNotes
-                            ? await pmc.decryptField(key, item.encryptedNotes, item.notesIv!)
-                            : '',
+                        notes: payload.notes,
                         tags: item.tags || '',
+                        apiKey: payload.apiKey,
+                        apiSecret: payload.apiSecret,
+                        sshPrivateKey: payload.sshPrivateKey,
+                        cardNumber: payload.cardNumber,
+                        cardCvv: payload.cardCvv,
+                        cardHolder: payload.cardHolder,
+                        cardExpiry: payload.cardExpiry,
+                        totpSeed: payload.totpSeed,
                     });
                 } catch {
                     skipped++;
@@ -94,7 +105,18 @@ export function VaultTab({ session, settings, collections, openItemId, onItemOpe
             for (const row of rows) {
                 const key = await pmc.generateItemKey();
                 const password = await pmc.encryptField(key, row.password);
-                const notes = row.notes ? await pmc.encryptField(key, row.notes) : null;
+                const notes = await pmc.encryptField(key, serializePayload({
+                    ...emptyPayload(),
+                    notes: row.notes,
+                    apiKey: row.apiKey,
+                    apiSecret: row.apiSecret,
+                    sshPrivateKey: row.sshPrivateKey,
+                    cardNumber: row.cardNumber,
+                    cardCvv: row.cardCvv,
+                    cardHolder: row.cardHolder,
+                    cardExpiry: row.cardExpiry,
+                    totpSeed: row.totpSeed,
+                }));
                 await api('/api/vault/items', {
                     method: 'POST',
                     body: JSON.stringify({
@@ -103,9 +125,10 @@ export function VaultTab({ session, settings, collections, openItemId, onItemOpe
                         username: row.username || null,
                         encryptedPassword: password.ct,
                         passwordIv: password.iv,
-                        encryptedNotes: notes ? notes.ct : null,
-                        notesIv: notes ? notes.iv : null,
+                        encryptedNotes: notes.ct,
+                        notesIv: notes.iv,
                         tags: row.tags || null,
+                        type: row.secretType,
                         itemType: 'PERSONAL',
                         syncMode: 'SERVER_SYNCED',
                         wrappedKey: await pmc.wrapItemKey(key, session.keys.publicKey),
@@ -148,7 +171,7 @@ export function VaultTab({ session, settings, collections, openItemId, onItemOpe
                         onClick={() => importInput.current?.click()}>Import CSV</button>
                 <input ref={importInput} type="file" accept=".csv,text/csv" hidden
                        onChange={importCsv} />
-                <button id="add-btn" onClick={() => setDialog({ mode: 'add' })}>+ Add password</button>
+                <button id="add-btn" onClick={() => setDialog({ mode: 'add' })}>+ Add secret</button>
             </div>
             {busy && <p className="hint">{busy}</p>}
             {error && <p className="error">{error}</p>}
@@ -157,6 +180,7 @@ export function VaultTab({ session, settings, collections, openItemId, onItemOpe
                     <li key={item.id} onClick={() => setDialog({ mode: 'edit', item })}>
                         <div>
                             <strong>{item.name}</strong>
+                            <span className="badge">{(item.type ?? 'LOGIN').toLowerCase().replace('_', ' ')}</span>
                             {item.itemType === 'SHARED' && <span className="badge shared">shared</span>}
                             {item.syncMode === 'LOCAL_ONLY' && <span className="badge local">local-only</span>}
                             {item.collectionId && (

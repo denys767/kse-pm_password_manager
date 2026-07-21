@@ -4,8 +4,9 @@ import * as pmc from '../crypto';
 import { unwrapCollectionKey, unwrapItemKeyFor } from '../itemKeys';
 import { loadLocalItems, saveLocalItems } from '../localItems';
 import { estimateStrength, generatePassword, hibpBreachCount } from '../passwords';
+import { emptyPayload, parsePayload, serializePayload } from '../payload';
 import type { Session } from '../App';
-import type { Collection, ItemVersion, PasswordItem, Permission, Settings } from '../types';
+import type { Collection, ItemVersion, PasswordItem, Permission, SecretType, Settings } from '../types';
 
 interface Props {
     session: Session;
@@ -23,6 +24,15 @@ interface Fields {
     password: string;
     notes: string;
     tags: string;
+    secretType: SecretType;
+    apiKey: string;
+    apiSecret: string;
+    sshPrivateKey: string;
+    cardNumber: string;
+    cardCvv: string;
+    cardHolder: string;
+    cardExpiry: string;
+    totpSeed: string;
     type: 'PERSONAL' | 'SHARED';
     sync: boolean;
 }
@@ -34,7 +44,9 @@ export function ItemDialog({ session, settings, collections, item, onClose }: Pr
 
     const [current, setCurrent] = useState<PasswordItem | null>(item);
     const [fields, setFields] = useState<Fields>({
-        name: '', url: '', username: '', password: '', notes: '', tags: '',
+        name: '', url: '', username: '', password: '', tags: '', secretType: 'LOGIN',
+        ...emptyPayload(),
+        notes: '',
         type: 'PERSONAL',
         sync: settings.defaultSyncMode !== 'LOCAL_ONLY',
     });
@@ -48,6 +60,8 @@ export function ItemDialog({ session, settings, collections, item, onClose }: Pr
     const [hibpStatus, setHibpStatus] = useState<string | null>(null);
     const [versions, setVersions] = useState<ItemVersion[] | null>(null);
     const [collectionSel, setCollectionSel] = useState<string>(item?.collectionId ?? '');
+    const [totpCode, setTotpCode] = useState('');
+    const [totpSeconds, setTotpSeconds] = useState(30);
 
     const isOwner = !current || !current.accessRole || current.accessRole === 'OWNER';
     const canEdit = !current || ((isOwner || current.accessRole === 'EDITOR') && itemKey !== null);
@@ -76,13 +90,13 @@ export function ItemDialog({ session, settings, collections, item, onClose }: Pr
                 setCurrent(full);
                 let key: CryptoKey | null = null;
                 let password = '';
-                let notes = '';
+                let payload = emptyPayload();
                 try {
                     key = await unwrapKey(full);
                     password = await pmc.decryptField(key, full.encryptedPassword, full.passwordIv);
-                    notes = full.encryptedNotes
+                    payload = parsePayload(full.encryptedNotes
                         ? await pmc.decryptField(key, full.encryptedNotes, full.notesIv!)
-                        : '';
+                        : '');
                 } catch (e) {
                     setError((e as Error).message.startsWith('Для вас')
                         ? (e as Error).message
@@ -94,8 +108,10 @@ export function ItemDialog({ session, settings, collections, item, onClose }: Pr
                     url: full.url || '',
                     username: full.username || '',
                     password,
-                    notes,
+                    ...payload,
+                    notes: payload.notes,
                     tags: full.tags || '',
+                    secretType: full.type ?? 'LOGIN',
                     type: full.itemType,
                     sync: full.syncMode !== 'LOCAL_ONLY',
                 });
@@ -111,6 +127,27 @@ export function ItemDialog({ session, settings, collections, item, onClose }: Pr
         })();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
+
+    useEffect(() => {
+        if (fields.secretType !== 'LOGIN' || !fields.totpSeed) {
+            setTotpCode('');
+            return;
+        }
+        let cancelled = false;
+        const update = () => {
+            const now = Date.now();
+            setTotpSeconds(30 - Math.floor((now % 30_000) / 1000));
+            pmc.generateTotp(fields.totpSeed, now)
+                .then((code) => { if (!cancelled) setTotpCode(code); })
+                .catch(() => { if (!cancelled) setTotpCode(''); });
+        };
+        update();
+        const timer = window.setInterval(update, 1000);
+        return () => {
+            cancelled = true;
+            window.clearInterval(timer);
+        };
+    }, [fields.secretType, fields.totpSeed]);
 
     function set<K extends keyof Fields>(key: K, value: Fields[K]) {
         setFields((f) => {
@@ -148,16 +185,28 @@ export function ItemDialog({ session, settings, collections, item, onClose }: Pr
             // Existing item keeps its key (recipients keep access); new one gets a fresh key.
             const key = itemKey ?? await pmc.generateItemKey();
             const password = await pmc.encryptField(key, fields.password);
-            const notes = fields.notes ? await pmc.encryptField(key, fields.notes) : null;
+            const notes = await pmc.encryptField(key, serializePayload({
+                version: 1,
+                notes: fields.notes,
+                apiKey: fields.apiKey,
+                apiSecret: fields.apiSecret,
+                sshPrivateKey: fields.sshPrivateKey,
+                cardNumber: fields.cardNumber,
+                cardCvv: fields.cardCvv,
+                cardHolder: fields.cardHolder,
+                cardExpiry: fields.cardExpiry,
+                totpSeed: fields.totpSeed,
+            }));
             const payload: Record<string, unknown> = {
                 name: fields.name.trim(),
                 url: fields.url.trim() || null,
                 username: fields.username.trim() || null,
                 encryptedPassword: password.ct,
                 passwordIv: password.iv,
-                encryptedNotes: notes ? notes.ct : null,
-                notesIv: notes ? notes.iv : null,
+                encryptedNotes: notes.ct,
+                notesIv: notes.iv,
                 tags: fields.tags.trim() || null,
+                type: fields.secretType,
                 itemType: fields.type,
                 syncMode: 'SERVER_SYNCED',
             };
@@ -281,6 +330,13 @@ export function ItemDialog({ session, settings, collections, item, onClose }: Pr
         setTimeout(() => setCopyLabel('Copy'), 2000);
     }
 
+    async function copyTotp() {
+        if (!totpCode) {
+            return;
+        }
+        await navigator.clipboard.writeText(totpCode);
+    }
+
     async function share() {
         const grantee = shareForm.grantee.trim().toLowerCase();
         if (!grantee || !current) {
@@ -337,7 +393,18 @@ export function ItemDialog({ session, settings, collections, item, onClose }: Pr
         }
         const newKey = await pmc.generateItemKey();
         const password = await pmc.encryptField(newKey, fields.password);
-        const notes = fields.notes ? await pmc.encryptField(newKey, fields.notes) : null;
+        const notes = await pmc.encryptField(newKey, serializePayload({
+            version: 1,
+            notes: fields.notes,
+            apiKey: fields.apiKey,
+            apiSecret: fields.apiSecret,
+            sshPrivateKey: fields.sshPrivateKey,
+            cardNumber: fields.cardNumber,
+            cardCvv: fields.cardCvv,
+            cardHolder: fields.cardHolder,
+            cardExpiry: fields.cardExpiry,
+            totpSeed: fields.totpSeed,
+        }));
         const wrappedKeys = [
             { granteeEmail: session.user.email, wrappedKey: await pmc.wrapItemKey(newKey, session.keys.publicKey) },
         ];
@@ -354,8 +421,8 @@ export function ItemDialog({ session, settings, collections, item, onClose }: Pr
             body: JSON.stringify({
                 encryptedPassword: password.ct,
                 passwordIv: password.iv,
-                encryptedNotes: notes ? notes.ct : null,
-                notesIv: notes ? notes.iv : null,
+                encryptedNotes: notes.ct,
+                notesIv: notes.iv,
                 wrappedKeys,
             }),
         });
@@ -420,16 +487,17 @@ export function ItemDialog({ session, settings, collections, item, onClose }: Pr
         }
         try {
             const password = await pmc.decryptField(itemKey, version.encryptedPassword, version.passwordIv);
-            const notes = version.encryptedNotes
+            const payload = parsePayload(version.encryptedNotes
                 ? await pmc.decryptField(itemKey, version.encryptedNotes, version.notesIv!)
-                : '';
+                : '');
             setFields((f) => ({
                 ...f,
                 name: version.name,
                 url: version.url || '',
                 username: version.username || '',
                 password,
-                notes,
+                ...payload,
+                notes: payload.notes,
             }));
             setVersions(null);
             setError('Версію підставлено у форму — натисніть Save, щоб відновити.');
@@ -457,7 +525,7 @@ export function ItemDialog({ session, settings, collections, item, onClose }: Pr
                         <input id="f-username" maxLength={255} autoComplete="off" readOnly={!canEdit}
                                value={fields.username} onChange={(e) => set('username', e.target.value)} />
                     </label>
-                    <label>Пароль*
+                    {fields.secretType === 'LOGIN' && <label>Пароль*
                         <div className="row">
                             <input id="f-password" type={showPassword ? 'text' : 'password'} required
                                    autoComplete="new-password" readOnly={!canEdit}
@@ -474,8 +542,8 @@ export function ItemDialog({ session, settings, collections, item, onClose }: Pr
                                         onClick={copyPassword}>{copyLabel}</button>
                             )}
                         </div>
-                    </label>
-                    {fields.password && (() => {
+                    </label>}
+                    {fields.secretType === 'LOGIN' && fields.password && (() => {
                         const s = estimateStrength(fields.password);
                         return (
                             <div className="strength">
@@ -492,6 +560,62 @@ export function ItemDialog({ session, settings, collections, item, onClose }: Pr
                             </div>
                         );
                     })()}
+                    <label>Шаблон секрету
+                        <select id="f-secret-type" disabled={!canEdit} value={fields.secretType}
+                                onChange={(e) => set('secretType', e.target.value as SecretType)}>
+                            <option value="LOGIN">Login</option>
+                            <option value="API_CREDENTIALS">API credentials</option>
+                            <option value="SSH_KEY">SSH key</option>
+                            <option value="CARD">Card</option>
+                            <option value="SECURE_NOTE">Secure note</option>
+                        </select>
+                    </label>
+                    {fields.secretType === 'API_CREDENTIALS' && <>
+                        <label>API key
+                            <input id="f-api-key" autoComplete="off" readOnly={!canEdit}
+                                   value={fields.apiKey} onChange={(e) => set('apiKey', e.target.value)} />
+                        </label>
+                        <label>API secret
+                            <input id="f-api-secret" type="password" autoComplete="new-password" readOnly={!canEdit}
+                                   value={fields.apiSecret} onChange={(e) => set('apiSecret', e.target.value)} />
+                        </label>
+                    </>}
+                    {fields.secretType === 'SSH_KEY' && <label>Private key
+                        <textarea id="f-ssh-private-key" rows={7} autoComplete="off" readOnly={!canEdit}
+                                  value={fields.sshPrivateKey} onChange={(e) => set('sshPrivateKey', e.target.value)} />
+                    </label>}
+                    {fields.secretType === 'CARD' && <>
+                        <label>Номер картки
+                            <input id="f-card-number" inputMode="numeric" autoComplete="off" readOnly={!canEdit}
+                                   value={fields.cardNumber} onChange={(e) => set('cardNumber', e.target.value)} />
+                        </label>
+                        <label>Власник картки
+                            <input id="f-card-holder" autoComplete="off" readOnly={!canEdit}
+                                   value={fields.cardHolder} onChange={(e) => set('cardHolder', e.target.value)} />
+                        </label>
+                        <div className="row">
+                            <label>Термін дії
+                                <input id="f-card-expiry" placeholder="MM/YY" autoComplete="off" readOnly={!canEdit}
+                                       value={fields.cardExpiry} onChange={(e) => set('cardExpiry', e.target.value)} />
+                            </label>
+                            <label>CVV
+                                <input id="f-card-cvv" type="password" inputMode="numeric" autoComplete="off" readOnly={!canEdit}
+                                       value={fields.cardCvv} onChange={(e) => set('cardCvv', e.target.value)} />
+                            </label>
+                        </div>
+                    </>}
+                    {fields.secretType === 'LOGIN' && <>
+                        <label>TOTP seed (Base32 або otpauth URI)
+                            <input id="f-totp-seed" type="password" autoComplete="off" readOnly={!canEdit}
+                                   value={fields.totpSeed} onChange={(e) => set('totpSeed', e.target.value)} />
+                        </label>
+                        {fields.totpSeed && <div className="row" id="totp-code">
+                            <strong>{totpCode || 'Невірний seed'}</strong>
+                            <span className="hint">оновлення через {totpSeconds} с</span>
+                            {totpCode && <button type="button" id="copy-totp" className="secondary small"
+                                                 onClick={copyTotp}>Copy</button>}
+                        </div>}
+                    </>}
                     <label>Notes
                         <textarea id="f-notes" rows={3} readOnly={!canEdit}
                                   value={fields.notes} onChange={(e) => set('notes', e.target.value)} />

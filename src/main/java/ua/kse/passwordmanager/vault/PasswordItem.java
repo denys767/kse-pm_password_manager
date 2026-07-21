@@ -51,6 +51,11 @@ public class PasswordItem {
     @Column(nullable = false)
     private String ownerEmail;
 
+    /** Non-secret template discriminator; secrets are in encrypted payload. */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "type", nullable = false)
+    private SecretType type;
+
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
     private ItemType itemType;
@@ -160,6 +165,14 @@ public class PasswordItem {
 
     public void setOwnerEmail(String ownerEmail) {
         this.ownerEmail = ownerEmail;
+    }
+
+    public SecretType getType() {
+        return type;
+    }
+
+    public void setType(SecretType type) {
+        this.type = type;
     }
 
     public ItemType getItemType() {
