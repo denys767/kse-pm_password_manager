@@ -12,7 +12,7 @@
 
 ## Наступні пріоритети
 
-1. Browser extension та autofill — найбільше щоденне UX-покращення.
+1. ✅ Browser extension MVP та strict-origin autofill: Chrome MV3 popup працює з існуючим E2E vault, підтримує OIDC+PKCE, Argon2id/PBKDF2 unlock, пошук, fill і clipboard auto-clear. Залишаються auto-save, Firefox/Safari та enterprise deployment policy.
 2. ✅ TOTP і secret templates (API credentials, SSH keys, cards, secure notes) — типізовані записи, TOTP RFC 6238 у браузері.
 3. ✅ Локальний security dashboard: після unlock weak, reused, old (90+ днів) і breached secrets аналізуються локально; HIBP бачить лише 5-символьні SHA-1-префікси.
 4. ✅ Керований lifecycle Google/Keycloak Groups: allowlist, read-only diff і явний E2E provisioning. Вступ до групи лише створює pending-запис без collection key; MANAGER обгортає ключ у браузері. Вихід блокує доступ і вимагає client-side ротації до остаточного revoke.
