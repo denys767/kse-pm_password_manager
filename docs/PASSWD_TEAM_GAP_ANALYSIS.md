@@ -12,7 +12,7 @@
 1. Browser extension та autofill — найбільше щоденне UX-покращення.
 2. TOTP і secret templates (API credentials, SSH keys, cards, secure notes).
 3. Локальний security dashboard: weak, reused, old і breached secrets.
-4. Керований lifecycle Google Groups з явним E2E provisioning.
+4. ✅ Керований lifecycle Google/Keycloak Groups: allowlist, read-only diff і явний E2E provisioning. Вступ до групи лише створює pending-запис без collection key; MANAGER обгортає ключ у браузері. Вихід блокує доступ і вимагає client-side ротації до остаточного revoke.
 5. Timed external sharing; його потрібно проєктувати як окремий encrypted package.
 6. Mobile client та enterprise policies (IP allowlist, recovery/admin controls).
 

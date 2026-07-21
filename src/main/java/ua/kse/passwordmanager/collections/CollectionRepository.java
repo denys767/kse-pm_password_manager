@@ -6,4 +6,5 @@ import org.springframework.data.jpa.repository.JpaRepository;
 
 public interface CollectionRepository extends JpaRepository<Collection, UUID> {
     List<Collection> findByOwnerEmail(String ownerEmail);
+    List<Collection> findByKeycloakGroupIsNotNull();
 }

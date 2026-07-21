@@ -27,11 +27,15 @@ public final class CollectionDtos {
             /** Collection key wrapped for the requesting member. */
             String myWrappedKey,
             int memberCount,
+            int pendingProvisioningCount,
+            int pendingRemovalCount,
             Instant createdAt) {
 
-        static CollectionResponse from(Collection collection, CollectionMember me, int memberCount) {
+        static CollectionResponse from(Collection collection, CollectionMember me, int memberCount,
+                                       int pendingProvisioningCount, int pendingRemovalCount) {
             return new CollectionResponse(collection.getId(), collection.getName(),
                     collection.getOwnerEmail(), collection.getKeycloakGroup(), me.getRole(), me.getWrappedKey(), memberCount,
+                    pendingProvisioningCount, pendingRemovalCount,
                     collection.getCreatedAt());
         }
     }
@@ -50,11 +54,12 @@ public final class CollectionDtos {
             UUID id,
             String memberEmail,
             CollectionRole role,
+            CollectionMemberStatus status,
             String addedBy,
             Instant createdAt) {
 
         static MemberResponse from(CollectionMember member) {
-            return new MemberResponse(member.getId(), member.getMemberEmail(), member.getRole(),
+            return new MemberResponse(member.getId(), member.getMemberEmail(), member.getRole(), member.getStatus(),
                     member.getAddedBy(), member.getCreatedAt());
         }
     }
