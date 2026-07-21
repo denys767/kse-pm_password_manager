@@ -59,6 +59,18 @@ public class KeycloakAdminClient {
                 .toList();
     }
 
+    /** Returns names only; callers must still apply their local allowlist. */
+    public List<String> groups() {
+        String token = accessToken();
+        Group[] groups = get(adminUri("groups"), token, Group[].class);
+        return Arrays.stream(groups == null ? new Group[0] : groups)
+                .map(Group::name)
+                .filter(Objects::nonNull)
+                .filter(name -> !name.isBlank())
+                .sorted()
+                .toList();
+    }
+
     private String accessToken() {
         if (clientSecret == null || clientSecret.isBlank()) {
             throw new BadGatewayException("KEYCLOAK_ADMIN_CLIENT_SECRET is not configured");

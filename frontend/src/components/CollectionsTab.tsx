@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api, ApiError } from '../api';
 import * as pmc from '../crypto';
 import { unwrapCollectionKey } from '../itemKeys';
@@ -14,12 +14,15 @@ interface Props {
 export function CollectionsTab({ session, collections, onChanged }: Props) {
     const [name, setName] = useState('');
     const [keycloakGroup, setKeycloakGroup] = useState('');
+    const [availableGroups, setAvailableGroups] = useState<string[]>([]);
     const [error, setError] = useState<string | null>(null);
     const [expanded, setExpanded] = useState<string | null>(null);
     const [members, setMembers] = useState<CollectionMemberInfo[]>([]);
     const [memberForm, setMemberForm] = useState({ email: '', role: 'VIEWER' as CollectionRole });
-    const [suggestions, setSuggestions] = useState<string[]>([]);
-    const [selectedSuggestions, setSelectedSuggestions] = useState<string[]>([]);
+
+    useEffect(() => {
+        api<string[]>('/api/collection-groups').then(setAvailableGroups).catch((e) => setError(e.message));
+    }, []);
 
     async function create() {
         if (!name.trim()) {
@@ -49,8 +52,6 @@ export function CollectionsTab({ session, collections, onChanged }: Props) {
         }
         setError(null);
         setMembers(await api<CollectionMemberInfo[]>(`/api/collections/${collection.id}/members`));
-        setSuggestions([]);
-        setSelectedSuggestions([]);
         setExpanded(collection.id);
     }
 
@@ -90,26 +91,11 @@ export function CollectionsTab({ session, collections, onChanged }: Props) {
         }
     }
 
-    async function suggestMembers(collection: Collection) {
+    async function syncGroup(collection: Collection) {
         if (!collection.keycloakGroup) return;
         setError(null);
         try {
-            const found = await api<string[]>(`/api/collections/${collection.id}/keycloak-suggestions?group=${encodeURIComponent(collection.keycloakGroup)}`);
-            setSuggestions(found);
-            setSelectedSuggestions(found);
-        } catch (e) {
-            setError((e as Error).message);
-        }
-    }
-
-    async function addSuggestedMembers(collection: Collection) {
-        setError(null);
-        try {
-            for (const email of selectedSuggestions) {
-                await provisionMember(collection, email, memberForm.role);
-            }
-            setSuggestions([]);
-            setSelectedSuggestions([]);
+            await api(`/api/collections/${collection.id}/sync-group`, { method: 'POST' });
             setMembers(await api<CollectionMemberInfo[]>(`/api/collections/${collection.id}/members`));
             await onChanged();
         } catch (e) {
@@ -124,7 +110,7 @@ export function CollectionsTab({ session, collections, onChanged }: Props) {
      * item's (unchanged) item key is re-wrapped with the new collection key.
      */
     async function rotateCollectionKeyExcluding(collection: Collection, removedMemberId: string) {
-        const remainingMembers = members.filter((m) => m.id !== removedMemberId);
+        const remainingMembers = members.filter((m) => m.id !== removedMemberId && m.status === 'ACTIVE');
         const oldCollectionKey = await unwrapCollectionKey(collection.id, collections, session.keys);
         const newCollectionKey = await pmc.generateItemKey();
 
@@ -158,7 +144,7 @@ export function CollectionsTab({ session, collections, onChanged }: Props) {
     async function removeMember(collection: Collection, member: CollectionMemberInfo) {
         setError(null);
         try {
-            if (members.length > 1) {
+            if (members.filter((candidate) => candidate.status === 'ACTIVE').length > 1) {
                 await rotateCollectionKeyExcluding(collection, member.id);
             }
             await api(`/api/collections/${collection.id}/members/${member.id}`, { method: 'DELETE' });
@@ -188,8 +174,10 @@ export function CollectionsTab({ session, collections, onChanged }: Props) {
             <div className="toolbar">
                 <input id="collection-name" placeholder="Назва нової колекції (напр. Infra)"
                        value={name} onChange={(e) => setName(e.target.value)} />
-                <input id="keycloak-group" placeholder="Keycloak group (optional)"
-                       value={keycloakGroup} onChange={(e) => setKeycloakGroup(e.target.value)} />
+                <select id="keycloak-group" value={keycloakGroup} onChange={(e) => setKeycloakGroup(e.target.value)}>
+                    <option value="">No managed group</option>
+                    {availableGroups.map((group) => <option key={group} value={group}>{group}</option>)}
+                </select>
                 <button id="create-collection-btn" onClick={create}>+ Create collection</button>
             </div>
             <p className="hint">
@@ -206,6 +194,8 @@ export function CollectionsTab({ session, collections, onChanged }: Props) {
                                     <strong>{collection.name}</strong>
                                     <span className="badge">{collection.myRole.toLowerCase()}</span>
                                     <span className="item-meta"> {collection.memberCount} member(s) · owner {collection.ownerEmail}</span>
+                                    {collection.pendingProvisioningCount > 0 && <span className="item-meta"> · {collection.pendingProvisioningCount} pending provisioning</span>}
+                                    {collection.pendingRemovalCount > 0 && <span className="item-meta"> · {collection.pendingRemovalCount} pending removal</span>}
                                 </div>
                                 <div className="row">
                                     <button type="button" className="secondary small"
@@ -223,11 +213,17 @@ export function CollectionsTab({ session, collections, onChanged }: Props) {
                                     <ul className="permission-list" id="member-list">
                                         {members.map((member) => (
                                             <li key={member.id}>
-                                                <span>👤 {member.memberEmail} — {member.role.toLowerCase()}</span>
+                                                <span>👤 {member.memberEmail} — {member.role.toLowerCase()} {member.status !== 'ACTIVE' && `(${member.status.toLowerCase().replace('_', ' ')})`}</span>
                                                 {collection.myRole === 'MANAGER'
                                                     && member.memberEmail !== collection.ownerEmail && (
                                                     <button type="button" className="secondary small"
-                                                            onClick={() => removeMember(collection, member)}>Revoke</button>
+                                                            onClick={() => member.status === 'PENDING_PROVISIONING'
+                                                                ? provisionMember(collection, member.memberEmail, member.role)
+                                                                    .then(async () => { setMembers(await api<CollectionMemberInfo[]>(`/api/collections/${collection.id}/members`)); await onChanged(); })
+                                                                    .catch((e) => setError(e.message))
+                                                                : removeMember(collection, member)}>
+                                                        {member.status === 'PENDING_PROVISIONING' ? 'Provision key' : 'Revoke'}
+                                                    </button>
                                                 )}
                                             </li>
                                         ))}
@@ -245,21 +241,11 @@ export function CollectionsTab({ session, collections, onChanged }: Props) {
                                             </select>
                                             <button type="button" id="add-member-btn" className="secondary"
                                                     onClick={() => addMember(collection)}>Add</button>
-                                            {collection.keycloakGroup && <button type="button" id="suggest-members-btn" className="secondary"
-                                                    onClick={() => suggestMembers(collection)}>Suggest members</button>}
+                                            {collection.keycloakGroup && <button type="button" id="sync-group-btn" className="secondary"
+                                                    onClick={() => syncGroup(collection)}>Sync group</button>}
                                         </div>
-                                        {suggestions.length > 0 && <div className="hint" id="keycloak-suggestions">
-                                            <p>Keycloak group <strong>{collection.keycloakGroup}</strong>: select members to provision explicitly.</p>
-                                            {suggestions.map((email) => <label key={email} className="row">
-                                                <input type="checkbox" checked={selectedSuggestions.includes(email)}
-                                                       onChange={(e) => setSelectedSuggestions(e.target.checked
-                                                           ? [...selectedSuggestions, email]
-                                                           : selectedSuggestions.filter((selected) => selected !== email))} />
-                                                {email}
-                                            </label>)}
-                                            <button type="button" className="secondary small" disabled={selectedSuggestions.length === 0}
-                                                    onClick={() => addSuggestedMembers(collection)}>Add selected</button>
-                                        </div>}
+                                        {collection.pendingProvisioningCount > 0 && <p className="hint" id="pending-provisioning-banner">New group members have no access until you click “Provision key”.</p>}
+                                        {collection.pendingRemovalCount > 0 && <p className="hint" id="pending-removal-banner">Removed group members are blocked; click “Revoke” to rotate the collection key and finalize removal.</p>}
                                     </>)}
                                 </div>
                             )}

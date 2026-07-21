@@ -58,6 +58,21 @@ class KeycloakAdminClientTest {
     }
 
     @Test
+    void listsOnlyNonBlankGroupNames() throws Exception {
+        server = server(exchange -> {
+            if (exchange.getRequestURI().getPath().endsWith("/token")) {
+                respond(exchange, 200, "{\"access_token\":\"service-token\"}");
+            } else if (exchange.getRequestURI().getPath().endsWith("/groups")) {
+                assertThat(exchange.getRequestURI().getQuery()).isNull();
+                respond(exchange, 200, "[{\"id\":\"a\",\"name\":\"z-team\"},{\"id\":\"b\",\"name\":\"\"},{\"id\":\"c\",\"name\":\"a-team\"}]");
+            } else {
+                respond(exchange, 404, "{}");
+            }
+        });
+        assertThat(client().groups()).containsExactly("a-team", "z-team");
+    }
+
+    @Test
     void handlesGroupNotFoundAndEmptyGroup() throws Exception {
         server = server(exchange -> {
             if (exchange.getRequestURI().getPath().endsWith("/token")) {

@@ -11,6 +11,8 @@ public interface CollectionMemberRepository extends JpaRepository<CollectionMemb
 
     List<CollectionMember> findByCollectionId(UUID collectionId);
 
+    List<CollectionMember> findByCollectionIdAndStatus(UUID collectionId, CollectionMemberStatus status);
+
     Optional<CollectionMember> findByCollectionIdAndMemberEmail(UUID collectionId, String memberEmail);
 
     Optional<CollectionMember> findByIdAndCollectionId(UUID id, UUID collectionId);

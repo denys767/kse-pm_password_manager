@@ -41,8 +41,12 @@ public class CollectionMember {
     @Column(nullable = false)
     private CollectionRole role;
 
-    @Column(nullable = false, length = 4096)
+    @Column(length = 4096)
     private String wrappedKey;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    private CollectionMemberStatus status = CollectionMemberStatus.ACTIVE;
 
     @Column(nullable = false)
     private String addedBy;
@@ -61,6 +65,13 @@ public class CollectionMember {
         this.wrappedKey = wrappedKey;
         this.addedBy = addedBy;
         this.createdAt = Instant.now();
+    }
+
+    public static CollectionMember pending(Collection collection, String memberEmail, String addedBy) {
+        CollectionMember member = new CollectionMember(collection, memberEmail, CollectionRole.VIEWER,
+                null, addedBy);
+        member.status = CollectionMemberStatus.PENDING_PROVISIONING;
+        return member;
     }
 
     public UUID getId() {
@@ -89,6 +100,7 @@ public class CollectionMember {
 
     public void setWrappedKey(String wrappedKey) {
         this.wrappedKey = wrappedKey;
+        this.status = CollectionMemberStatus.ACTIVE;
     }
 
     public String getAddedBy() {
@@ -98,4 +110,7 @@ public class CollectionMember {
     public Instant getCreatedAt() {
         return createdAt;
     }
+
+    public CollectionMemberStatus getStatus() { return status; }
+    public void setStatus(CollectionMemberStatus status) { this.status = status; }
 }
