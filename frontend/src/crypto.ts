@@ -181,6 +181,29 @@ export async function decryptField(itemKey: CryptoKey, ctB64: string, ivB64: str
     return td.decode(await aesDecrypt(itemKey, ctB64, ivB64));
 }
 
+/** Encrypts a self-contained external snapshot with a fresh AES-256 key.
+ * The returned key is URL-fragment material only: callers must not send or
+ * persist it. */
+export async function encryptExternalShare(snapshot: unknown): Promise<{
+    encryptedPackage: string; packageIv: string; fragmentKey: string;
+}> {
+    const key = await generateItemKey();
+    const encrypted = await aesEncrypt(key, te.encode(JSON.stringify(snapshot)));
+    return {
+        encryptedPackage: encrypted.ct,
+        packageIv: encrypted.iv,
+        fragmentKey: b64(await crypto.subtle.exportKey('raw', key)),
+    };
+}
+
+/** Imports the fragment-only key just long enough to decrypt a public package. */
+export async function decryptExternalShare<T>(fragmentKey: string, encryptedPackage: string,
+                                              packageIv: string): Promise<T> {
+    const key = await crypto.subtle.importKey('raw', unb64(fragmentKey), { name: 'AES-GCM' }, false,
+        ['decrypt']);
+    return JSON.parse(td.decode(await aesDecrypt(key, encryptedPackage, packageIv))) as T;
+}
+
 // ------------------------------------------------------------------ TOTP ---
 
 /** Decode a Base32 seed locally. Accepts a copied otpauth URI as a convenience. */

@@ -8,6 +8,7 @@ import { CollectionsTab } from './components/CollectionsTab';
 import { AuditTab } from './components/AuditTab';
 import { SettingsTab } from './components/SettingsTab';
 import { DashboardTab } from './components/DashboardTab';
+import { ExternalSharePage } from './components/ExternalSharePage';
 import type { Collection, FrontendConfig, Me, Settings } from './types';
 
 export interface Session {
@@ -18,6 +19,8 @@ export interface Session {
 type Tab = 'vault' | 'dashboard' | 'collections' | 'audit' | 'settings';
 
 export default function App() {
+    const externalShareMatch = window.location.pathname.match(/^\/share\/([0-9a-f-]{36})$/i);
+    if (externalShareMatch) return <ExternalSharePage shareId={externalShareMatch[1]} />;
     const [config, setConfig] = useState<FrontendConfig | null>(null);
     const [oidcReady, setOidcReady] = useState(false);
     const [session, setSession] = useState<Session | null>(null);
