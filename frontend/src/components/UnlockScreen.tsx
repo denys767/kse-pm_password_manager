@@ -3,6 +3,7 @@ import { api } from '../api';
 import { assessPassphrase, PassphraseAssessment } from '../passphrase';
 import { reauthenticateForVaultReset } from '../auth';
 import type { Me } from '../types';
+import { useI18n } from '../i18n';
 
 interface Props {
     devMode: boolean;
@@ -17,6 +18,7 @@ interface Props {
 type Impact = { allowed: boolean; ownedItemsToDelete: number; incomingSharesToRemove: number; membershipsToRemove: number; blockers: { kind: string; id: string; name: string; reason: string }[] };
 
 export function UnlockScreen({ devMode, user, hasVault, startRecovery, onUnlock, onCreate, onReset }: Props) {
+    const { language } = useI18n(); const tr = (uk: string, en: string) => language === 'uk' ? uk : en;
     const [email, setEmail] = useState(''); const [roles, setRoles] = useState(''); const [groups, setGroups] = useState('');
     const [passphrase, setPassphrase] = useState(''); const [confirmation, setConfirmation] = useState('');
     const [assessment, setAssessment] = useState<PassphraseAssessment | null>(null);
@@ -34,10 +36,10 @@ export function UnlockScreen({ devMode, user, hasVault, startRecovery, onUnlock,
 
     async function submit(event: FormEvent) {
         event.preventDefault(); setError(null);
-        if (!passphrase || (devMode && !email)) { setError('Вкажіть email і Vault Passphrase.'); return; }
+        if (!passphrase || (devMode && !email)) { setError(tr('Вкажіть email і Vault Passphrase.', 'Enter an email and Vault passphrase.')); return; }
         if (creating) {
-            if (passphrase !== confirmation) { setError('Passphrase і підтвердження не збігаються.'); return; }
-            if (!assessment || assessment.score < 3) { setError('Оберіть сильнішу Vault Passphrase.'); return; }
+            if (passphrase !== confirmation) { setError(tr('Passphrase і підтвердження не збігаються.', 'The passphrase and confirmation do not match.')); return; }
+            if (!assessment || assessment.score < 3) { setError(tr('Оберіть сильнішу Vault Passphrase.', 'Choose a stronger Vault passphrase.')); return; }
         }
         setBusy(true);
         try {
@@ -69,7 +71,7 @@ export function UnlockScreen({ devMode, user, hasVault, startRecovery, onUnlock,
 
     async function transfer(blocker: Impact['blockers'][number]) {
         const successorEmail = successors[blocker.id]?.trim();
-        if (!successorEmail) { setError('Вкажіть email нового власника.'); return; }
+        if (!successorEmail) { setError(tr('Вкажіть email нового власника.', 'Enter the new owner’s email.')); return; }
         setBusy(true); setError(null);
         try {
             await api('/api/vault/ownership-transfers', { method: 'POST', body: JSON.stringify({ kind: blocker.kind, resourceId: blocker.id, successorEmail }) });
@@ -79,19 +81,19 @@ export function UnlockScreen({ devMode, user, hasVault, startRecovery, onUnlock,
 
     return <section id="unlock-screen" className="unlock-layout">
         <div className="card narrow unlock-card">
-            <p className="eyebrow">{creating ? 'ЗАХИЩЕНИЙ VAULT' : 'ПОВЕРНЕННЯ ДО VAULT'}</p>
-            <h1>{recovering ? 'Створіть новий Vault' : !hasVault ? 'Створіть Vault Passphrase' : 'Розблокуйте Vault'}</h1>
+            {creating && <p className="eyebrow">{tr('ЗАХИЩЕНИЙ VAULT', 'SECURE VAULT')}</p>}
+            <h1>{recovering ? tr('Створіть новий Vault', 'Create a new vault') : !hasVault ? tr('Створіть Vault Passphrase', 'Create a Vault passphrase') : tr('Розблокуйте Vault', 'Unlock vault')}</h1>
             {user && <div className="identity-card"><span className="avatar">{user.displayName.slice(0, 1).toUpperCase()}</span><div><strong>{user.displayName}</strong><small>{user.email}</small></div></div>}
-            <p className="hint">{creating ? 'Ця фраза шифрує ваш приватний ключ лише у браузері. Ми не можемо її відновити.' : 'Ваша Vault Passphrase ніколи не надсилається на сервер.'}</p>
+            <p className="hint">{creating ? tr('Ця фраза шифрує ваш приватний ключ лише у браузері. Ми не можемо її відновити.', 'This passphrase encrypts your private key only in the browser. We cannot recover it.') : tr('Ваша Vault Passphrase ніколи не надсилається на сервер.', 'Your Vault passphrase is never sent to the server.')}</p>
             <form onSubmit={submit}>
-                {devMode && <><label>Email (dev mode)<input id="dev-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} /></label><label>Ролі<input id="dev-roles" value={roles} onChange={(e) => setRoles(e.target.value)} /></label><label>Групи<input id="dev-groups" value={groups} onChange={(e) => setGroups(e.target.value)} /></label></>}
-                <label>Vault Passphrase<input id="passphrase" type="password" autoComplete={creating ? 'new-password' : 'current-password'} value={passphrase} onChange={(e) => setPassphrase(e.target.value)} autoFocus /></label>
-                {creating && <><label>Підтвердіть Vault Passphrase<input id="passphrase-confirmation" type="password" autoComplete="new-password" value={confirmation} onChange={(e) => setConfirmation(e.target.value)} /></label>
+                {devMode && <><label>{tr('Email (режим розробки)', 'Email (development mode)')}<input id="dev-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} /></label><label>{tr('Ролі', 'Roles')}<input id="dev-roles" value={roles} onChange={(e) => setRoles(e.target.value)} /></label><label>{tr('Групи', 'Groups')}<input id="dev-groups" value={groups} onChange={(e) => setGroups(e.target.value)} /></label></>}
+                <label>{tr('Vault Passphrase', 'Vault passphrase')}<input id="passphrase" type="password" autoComplete={creating ? 'new-password' : 'current-password'} value={passphrase} onChange={(e) => setPassphrase(e.target.value)} autoFocus /></label>
+                {creating && <><label>{tr('Підтвердіть Vault Passphrase', 'Confirm Vault passphrase')}<input id="passphrase-confirmation" type="password" autoComplete="new-password" value={confirmation} onChange={(e) => setConfirmation(e.target.value)} /></label>
                     {assessment && <div className={`passphrase-strength s${assessment.score}`}><div className="strength-track"><div className="strength-bar" style={{ width: `${(assessment.score + 1) * 20}%` }} /></div><strong>{assessment.label}</strong><span>{assessment.message}</span></div>}</>}
-                <button id="unlock-btn" type="submit" disabled={busy}>{busy ? 'Зачекайте…' : recovering ? 'Скинути та створити Vault' : !hasVault ? 'Створити Vault' : 'Розблокувати Vault'}</button>
+                <button id="unlock-btn" type="submit" disabled={busy}>{busy ? tr('Зачекайте…', 'Please wait…') : recovering ? tr('Скинути та створити Vault', 'Reset and create vault') : !hasVault ? tr('Створити Vault', 'Create vault') : tr('Розблокувати Vault', 'Unlock vault')}</button>
                 {error && <p id="unlock-error" className="error">{error}</p>}
             </form>
-            {hasVault && !recovering && <button className="linklike recovery-link" onClick={requestRecovery}>Забули Vault Passphrase?</button>}
+            {hasVault && !recovering && <button className="linklike recovery-link" onClick={requestRecovery}>{tr('Забули Vault Passphrase?', 'Forgot your Vault passphrase?')}</button>}
             {recovering && <div className="recovery-box">{impact?.blockers.length ? <><strong>Спершу передайте командні ресурси</strong><p>Новий власник уже має бути користувачем із доступом до запису або членом колекції.</p>{impact.blockers.map((b) => <div className="transfer-row" key={b.id}><span>{b.name} <small>({b.reason})</small></span><input type="email" placeholder="new.owner@kse.org.ua" value={successors[b.id] || ''} onChange={(e) => setSuccessors((s) => ({ ...s, [b.id]: e.target.value }))} /><button type="button" className="secondary small" disabled={busy} onClick={() => transfer(b)}>Передати</button></div>)}</> : <><strong>Незворотна дія</strong><p>Буде видалено {impact?.ownedItemsToDelete ?? 0} ваших записів і відкликано доступи. Team resources не видаляються.</p></>}</div>}
         </div>
     </section>;

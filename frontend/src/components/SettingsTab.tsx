@@ -1,6 +1,8 @@
 import { ChangeEvent, useEffect, useState } from 'react';
 import { api } from '../api';
 import type { FrontendConfig, Settings, SyncMode } from '../types';
+import { useI18n } from '../i18n';
+import { useTheme } from '../theme';
 
 interface Props {
     settings: Settings;
@@ -23,6 +25,8 @@ async function resizeToAvatar(file: File): Promise<string> {
 }
 
 export function SettingsTab({ settings, onSaved, isAdmin, config }: Props) {
+    const { t } = useI18n();
+    const { preference, setPreference } = useTheme();
     const [syncMode, setSyncMode] = useState<SyncMode>(settings.defaultSyncMode);
     const [clipboardSeconds, setClipboardSeconds] = useState(settings.clipboardClearSeconds);
     const [avatarDataUrl, setAvatarDataUrl] = useState<string | null>(settings.avatarDataUrl);
@@ -65,7 +69,12 @@ export function SettingsTab({ settings, onSaved, isAdmin, config }: Props) {
     return (
         <section id="tab-settings" className="tab-panel">
             <div className="card narrow">
-                <h3>Налаштування</h3>
+                <h3>{t('settings')}</h3>
+                <label>{t('theme')}
+                    <select id="setting-theme" value={preference} onChange={(e) => setPreference(e.target.value as 'system' | 'light' | 'dark')}>
+                        <option value="system">{t('themeSystem')}</option><option value="light">{t('themeLight')}</option><option value="dark">{t('themeDark')}</option>
+                    </select>
+                </label>
                 <label>Аватар
                     <div className="row">
                         {avatarDataUrl
@@ -89,20 +98,16 @@ export function SettingsTab({ settings, onSaved, isAdmin, config }: Props) {
                            value={clipboardSeconds}
                            onChange={(e) => setClipboardSeconds(Number(e.target.value))} />
                 </label>
-                <button id="save-settings-btn" onClick={() => save()}>Save</button>
+                <button id="save-settings-btn" onClick={() => save()}>{t('save')}</button>
                 <p id="settings-status" className="hint">{status}</p>
             </div>
             {config.authMode === 'oidc' && (
                 <div className="card narrow" style={{ marginTop: 18 }}>
-                    <h3>Обліковий запис</h3>
-                    <p className="hint">
-                        Passkey/біометрію (додати, змінити, видалити), сесії входу та профіль Google
-                        керуєш не тут, а в Keycloak Account Console — окремій сторінці поза
-                        застосунком.
-                    </p>
+                    <h3>{t('account')}</h3>
+                    <p className="hint">{t('accountDescription')}</p>
                     <a id="account-console-btn" href={`${config.keycloakUrl}/realms/${encodeURIComponent(config.realm ?? '')}/account/`}
                        target="_blank" rel="noopener noreferrer">
-                        <button type="button">Відкрити Account Console</button>
+                        <button type="button">{t('accountConsole')}</button>
                     </a>
                 </div>
             )}

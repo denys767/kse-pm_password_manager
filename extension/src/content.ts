@@ -22,6 +22,38 @@ function passwordInputs(): HTMLInputElement[] {
         .filter((el) => el.offsetParent !== null && !el.disabled);
 }
 
+function generatePassword(length = 20): string {
+    const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%^&*_-+=';
+    const random = crypto.getRandomValues(new Uint32Array(length));
+    return [...random].map((value) => alphabet[value % alphabet.length]).join('');
+}
+
+function setInput(input: HTMLInputElement, value: string): void {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+    setter?.call(input, value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+/** Offers a generated password only on sign-up/new-password forms; it is saved only after submit. */
+function offerGeneratedPassword(): void {
+    const inputs = passwordInputs().filter((input) => input.autocomplete.includes('new-password'));
+    if (inputs.length === 0 || document.querySelector('[data-kse-pm-generate]')) return;
+    const anchor = inputs[0];
+    const button = document.createElement('button');
+    button.type = 'button'; button.dataset.ksePmGenerate = '1'; button.textContent = 'Generate secure password';
+    button.title = 'Generate and fill a strong password';
+    button.style.cssText = 'position:absolute;z-index:2147483647;cursor:pointer;border:0;background:#003964;color:#fff;border-radius:4px;padding:4px 7px;font:12px system-ui,sans-serif;';
+    const place = () => { const rect = anchor.getBoundingClientRect(); button.style.top = `${rect.top + window.scrollY - 30}px`; button.style.left = `${rect.right + window.scrollX - 164}px`; };
+    place(); window.addEventListener('resize', place); window.addEventListener('scroll', place, true);
+    button.addEventListener('click', () => {
+        const password = generatePassword();
+        inputs.forEach((input) => setInput(input, password));
+        toast('A strong password was filled. It will be offered for saving after registration.');
+    });
+    document.body.appendChild(button);
+}
+
 /** Inline "fill" affordance next to any password field that matches a saved item for this origin. */
 async function offerAutofill(): Promise<void> {
     let items: PasswordItem[];
@@ -108,4 +140,5 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
 });
 
 void offerAutofill();
+void offerGeneratedPassword();
 watchForNewCredentials();

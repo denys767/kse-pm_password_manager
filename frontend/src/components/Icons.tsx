@@ -42,6 +42,12 @@ export function IconWarning(props: SVGProps<SVGSVGElement>) {
 export function IconFolder(props: SVGProps<SVGSVGElement>) {
     return <Svg {...props}><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5h4l2 2.5h9A1.5 1.5 0 0 1 21 9v8.5A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5Z" /></Svg>;
 }
+export function IconTag(props: SVGProps<SVGSVGElement>) {
+    return <Svg {...props}><path d="M20 13 12.5 20.5a2.1 2.1 0 0 1-3 0L3.5 14.5a2.1 2.1 0 0 1 0-3L11 4h7a2 2 0 0 1 2 2Z" /><circle cx="15.5" cy="8.5" r="1" /></Svg>;
+}
+export function IconTrash(props: SVGProps<SVGSVGElement>) {
+    return <Svg {...props}><path d="M3 6h18" /><path d="M8 6V4h8v2" /><path d="M19 6l-1 15H6L5 6" /><path d="M10 11v5M14 11v5" /></Svg>;
+}
 export function IconUser(props: SVGProps<SVGSVGElement>) {
     return <Svg {...props}><circle cx="12" cy="8" r="4" /><path d="M4 20c1.5-4 5-6 8-6s6.5 2 8 6" /></Svg>;
 }

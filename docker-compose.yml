@@ -11,8 +11,8 @@ services:
       - pgdata:/var/lib/postgresql/data
 
   keycloak:
-    image: quay.io/keycloak/keycloak:26.0
-    command: start-dev --import-realm --http-port=8081
+    image: quay.io/keycloak/keycloak:26.4.6
+    command: start-dev --features=passkeys --import-realm --http-port=8081
     environment:
       KEYCLOAK_ADMIN: admin
       KEYCLOAK_ADMIN_PASSWORD: admin

@@ -16,7 +16,7 @@ function error(message: string): void { document.querySelector<HTMLElement>('#st
 function renderItems(query = ''): void {
     const matching = items.filter((item) => matchesOrigin(item.url, activeUrl)).filter((item) => `${item.name} ${item.username ?? ''} ${item.url ?? ''}`.toLowerCase().includes(query.toLowerCase()));
     const list = document.querySelector<HTMLDivElement>('#items')!;
-    list.innerHTML = matching.length ? matching.map((item) => `<article><strong>${escape(item.name)}</strong><small>${escape(item.username ?? '')}</small><small>${escape(item.url ?? '')}</small><div><button data-action="fill" data-id="${item.id}">Fill</button><button data-action="copy" data-id="${item.id}">Copy</button><button data-action="totp-scan" data-id="${item.id}" title="Скануй QR 2FA на цій сторінці">Scan QR (2FA)</button></div></article>`).join('') : '<p class="empty">Немає записів для точного origin цієї вкладки.</p>';
+    list.innerHTML = matching.length ? matching.map((item) => `<article><strong>${escape(item.name)}</strong><small>${escape(item.username ?? '')}</small><small>${escape(item.url ?? '')}</small><div><button data-action="fill" data-id="${item.id}">Fill</button><button data-action="copy" data-id="${item.id}">Copy</button><button data-action="totp" data-id="${item.id}">TOTP</button><button data-action="totp-scan" data-id="${item.id}" title="Скануй QR 2FA на цій сторінці">Scan QR (2FA)</button></div></article>`).join('') : '<p class="empty">Немає записів для точного origin цієї вкладки.</p>';
     list.querySelectorAll<HTMLButtonElement>('button').forEach((button) => button.addEventListener('click', () => void act(button.dataset.action!, button.dataset.id!)));
 }
 async function act(action: string, id: string): Promise<void> {
@@ -24,6 +24,7 @@ async function act(action: string, id: string): Promise<void> {
         const item = items.find((value) => value.id === id)!;
         if (action === 'fill') { await send({ type: 'autofill', item }); error('Поля заповнено.'); return; }
         if (action === 'copy') { await send({ type: 'copy', item }); error('Пароль скопійовано; він буде очищений автоматично.'); return; }
+        if (action === 'totp') { const { code } = await send<{ code: string | null }>({ type: 'totp', item }); error(code ? `TOTP: ${code}` : 'У записі немає TOTP-секрету.'); return; }
         if (action === 'totp-scan') {
             if (!activeTabId) { error('Немає активної вкладки.'); return; }
             error('Скануємо QR на сторінці…');

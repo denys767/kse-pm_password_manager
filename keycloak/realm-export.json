@@ -11,6 +11,7 @@
   "webAuthnPolicyPasswordlessAuthenticatorAttachment": "platform",
   "webAuthnPolicyPasswordlessRequireResidentKey": "Yes",
   "webAuthnPolicyPasswordlessUserVerificationRequirement": "required",
+  "webAuthnPolicyPasswordlessPasskeysEnabled": true,
   "webAuthnPolicyPasswordlessCreateTimeout": 0,
   "webAuthnPolicyPasswordlessAvoidSameAuthenticatorRegister": false,
   "webAuthnPolicyPasswordlessAcceptableAaguids": [],
@@ -31,20 +32,19 @@
   "authenticationFlows": [
     {
       "alias": "browser-passwordless",
-      "description": "Google login only; passkey registered as a required action right after, not a login step. See docs/KEYCLOAK.md.",
+      "description": "Email plus WebAuthn login, with Google as an explicit alternative provider.",
       "providerId": "basic-flow",
       "topLevel": true,
       "builtIn": false,
       "authenticationExecutions": [
         { "authenticator": "auth-cookie", "requirement": "ALTERNATIVE", "priority": 10, "userSetupAllowed": false, "autheticatorFlow": false },
-        { "authenticator": "identity-provider-redirector", "requirement": "ALTERNATIVE", "priority": 25, "userSetupAllowed": false, "autheticatorFlow": false,
-          "authenticatorConfig": "google-auto-redirect" },
-        { "authenticatorFlow": true, "requirement": "DISABLED", "priority": 30, "flowAlias": "browser-passwordless forms", "userSetupAllowed": false }
+        { "authenticator": "identity-provider-redirector", "requirement": "ALTERNATIVE", "priority": 25, "userSetupAllowed": false, "autheticatorFlow": false },
+        { "authenticatorFlow": true, "requirement": "REQUIRED", "priority": 30, "flowAlias": "browser-passwordless forms", "userSetupAllowed": false }
       ]
     },
     {
       "alias": "browser-passwordless forms",
-      "description": "Disabled — no-fallback username+WebAuthn step; kept for a future conditional rework.",
+      "description": "User enters email, then authenticates with a passwordless WebAuthn credential.",
       "providerId": "basic-flow",
       "topLevel": false,
       "builtIn": false,
@@ -53,9 +53,6 @@
         { "authenticator": "webauthn-authenticator-passwordless", "requirement": "REQUIRED", "priority": 20, "userSetupAllowed": false, "autheticatorFlow": false }
       ]
     }
-  ],
-  "authenticatorConfig": [
-    { "alias": "google-auto-redirect", "config": { "defaultProvider": "google" } }
   ],
   "roles": {
     "realm": [

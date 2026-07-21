@@ -25,6 +25,12 @@ non-localhost deployment; `OIDC_CLIENT_ID` defaults to the dedicated `kse-pm-ext
 
 ### Features
 
+For a non-localhost deployment, set build-time values instead of editing source:
+
+```bash
+VITE_API_ORIGIN=https://pm.example.com VITE_OIDC_CLIENT_ID=kse-pm-extension npm run build
+```
+
 - **Fill / Copy** (popup) — unchanged from the original MVP, strict origin match only.
 - **Inline autofill icon** — `content.ts` marks password fields on pages with a matching saved
   item with a small 🔑 button (Shadow DOM, no page-CSS leakage) that triggers the same `autofill`
@@ -34,6 +40,10 @@ non-localhost deployment; `OIDC_CLIENT_ID` defaults to the dedicated `kse-pm-ext
   that origin+username, `background.ts` creates one automatically (owner-wrapped with the user's
   public key, `defaultSyncMode` from `/api/settings`) and the content script shows a small toast.
   It never overwrites an existing saved password — only creates when nothing matches.
+- **Suggested password on sign-up** — on forms whose password inputs are marked
+  `autocomplete="new-password"`, the extension offers **Generate secure password**.
+  It fills password and confirmation inputs; the value is only offered for
+  encrypted vault storage after the registration form is submitted.
 - **TOTP QR scan** — popup's **Scan QR (2FA)** button messages the content script, which scans
   every `<img>`/`<canvas>` on the current page with `jsqr`, looking for a decoded `otpauth://`
   string (typical of a site's "scan this QR to set up 2FA" screen). A match is merged into the

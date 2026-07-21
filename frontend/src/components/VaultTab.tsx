@@ -7,6 +7,8 @@ import { unwrapItemKeyFor } from '../itemKeys';
 import { loadLocalItems } from '../localItems';
 import { ItemDialog } from './ItemDialog';
 import { IconFolder } from './Icons';
+import { parseTags, collectTags } from '../tags';
+import { useI18n } from '../i18n';
 import type { Session } from '../App';
 import type { Collection, PasswordItem, Settings } from '../types';
 
@@ -16,11 +18,14 @@ interface Props {
     collections: Collection[];
     openItemId?: string | null;
     onItemOpened?: () => void;
+    tagFilter?: string | null;
+    onClearTagFilter?: () => void;
 }
 
 type DialogState = { mode: 'add' } | { mode: 'edit'; item: PasswordItem } | null;
 
-export function VaultTab({ session, settings, collections, openItemId, onItemOpened }: Props) {
+export function VaultTab({ session, settings, collections, openItemId, onItemOpened, tagFilter, onClearTagFilter }: Props) {
+    const { t } = useI18n();
     const [serverItems, setServerItems] = useState<PasswordItem[]>([]);
     const [localItems, setLocalItems] = useState<PasswordItem[]>([]);
     const [search, setSearch] = useState('');
@@ -147,7 +152,10 @@ export function VaultTab({ session, settings, collections, openItemId, onItemOpe
     }
 
     const query = search.trim().toLowerCase();
-    const items = [...serverItems, ...localItems]
+    const allItems = [...serverItems, ...localItems];
+    const availableTags = collectTags(allItems.map((item) => item.tags)).map((tag) => tag.name);
+    const items = allItems
+        .filter((item) => !tagFilter || parseTags(item.tags).some((tag) => tag.localeCompare(tagFilter, undefined, { sensitivity: 'accent' }) === 0))
         .filter((item) => !query || [item.name, item.url, item.username, item.tags]
             .some((v) => v && v.toLowerCase().includes(query)))
         .sort((a, b) => a.name.localeCompare(b.name));
@@ -164,16 +172,17 @@ export function VaultTab({ session, settings, collections, openItemId, onItemOpe
     return (
         <section id="tab-vault" className="tab-panel">
             <div className="toolbar">
-                <input id="search" type="search" placeholder="Пошук за назвою, URL, тегами…"
+                <input id="search" type="search" placeholder={t('search')}
                        value={search} onChange={(e) => setSearch(e.target.value)} />
                 <button id="export-btn" className="secondary" disabled={busy !== null}
-                        onClick={() => exportCsv()}>Export CSV</button>
+                        onClick={() => exportCsv()}>{t('exportCsv')}</button>
                 <button id="import-btn" className="secondary" disabled={busy !== null}
-                        onClick={() => importInput.current?.click()}>Import CSV</button>
+                        onClick={() => importInput.current?.click()}>{t('importCsv')}</button>
                 <input ref={importInput} type="file" accept=".csv,text/csv" hidden
                        onChange={importCsv} />
-                <button id="add-btn" onClick={() => setDialog({ mode: 'add' })}>+ Add secret</button>
+                <button id="add-btn" onClick={() => setDialog({ mode: 'add' })}>{t('addSecret')}</button>
             </div>
+            {tagFilter && <div className="active-tag-filter"><span>{t('activeTag')} <strong>{tagFilter}</strong></span><button type="button" className="secondary small" onClick={onClearTagFilter}>{t('clear')}</button></div>}
             {busy && <p className="hint">{busy}</p>}
             {error && <p className="error">{error}</p>}
             <ul id="item-list" className="item-list">
@@ -195,12 +204,12 @@ export function VaultTab({ session, settings, collections, openItemId, onItemOpe
                                 {[item.username, item.url].filter(Boolean).join(' · ')}
                             </div>
                         </div>
-                        <button className="secondary small">Open</button>
+                        <button className="secondary small">{t('open')}</button>
                     </li>
                 ))}
             </ul>
             {items.length === 0 && (
-                <p id="empty-state" className="hint">Vault порожній. Додайте перший пароль.</p>
+                <p id="empty-state" className="hint">{t('emptyVault')}</p>
             )}
             {dialog && (
                 <ItemDialog
@@ -208,6 +217,7 @@ export function VaultTab({ session, settings, collections, openItemId, onItemOpe
                     settings={settings}
                     collections={collections}
                     item={dialog.mode === 'edit' ? dialog.item : null}
+                    availableTags={availableTags}
                     onClose={async (changed) => {
                         setDialog(null);
                         if (changed) {

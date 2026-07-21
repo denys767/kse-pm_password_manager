@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react';
 import { api, ApiError } from '../api';
 import * as pmc from '../crypto';
 import { unwrapCollectionKey } from '../itemKeys';
-import { IconUser } from './Icons';
+import { IconTrash, IconUser } from './Icons';
+import { useI18n } from '../i18n';
 import type { Session } from '../App';
 import type { Collection, CollectionMemberInfo, CollectionRole, PasswordItem } from '../types';
 
@@ -13,6 +14,7 @@ interface Props {
 }
 
 export function CollectionsTab({ session, collections, onChanged }: Props) {
+    const { t } = useI18n();
     const [name, setName] = useState('');
     const [keycloakGroup, setKeycloakGroup] = useState('');
     const [availableGroups, setAvailableGroups] = useState<string[]>([]);
@@ -183,13 +185,13 @@ export function CollectionsTab({ session, collections, onChanged }: Props) {
     return (
         <section id="tab-collections" className="tab-panel">
             <div className="toolbar">
-                <input id="collection-name" placeholder="Назва нової колекції (напр. Infra)"
+                <input id="collection-name" placeholder={t('collectionName')}
                        value={name} onChange={(e) => setName(e.target.value)} />
                 <select id="keycloak-group" value={keycloakGroup} onChange={(e) => setKeycloakGroup(e.target.value)}>
                     <option value="">No managed group</option>
                     {availableGroups.map((group) => <option key={group} value={group}>{group}</option>)}
                 </select>
-                <button id="create-collection-btn" onClick={create}>+ Create collection</button>
+                <button id="create-collection-btn" onClick={create}>{t('createCollection')}</button>
             </div>
             <p className="hint">
                 Колекція — командний vault: її ключ видається кожному члену окремо (обгорнутий його
@@ -200,22 +202,20 @@ export function CollectionsTab({ session, collections, onChanged }: Props) {
                 {collections.map((collection) => (
                     <li key={collection.id} className="collection-item">
                         <div style={{ width: '100%' }}>
-                            <div className="row" style={{ justifyContent: 'space-between' }}>
+                            <div className="row collection-summary" role="button" tabIndex={0} aria-expanded={expanded === collection.id}
+                                 onClick={() => toggleMembers(collection).catch((e) => setError(e.message))}
+                                 onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); void toggleMembers(collection).catch((e) => setError(e.message)); } }}>
                                 <div>
                                     <strong>{collection.name}</strong>
                                     <span className="badge">{collection.myRole.toLowerCase()}</span>
-                                    <span className="item-meta"> {collection.memberCount} member(s) · owner {collection.ownerEmail}</span>
+                                    <span className="item-meta"> {collection.memberCount} {t('members')} · {t('owner')} {collection.ownerEmail}</span>
                                     {collection.pendingProvisioningCount > 0 && <span className="item-meta"> · {collection.pendingProvisioningCount} pending provisioning</span>}
                                     {collection.pendingRemovalCount > 0 && <span className="item-meta"> · {collection.pendingRemovalCount} pending removal</span>}
                                 </div>
                                 <div className="row">
-                                    <button type="button" className="secondary small"
-                                            onClick={() => toggleMembers(collection).catch((e) => setError(e.message))}>
-                                        {expanded === collection.id ? 'Hide members' : 'Members'}
-                                    </button>
                                     {collection.ownerEmail === session.user.email && (
-                                        <button type="button" className="danger small"
-                                                onClick={() => removeCollection(collection)}>Delete</button>
+                                        <button type="button" className="danger small icon-btn" title={t('deleteCollection')} aria-label={t('deleteCollection')}
+                                                onClick={(event) => { event.stopPropagation(); void removeCollection(collection); }}><IconTrash /></button>
                                     )}
                                 </div>
                             </div>

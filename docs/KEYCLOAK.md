@@ -35,12 +35,14 @@ Keycloak завершує SSO-сесію та повертає на застос
 
 ## WebAuthn / passkey як другий фактор (Epic 7)
 
-> **Поточний стан входу (2026-07-21):** `browser-passwordless forms` (username
-> + REQUIRED WebAuthn, без жодного fallback) лишається вимкненим (`DISABLED`) як
-> top-level execution — цей username-крок дав глухий кут "We are sorry... Cannot
-> login, credential setup required" для будь-кого без passkey, тож єдиний шлях
-> входу — **Google SSO** (`identity-provider-redirector` з `authenticatorConfig`
-> `google-auto-redirect`, логін-сторінка одразу редіректить на Google).
+> Account Console керує passkeys лише у Keycloak 26.4+ з увімкненим preview
+> feature `passkeys` і `Enable Passkeys` у WebAuthn Passwordless Policy. У
+> `docker-compose.yml` та `realm-export.json` це вже задано; після оновлення
+> контейнера сторінка `Signing in` показує керування passkeys поруч із OTP.
+
+> **Поточний стан входу (2026-07-22):** сторінка входу показує поле email і
+> явну кнопку Google. Введення email продовжує `WebAuthn Passwordless`, а Google
+> запускає окремий SSO-flow. Автоматичний redirect до Google вимкнений.
 >
 > **Реєстрація passkey знову обов'язкова для нових користувачів**
 > (`webauthn-register-passwordless`: `defaultAction: true`). Required actions в
@@ -109,7 +111,9 @@ Keycloak завершує SSO-сесію та повертає на застос
 
 Біометрія (Touch ID / Face ID / Windows Hello) залишається на пристрої користувача;
 Keycloak/застосунок отримують лише криптографічне підтвердження WebAuthn — сервер
-ніколи не "зберігає біометрію".
+ніколи не "зберігає біометрію". У Account Console користувач може додати або
+видалити passkey і налаштувати OTP/2FA, але не редагує самі шаблони біометрії чи
+системний PIN: ними керує операційна система або менеджер облікових даних пристрою.
 
 ### Live-статус (2026-07-19)
 

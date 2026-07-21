@@ -33,11 +33,15 @@ services:
     restart: unless-stopped
 
   keycloak:
-    image: quay.io/keycloak/keycloak:26.0
-    command: start-dev --import-realm --http-port=8081
+    image: quay.io/keycloak/keycloak:26.4.6
+    command: start --features=passkeys --import-realm --http-port=8081 --proxy-headers=xforwarded --hostname=${KEYCLOAK_HOSTNAME:?set KEYCLOAK_HOSTNAME}
     environment:
-      KEYCLOAK_ADMIN: admin
-      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-change-me}
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?set KEYCLOAK_ADMIN_PASSWORD}
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/pm
+      KC_DB_USERNAME: pm
+      KC_DB_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD}
     volumes:
       - ./keycloak:/opt/keycloak/data/import
     restart: unless-stopped

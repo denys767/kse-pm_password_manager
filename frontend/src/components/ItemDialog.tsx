@@ -8,6 +8,8 @@ import { estimateStrength, generatePassword, hibpBreachCount } from '../password
 import { emptyPayload, parsePayload, serializePayload } from '../payload';
 import { encryptShareSnapshot } from '../externalShare';
 import { IconCheck, IconEye, IconEyeOff, IconRefresh, IconUser, IconUsers, IconWarning } from './Icons';
+import { parseTags, serializeTags } from '../tags';
+import { useI18n } from '../i18n';
 import type { Session } from '../App';
 import type { Collection, ItemVersion, PasswordItem, Permission, SecretType, Settings } from '../types';
 
@@ -17,6 +19,7 @@ interface Props {
     collections: Collection[];
     /** null = add mode */
     item: PasswordItem | null;
+    availableTags: string[];
     onClose: (changed: boolean) => void;
 }
 
@@ -40,7 +43,8 @@ interface Fields {
     sync: boolean;
 }
 
-export function ItemDialog({ session, settings, collections, item, onClose }: Props) {
+export function ItemDialog({ session, settings, collections, item, availableTags, onClose }: Props) {
+    const { t } = useI18n();
     const dialogRef = useRef<HTMLDialogElement>(null);
     const warningRef = useRef<HTMLDialogElement>(null);
     const warningResolve = useRef<((ok: boolean) => void) | null>(null);
@@ -69,6 +73,7 @@ export function ItemDialog({ session, settings, collections, item, onClose }: Pr
     const [externalTtl, setExternalTtl] = useState('3600');
     const [externalOneTime, setExternalOneTime] = useState(false);
     const [externalLink, setExternalLink] = useState<{ id: string; url: string } | null>(null);
+    const [tagDraft, setTagDraft] = useState('');
 
     const isOwner = !current || !current.accessRole || current.accessRole === 'OWNER';
     const canEdit = !current || ((isOwner || current.accessRole === 'EDITOR') && itemKey !== null);
@@ -184,6 +189,15 @@ export function ItemDialog({ session, settings, collections, item, onClose }: Pr
             }
             return next;
         });
+    }
+
+    const tagList = parseTags(fields.tags);
+    function addTags(raw: string) {
+        const next = parseTags([...tagList, ...raw.split(',')].join(','));
+        set('tags', serializeTags(next) ?? ''); setTagDraft('');
+    }
+    function removeTag(tag: string) {
+        set('tags', serializeTags(tagList.filter((candidate) => candidate.toLocaleLowerCase() !== tag.toLocaleLowerCase())) ?? '');
     }
 
     function confirmLocalOnly(): Promise<boolean> {
@@ -568,8 +582,8 @@ export function ItemDialog({ session, settings, collections, item, onClose }: Pr
         <>
             <dialog id="item-dialog" ref={dialogRef} onClose={() => onClose(false)}>
                 <form id="item-form" onSubmit={save}>
-                    <h3 id="dialog-title">{current ? current.name : 'Add password'}</h3>
-                    <label>Назва*
+                    <h3 id="dialog-title">{current ? current.name : t('addPassword')}</h3>
+                    <label>{t('name')}*
                         <input id="f-name" required maxLength={255} readOnly={!canEdit}
                                value={fields.name} onChange={(e) => set('name', e.target.value)} />
                     </label>
@@ -577,27 +591,27 @@ export function ItemDialog({ session, settings, collections, item, onClose }: Pr
                         <input id="f-url" type="url" maxLength={2048} readOnly={!canEdit}
                                value={fields.url} onChange={(e) => set('url', e.target.value)} />
                     </label>
-                    <label>Username / login
+                    <label>{t('username')}
                         <input id="f-username" maxLength={255} autoComplete="off" readOnly={!canEdit}
                                value={fields.username} onChange={(e) => set('username', e.target.value)} />
                     </label>
-                    {fields.secretType === 'LOGIN' && <label>Пароль*
-                        <div className="row">
+                    {fields.secretType === 'LOGIN' && <label>{t('password')}*
+                        <div className="row form-control-row">
                             <input id="f-password" type={showPassword ? 'text' : 'password'} required
                                    autoComplete="new-password" readOnly={!canEdit}
                                    value={fields.password}
                                    onChange={(e) => set('password', e.target.value)} />
                             <button type="button" id="toggle-pass" className="secondary small icon-btn"
-                                    title={showPassword ? 'Приховати пароль' : 'Показати пароль'}
-                                    aria-label={showPassword ? 'Приховати пароль' : 'Показати пароль'}
+                                    title={showPassword ? t('hidePassword') : t('showPassword')}
+                                    aria-label={showPassword ? t('hidePassword') : t('showPassword')}
                                     onClick={() => setShowPassword((v) => !v)}>{showPassword ? <IconEyeOff /> : <IconEye />}</button>
                             {canEdit && (
                                 <button type="button" id="generate-pass" className="secondary small icon-btn"
-                                        title="Згенерувати пароль" aria-label="Згенерувати пароль" onClick={generate}><IconRefresh /></button>
+                                        title={t('generatePassword')} aria-label={t('generatePassword')} onClick={generate}><IconRefresh /></button>
                             )}
                             {current && itemKey && (
                                 <button type="button" id="copy-pass" className="secondary small"
-                                        onClick={copyPassword}>{copyLabel}</button>
+                                        onClick={copyPassword}>{copyLabel === 'Copy' ? t('copy') : copyLabel}</button>
                             )}
                         </div>
                     </label>}
@@ -682,15 +696,19 @@ export function ItemDialog({ session, settings, collections, item, onClose }: Pr
                             <span className="hint">Відскануйте в Google Authenticator / Authy, щоб мати той самий код на телефоні.</span>
                         </div>}
                     </>}
-                    <label>Notes
+                    <label>{t('notes')}
                         <textarea id="f-notes" rows={3} readOnly={!canEdit}
                                   value={fields.notes} onChange={(e) => set('notes', e.target.value)} />
                     </label>
-                    <label>Теги (через кому)
-                        <input id="f-tags" maxLength={1024} readOnly={!canEdit}
-                               value={fields.tags} onChange={(e) => set('tags', e.target.value)} />
+                    <label>{t('tags')}
+                        <div className="tag-editor" aria-label={t('tags')}>
+                            {tagList.map((tag) => <span className="tag-chip" key={tag.toLocaleLowerCase()}>{tag}{canEdit && <button type="button" aria-label={`${t('delete')} ${tag}`} onClick={() => removeTag(tag)}>×</button>}</span>)}
+                            {canEdit && <input id="f-tags" list="tag-suggestions" maxLength={1024} value={tagDraft} placeholder={t('tagsHelp')}
+                                onChange={(e) => setTagDraft(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); addTags(tagDraft); } else if (e.key === 'Backspace' && !tagDraft && tagList.length) removeTag(tagList[tagList.length - 1]); }} onBlur={() => tagDraft && addTags(tagDraft)} />}
+                        </div>
+                        <datalist id="tag-suggestions">{availableTags.filter((tag) => !tagList.some((selected) => selected.toLocaleLowerCase() === tag.toLocaleLowerCase())).map((tag) => <option key={tag} value={tag} />)}</datalist>
                     </label>
-                    <label>Тип запису
+                    <label>{t('itemType')}
                         <select id="f-type" disabled={!isOwner} value={fields.type}
                                 onChange={(e) => set('type', e.target.value as Fields['type'])}>
                             <option value="PERSONAL">Personal</option>
@@ -698,10 +716,10 @@ export function ItemDialog({ session, settings, collections, item, onClose }: Pr
                         </select>
                     </label>
                     {isOwner && fields.sync && collections.length > 0 && (
-                        <label>Колекція
+                        <label>{t('collection')}
                             <select id="f-collection" value={collectionSel}
                                     onChange={(e) => setCollectionSel(e.target.value)}>
-                                <option value="">— без колекції —</option>
+                                <option value="">{t('noCollection')}</option>
                                 {collections.map((collection) => (
                                     <option key={collection.id} value={collection.id}
                                             disabled={collection.myRole === 'VIEWER'}>
@@ -725,17 +743,17 @@ export function ItemDialog({ session, settings, collections, item, onClose }: Pr
 
                     {showShare && (
                         <div id="share-section">
-                            <h4>Доступ (sharing)</h4>
+                            <h4>{t('sharedAccess')}</h4>
                             <ul id="permission-list" className="permission-list">
                                 {permissions.map((p) => (
                                     <li key={p.id}>
                                         <span className="row">{p.granteeType === 'GROUP' ? <IconUsers /> : <IconUser />} {p.grantee} — {p.role.toLowerCase()}</span>
                                         <button type="button" className="secondary small"
-                                                onClick={() => revoke(p.id)}>Revoke</button>
+                                                onClick={() => revoke(p.id)}>{t('revoke')}</button>
                                     </li>
                                 ))}
                             </ul>
-                            <div className="row">
+                            <div className="row share-controls">
                                 <input id="share-grantee" type="email" placeholder="email користувача"
                                        value={shareForm.grantee}
                                        onChange={(e) => setShareForm({ ...shareForm, grantee: e.target.value })} />
@@ -744,24 +762,24 @@ export function ItemDialog({ session, settings, collections, item, onClose }: Pr
                                     <option value="VIEWER">Viewer</option>
                                     <option value="EDITOR">Editor</option>
                                 </select>
-                                <button type="button" id="share-btn" className="secondary" onClick={share}>Share</button>
+                                <button type="button" id="share-btn" className="secondary" onClick={share}>{t('share')}</button>
                             </div>
                         </div>
                     )}
                     {showShare && <section id="external-share-section">
-                        <h4>Share externally</h4>
+                        <h4>{t('externalShare')}</h4>
                         <p className="hint">Окремий зашифрований снапшот; AES-ключ є лише після <code>#</code> у посиланні.</p>
-                        <div className="row">
+                        <div className="row external-share-controls">
                             <label>Строк дії<select id="external-share-ttl" value={externalTtl} onChange={(e) => setExternalTtl(e.target.value)}>
                                 <option value="900">15 хвилин</option><option value="3600">1 година</option>
                                 <option value="86400">24 години</option><option value="604800">7 днів</option>
                             </select></label>
                             <label className="checkbox-row"><input id="external-share-one-time" type="checkbox" checked={externalOneTime} onChange={(e) => setExternalOneTime(e.target.checked)} /> Одноразовий перегляд</label>
-                            <button type="button" id="external-share-create" className="secondary" onClick={shareExternally}>Create link</button>
+                            <button type="button" id="external-share-create" className="secondary" onClick={shareExternally}>{t('createLink')}</button>
                         </div>
                         {externalLink && <div className="external-link"><input readOnly value={externalLink.url} aria-label="External share link" />
-                            <button type="button" className="secondary small" onClick={() => navigator.clipboard.writeText(externalLink.url)}>Copy</button>
-                            <button type="button" className="secondary small" onClick={revokeExternalShare}>Revoke</button></div>}
+                            <button type="button" className="secondary small" onClick={() => navigator.clipboard.writeText(externalLink.url)}>{t('copy')}</button>
+                            <button type="button" className="secondary small" onClick={revokeExternalShare}>{t('revoke')}</button></div>}
                     </section>}
 
                     {current && current.syncMode !== 'LOCAL_ONLY' && itemKey && (
@@ -789,13 +807,10 @@ export function ItemDialog({ session, settings, collections, item, onClose }: Pr
 
                     {error && <p id="dialog-error" className="error">{error}</p>}
                     <div className="dialog-actions">
-                        {current && isOwner && (
-                            <button type="button" id="delete-btn" className="danger" onClick={remove}>Delete</button>
-                        )}
-                        <span className="spacer"></span>
+                        {current && isOwner && <button type="button" id="delete-btn" className="danger" onClick={remove}>{t('delete')}</button>}
                         <button type="button" id="cancel-btn" className="secondary"
-                                onClick={() => { dialogRef.current?.close(); }}>Cancel</button>
-                        {canEdit && <button type="submit" id="save-btn">Save</button>}
+                                onClick={() => { dialogRef.current?.close(); }}>{t('cancel')}</button>
+                        {canEdit && <button type="submit" id="save-btn">{t('save')}</button>}
                     </div>
                 </form>
             </dialog>
