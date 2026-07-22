@@ -4,6 +4,7 @@
   "registrationAllowed": false,
   "sslRequired": "external",
   "browserFlow": "browser-passwordless",
+  "loginTheme": "kse-pm",
   "webAuthnPolicyPasswordlessRpEntityName": "passwd.team",
   "webAuthnPolicyPasswordlessRpId": "",
   "webAuthnPolicyPasswordlessSignatureAlgorithms": ["ES256", "RS256"],
@@ -32,25 +33,14 @@
   "authenticationFlows": [
     {
       "alias": "browser-passwordless",
-      "description": "Email plus WebAuthn login, with Google as an explicit alternative provider.",
+      "description": "Passkey or Google login only; no email/password form.",
       "providerId": "basic-flow",
       "topLevel": true,
       "builtIn": false,
       "authenticationExecutions": [
         { "authenticator": "auth-cookie", "requirement": "ALTERNATIVE", "priority": 10, "userSetupAllowed": false, "autheticatorFlow": false },
         { "authenticator": "identity-provider-redirector", "requirement": "ALTERNATIVE", "priority": 25, "userSetupAllowed": false, "autheticatorFlow": false },
-        { "authenticatorFlow": true, "requirement": "REQUIRED", "priority": 30, "flowAlias": "browser-passwordless forms", "userSetupAllowed": false }
-      ]
-    },
-    {
-      "alias": "browser-passwordless forms",
-      "description": "User enters email, then authenticates with a passwordless WebAuthn credential.",
-      "providerId": "basic-flow",
-      "topLevel": false,
-      "builtIn": false,
-      "authenticationExecutions": [
-        { "authenticator": "auth-username-form", "requirement": "REQUIRED", "priority": 10, "userSetupAllowed": false, "autheticatorFlow": false },
-        { "authenticator": "webauthn-authenticator-passwordless", "requirement": "REQUIRED", "priority": 20, "userSetupAllowed": false, "autheticatorFlow": false }
+        { "authenticator": "webauthn-authenticator-passwordless", "requirement": "ALTERNATIVE", "priority": 30, "userSetupAllowed": false, "autheticatorFlow": false }
       ]
     }
   ],

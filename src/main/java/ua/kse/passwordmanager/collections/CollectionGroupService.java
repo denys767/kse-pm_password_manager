@@ -9,23 +9,22 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import ua.kse.passwordmanager.auth.CurrentUser;
 import ua.kse.passwordmanager.common.BadRequestException;
-import ua.kse.passwordmanager.keycloak.KeycloakAdminClient;
+import ua.kse.passwordmanager.directory.DirectoryPrincipal;
+import ua.kse.passwordmanager.directory.WorkspaceDirectoryClient;
 import ua.kse.passwordmanager.audit.AuditAction;
 import ua.kse.passwordmanager.audit.AuditService;
 
 @Service
 public class CollectionGroupService {
-    private final AllowedKeycloakGroupRepository repository;
-    private final KeycloakAdminClient keycloak;
+    private final WorkspaceDirectoryClient directory;
     private final CollectionRepository collections;
     private final CollectionMemberRepository members;
     private final AuditService audit;
 
-    public CollectionGroupService(AllowedKeycloakGroupRepository repository, KeycloakAdminClient keycloak,
+    public CollectionGroupService(WorkspaceDirectoryClient directory,
                                   CollectionRepository collections, CollectionMemberRepository members,
                                   AuditService audit) {
-        this.repository = repository;
-        this.keycloak = keycloak;
+        this.directory = directory;
         this.collections = collections;
         this.members = members;
         this.audit = audit;
@@ -33,37 +32,35 @@ public class CollectionGroupService {
 
     @Transactional(readOnly = true)
     public List<String> available() {
-        var allowed = allowlist();
-        var availableInKeycloak = keycloak.groups().stream().map(s -> s.toLowerCase(Locale.ROOT)).collect(java.util.stream.Collectors.toSet());
-        return allowed.stream().filter(g -> availableInKeycloak.contains(g.toLowerCase(Locale.ROOT))).toList();
+        return directory.search("", List.of(DirectoryPrincipal.Type.GROUP), 100).stream().map(DirectoryPrincipal::email).toList();
     }
 
-    @Transactional(readOnly = true)
-    public List<String> allowlist() { return repository.findAllByOrderByGroupNameAsc().stream().map(AllowedKeycloakGroup::getGroupName).toList(); }
+    /** Kept only for backwards-compatible admin endpoint; there is no local allowlist anymore. */
+    @Transactional(readOnly = true) public List<String> allowlist() { return available(); }
 
     /** Every group that currently exists in Keycloak, allowlisted or not — lets an admin pick from real groups instead of typing blind. */
-    public List<String> keycloakGroups() { return keycloak.groups(); }
+    public List<String> keycloakGroups() { return available(); }
 
     @Transactional
     public String allow(CurrentUser user, String rawName) {
-        String name = normalize(rawName);
-        if (repository.existsById(name)) return name;
-        repository.save(new AllowedKeycloakGroup(name));
-        return name;
+        return normalize(rawName);
     }
 
     @Transactional
-    public void disallow(CurrentUser user, String rawName) { repository.deleteById(normalize(rawName)); }
+    public void disallow(CurrentUser user, String rawName) { /* Google owns groups; no local mutation. */ }
 
     @Transactional(readOnly = true)
-    public boolean isAllowed(String rawName) { return rawName != null && repository.existsById(rawName.trim()); }
+    public boolean isAllowed(String rawName) {
+        return rawName != null && !rawName.isBlank()
+                && directory.find(DirectoryPrincipal.Type.GROUP, rawName.trim()).isPresent();
+    }
 
     /** Records group changes, but never wraps or exposes a collection key. */
     @Transactional
     public void sync(Collection collection, String actor) {
         String group = collection.getKeycloakGroup();
-        if (group == null || !isAllowed(group)) return;
-        Set<String> groupMembers = keycloak.membersOfGroup(group).stream()
+        if (group == null) return;
+        Set<String> groupMembers = directory.memberEmails(group).stream()
                 .map(email -> email.trim().toLowerCase(Locale.ROOT))
                 .filter(email -> !email.isBlank())
                 .collect(Collectors.toSet());
@@ -74,7 +71,7 @@ public class CollectionGroupService {
             if (!existingEmails.contains(email)) {
                 members.save(CollectionMember.pending(collection, email, actor));
                 audit.record(actor, AuditAction.COLLECTION_MEMBER_PENDING, collection.getId(), collection.getName(), email,
-                        "awaiting manager client-side key wrapping");
+                        "Google Workspace group member awaiting manager client-side key wrapping");
             }
         }
         for (CollectionMember member : existing) {

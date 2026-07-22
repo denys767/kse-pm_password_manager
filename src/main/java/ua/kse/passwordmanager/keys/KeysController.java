@@ -2,11 +2,14 @@ package ua.kse.passwordmanager.keys;
 
 import jakarta.validation.Valid;
 import java.util.Locale;
+import java.util.List;
+import java.util.Map;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -75,5 +78,14 @@ public class KeysController {
                 .map(PublicKeyDto::from)
                 .orElseThrow(() -> new NotFoundException(
                         "User has no registered keypair (they must sign in at least once)"));
+    }
+
+    /** Lets a manager provision a group without issuing one request per member. */
+    @PostMapping("/lookup")
+    public Map<String, PublicKeyDto> lookup(@RequestBody List<String> emails) {
+        if (emails.size() > 200) throw new BadRequestException("At most 200 recipients may be looked up at once");
+        return repository.findAllById(emails.stream().filter(e -> e != null && !e.isBlank())
+                        .map(e -> e.toLowerCase(Locale.ROOT)).distinct().toList())
+                .stream().collect(java.util.stream.Collectors.toMap(UserKeys::getEmail, PublicKeyDto::from));
     }
 }

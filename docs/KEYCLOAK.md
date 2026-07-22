@@ -40,9 +40,10 @@ Keycloak завершує SSO-сесію та повертає на застос
 > `docker-compose.yml` та `realm-export.json` це вже задано; після оновлення
 > контейнера сторінка `Signing in` показує керування passkeys поруч із OTP.
 
-> **Поточний стан входу (2026-07-22):** сторінка входу показує поле email і
-> явну кнопку Google. Введення email продовжує `WebAuthn Passwordless`, а Google
-> запускає окремий SSO-flow. Автоматичний redirect до Google вимкнений.
+> **Поточний стан входу (2026-07-22):** Browser flow дозволяє лише passkey
+> (`WebAuthn Passwordless`) або Google SSO. Email/password форму та автоматичний
+> redirect до Google вимкнено. Для passkey потрібен раніше зареєстрований
+> discoverable credential на пристрої.
 >
 > **Реєстрація passkey знову обов'язкова для нових користувачів**
 > (`webauthn-register-passwordless`: `defaultAction: true`). Required actions в

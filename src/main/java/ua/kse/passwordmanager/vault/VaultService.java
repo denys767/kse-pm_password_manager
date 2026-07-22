@@ -59,10 +59,13 @@ public class VaultService {
             seen.add(item.getId());
             result.add(PasswordItemResponse.from(item, AccessRole.OWNER, wrappedKeys.get(item.getId())));
         }
-        List<String> groups = user.groups().isEmpty()
-                ? List.of("__none__")
-                : user.groups().stream().map(g -> g.toLowerCase(Locale.ROOT)).toList();
-        for (PasswordItem item : itemRepository.findSharedWith(user.email(), groups)) {
+        for (PasswordItem item : itemRepository.findSharedWith(user.email())) {
+            if (seen.add(item.getId())) {
+                result.add(PasswordItemResponse.from(item, sharingService.resolveAccess(item, user),
+                        wrappedKeys.get(item.getId())));
+            }
+        }
+        for (PasswordItem item : itemRepository.findDirectorySharedWith(user.email())) {
             if (seen.add(item.getId())) {
                 result.add(PasswordItemResponse.from(item, sharingService.resolveAccess(item, user),
                         wrappedKeys.get(item.getId())));

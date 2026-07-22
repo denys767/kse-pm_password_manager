@@ -48,7 +48,7 @@ export function CollectionsTab({ session, collections, onChanged }: Props) {
             const wrappedKeyForSelf = await pmc.wrapItemKey(collectionKey, session.keys.publicKey);
             await api('/api/collections', {
                 method: 'POST',
-                body: JSON.stringify({ name: name.trim(), keycloakGroup: keycloakGroup.trim() || null, wrappedKeyForSelf }),
+                    body: JSON.stringify({ name: name.trim(), keycloakGroup: keycloakGroup.trim() || null, wrappedKeyForSelf }),
             });
             setName('');
             setKeycloakGroup('');
@@ -187,8 +187,8 @@ export function CollectionsTab({ session, collections, onChanged }: Props) {
             <div className="toolbar">
                 <input id="collection-name" placeholder={t('collectionName')}
                        value={name} onChange={(e) => setName(e.target.value)} />
-                <select id="keycloak-group" value={keycloakGroup} onChange={(e) => setKeycloakGroup(e.target.value)}>
-                    <option value="">No managed group</option>
+                <select id="directory-group" value={keycloakGroup} onChange={(e) => setKeycloakGroup(e.target.value)}>
+                    <option value="">Без доменної групи</option>
                     {availableGroups.map((group) => <option key={group} value={group}>{group}</option>)}
                 </select>
                 <button id="create-collection-btn" onClick={create}>{t('createCollection')}</button>

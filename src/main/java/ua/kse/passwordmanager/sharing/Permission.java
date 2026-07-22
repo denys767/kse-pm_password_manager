@@ -37,6 +37,17 @@ public class Permission {
     @Column(nullable = false)
     private String grantee;
 
+    /** Immutable Google Directory ID for new shares; null only for legacy rows. */
+    @Column
+    private String directorySubjectId;
+
+    @Column
+    private String directoryDisplayName;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    private PermissionStatus status = PermissionStatus.ACTIVE;
+
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
     private PermissionRole role;
@@ -75,6 +86,13 @@ public class Permission {
     public String getGrantee() {
         return grantee;
     }
+
+    public String getDirectorySubjectId() { return directorySubjectId; }
+    public String getDirectoryDisplayName() { return directoryDisplayName; }
+    public PermissionStatus getStatus() { return status; }
+    public boolean isActive() { return status == PermissionStatus.ACTIVE; }
+    public void setDirectorySubject(String id, String displayName) { this.directorySubjectId = id; this.directoryDisplayName = displayName; }
+    public void setStatus(PermissionStatus status) { this.status = status; }
 
     public PermissionRole getRole() {
         return role;

@@ -29,6 +29,9 @@ springdoc:
     path: /swagger-ui.html
 
 pm:
+  google-workspace:
+    customer-id: ${GOOGLE_WORKSPACE_CUSTOMER_ID:my_customer}
+    domain: ${GOOGLE_WORKSPACE_DOMAIN:kse.org.ua}
   rate-limit:
     requests-per-minute: 300
   keycloak:

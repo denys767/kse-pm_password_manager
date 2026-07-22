@@ -13,6 +13,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.mock.mockito.MockBean;
@@ -21,11 +22,13 @@ import org.springframework.http.MediaType;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
-import ua.kse.passwordmanager.keycloak.KeycloakAdminClient;
+import ua.kse.passwordmanager.directory.WorkspaceDirectoryClient;
+import ua.kse.passwordmanager.directory.DirectoryPrincipal;
 import ua.kse.passwordmanager.collections.AllowedKeycloakGroup;
 import ua.kse.passwordmanager.collections.AllowedKeycloakGroupRepository;
 
 import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentMatchers.any;
 
 @SpringBootTest(properties = "pm.allow-insecure-dev=true")
 @AutoConfigureMockMvc
@@ -43,10 +46,16 @@ class CollectionsApiIntegrationTest {
     private ObjectMapper objectMapper;
 
     @MockBean
-    private KeycloakAdminClient keycloakAdminClient;
+    private WorkspaceDirectoryClient directory;
 
     @Autowired
     private AllowedKeycloakGroupRepository allowedGroups;
+
+    @BeforeEach
+    void directoryHasTestGroup() {
+        when(directory.find(any(), any())).thenAnswer(invocation -> java.util.Optional.of(
+                new DirectoryPrincipal(DirectoryPrincipal.Type.GROUP, invocation.getArgument(1), "dev-team", "Dev team", false, 3L)));
+    }
 
     private MockHttpServletRequestBuilder as(MockHttpServletRequestBuilder request, String email) {
         return request.header("X-Dev-User", email).contentType(MediaType.APPLICATION_JSON);
@@ -195,7 +204,7 @@ class CollectionsApiIntegrationTest {
                                 """))
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString()).get("id").asText();
         addMember(ALICE, collectionId, BOB, "EDITOR");
-        when(keycloakAdminClient.membersOfGroup("dev-team"))
+        when(directory.memberEmails("dev-team"))
                 .thenReturn(java.util.List.of(ALICE, BOB, CAROL));
 
         mockMvc.perform(as(get("/api/collections/" + collectionId
@@ -215,7 +224,7 @@ class CollectionsApiIntegrationTest {
                                 {"name":"Managed by group","keycloakGroup":"dev-team","wrappedKeyForSelf":"c2VsZg=="}
                                 """))
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString()).get("id").asText();
-        when(keycloakAdminClient.membersOfGroup("dev-team")).thenReturn(java.util.List.of(ALICE, BOB));
+        when(directory.memberEmails("dev-team")).thenReturn(java.util.List.of(ALICE, BOB));
 
         mockMvc.perform(as(post("/api/collections/" + collectionId + "/sync-group"), ALICE))
                 .andExpect(status().isNoContent());
@@ -234,7 +243,7 @@ class CollectionsApiIntegrationTest {
         mockMvc.perform(as(get("/api/collections"), BOB)).andExpect(status().isOk())
                 .andExpect(jsonPath("$[?(@.id == '" + collectionId + "')]", hasSize(1)));
 
-        when(keycloakAdminClient.membersOfGroup("dev-team")).thenReturn(java.util.List.of(ALICE));
+        when(directory.memberEmails("dev-team")).thenReturn(java.util.List.of(ALICE));
         mockMvc.perform(as(post("/api/collections/" + collectionId + "/sync-group"), ALICE))
                 .andExpect(status().isNoContent());
         mockMvc.perform(as(get("/api/collections"), BOB)).andExpect(status().isOk())

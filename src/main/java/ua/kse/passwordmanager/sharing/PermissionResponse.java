@@ -12,6 +12,9 @@ public record PermissionResponse(
         PermissionRole role,
         String grantedBy,
         Instant createdAt,
+        PermissionStatus status,
+        String directorySubjectId,
+        String directoryDisplayName,
         /** Set for group shares until collections land: members without a
          * provisioned wrapped key cannot decrypt the item. */
         String warning) {
@@ -28,6 +31,9 @@ public record PermissionResponse(
                 permission.getRole(),
                 permission.getGrantedBy(),
                 permission.getCreatedAt(),
+                permission.getStatus(),
+                permission.getDirectorySubjectId(),
+                permission.getDirectoryDisplayName(),
                 warning);
     }
 }

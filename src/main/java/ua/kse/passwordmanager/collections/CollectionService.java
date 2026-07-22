@@ -18,7 +18,8 @@ import ua.kse.passwordmanager.collections.CollectionDtos.MemberResponse;
 import ua.kse.passwordmanager.common.BadRequestException;
 import ua.kse.passwordmanager.common.ForbiddenException;
 import ua.kse.passwordmanager.common.NotFoundException;
-import ua.kse.passwordmanager.keycloak.KeycloakAdminClient;
+import ua.kse.passwordmanager.directory.DirectoryPrincipal;
+import ua.kse.passwordmanager.directory.WorkspaceDirectoryClient;
 import ua.kse.passwordmanager.vault.PasswordItem;
 import ua.kse.passwordmanager.vault.PasswordItemRepository;
 
@@ -29,19 +30,19 @@ public class CollectionService {
     private final CollectionMemberRepository memberRepository;
     private final PasswordItemRepository itemRepository;
     private final AuditService auditService;
-    private final KeycloakAdminClient keycloakAdminClient;
+    private final WorkspaceDirectoryClient directory;
     private final CollectionGroupService groupService;
 
     public CollectionService(CollectionRepository collectionRepository,
                              CollectionMemberRepository memberRepository,
                              PasswordItemRepository itemRepository,
-                             AuditService auditService, KeycloakAdminClient keycloakAdminClient,
+                             AuditService auditService, WorkspaceDirectoryClient directory,
                              CollectionGroupService groupService) {
         this.collectionRepository = collectionRepository;
         this.memberRepository = memberRepository;
         this.itemRepository = itemRepository;
         this.auditService = auditService;
-        this.keycloakAdminClient = keycloakAdminClient;
+        this.directory = directory;
         this.groupService = groupService;
     }
 
@@ -97,7 +98,7 @@ public class CollectionService {
         var existing = memberRepository.findByCollectionId(collectionId).stream()
                 .map(member -> member.getMemberEmail().toLowerCase(Locale.ROOT))
                 .collect(Collectors.toSet());
-        return keycloakAdminClient.membersOfGroup(normalizedGroup).stream()
+        return directory.memberEmails(normalizedGroup).stream()
                 .map(email -> email.toLowerCase(Locale.ROOT))
                 .filter(email -> !existing.contains(email))
                 .distinct()

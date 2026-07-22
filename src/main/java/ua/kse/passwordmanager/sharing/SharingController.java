@@ -38,6 +38,24 @@ public class SharingController {
         return sharingService.share(authFacade.current(), itemId, request);
     }
 
+    @GetMapping("/{permissionId}/members")
+    public List<PermissionMemberResponse> members(@PathVariable UUID itemId, @PathVariable UUID permissionId) {
+        return sharingService.listMembers(authFacade.current(), itemId, permissionId);
+    }
+
+    @PostMapping("/{permissionId}/provision")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void provision(@PathVariable UUID itemId, @PathVariable UUID permissionId,
+                          @Valid @RequestBody ProvisionPermissionMembersRequest request) {
+        sharingService.provisionMembers(authFacade.current(), itemId, permissionId, request);
+    }
+
+    @PostMapping("/{permissionId}/sync")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void sync(@PathVariable UUID itemId, @PathVariable UUID permissionId) {
+        sharingService.syncGroup(authFacade.current(), itemId, permissionId);
+    }
+
     @DeleteMapping("/{permissionId}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void revoke(@PathVariable UUID itemId, @PathVariable UUID permissionId) {

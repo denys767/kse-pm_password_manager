@@ -1,5 +1,6 @@
-import { FormEvent, useEffect, useRef, useState } from 'react';
+import { ChangeEvent, FormEvent, useEffect, useRef, useState } from 'react';
 import qrcode from 'qrcode-generator';
+import jsQR from 'jsqr';
 import { api, ApiError } from '../api';
 import * as pmc from '../crypto';
 import { unwrapCollectionKey, unwrapItemKeyFor } from '../itemKeys';
@@ -11,7 +12,7 @@ import { IconCheck, IconEye, IconEyeOff, IconRefresh, IconUser, IconUsers, IconW
 import { parseTags, serializeTags } from '../tags';
 import { useI18n } from '../i18n';
 import type { Session } from '../App';
-import type { Collection, ItemVersion, PasswordItem, Permission, SecretType, Settings } from '../types';
+import type { Collection, DirectoryPrincipal, ItemVersion, PasswordItem, Permission, PermissionMemberInfo, SecretType, Settings } from '../types';
 
 interface Props {
     session: Session;
@@ -59,7 +60,8 @@ export function ItemDialog({ session, settings, collections, item, availableTags
     });
     const [itemKey, setItemKey] = useState<CryptoKey | null>(null);
     const [permissions, setPermissions] = useState<Permission[]>([]);
-    const [shareForm, setShareForm] = useState({ grantee: '', role: 'VIEWER' });
+    const [shareForm, setShareForm] = useState({ grantee: '', role: 'VIEWER', principal: null as DirectoryPrincipal | null });
+    const [directoryMatches, setDirectoryMatches] = useState<DirectoryPrincipal[]>([]);
     const [error, setError] = useState<string | null>(null);
     const [showPassword, setShowPassword] = useState(false);
     const [copyLabel, setCopyLabel] = useState('Copy');
@@ -391,8 +393,38 @@ export function ItemDialog({ session, settings, collections, item, availableTags
         setTotpQr(qr.createDataURL(6, 8));
     }
 
+    /** Reads a TOTP QR image entirely in the browser; the seed is never uploaded. */
+    async function importTotpQr(event: ChangeEvent<HTMLInputElement>) {
+        const file = event.target.files?.[0];
+        event.target.value = '';
+        if (!file) return;
+        setError(null);
+        try {
+            const bitmap = await createImageBitmap(file);
+            const canvas = document.createElement('canvas');
+            canvas.width = bitmap.width; canvas.height = bitmap.height;
+            const context = canvas.getContext('2d', { willReadFrequently: true });
+            if (!context) throw new Error('Браузер не підтримує читання зображення.');
+            context.drawImage(bitmap, 0, 0);
+            bitmap.close();
+            const image = context.getImageData(0, 0, canvas.width, canvas.height);
+            const decoded = jsQR(image.data, image.width, image.height, { inversionAttempts: 'attemptBoth' });
+            if (!decoded) throw new Error('QR-код не знайдено у вибраному файлі.');
+            const uri = decoded.data.trim();
+            const parsed = new URL(uri);
+            if (parsed.protocol !== 'otpauth:' || parsed.hostname.toLowerCase() !== 'totp') {
+                throw new Error('QR-код не містить TOTP otpauth URI.');
+            }
+            // Validate the actual Base32 secret before placing it in the encrypted form.
+            pmc.decodeTotpSeed(uri);
+            set('totpSeed', uri);
+        } catch (e) {
+            setError(`Не вдалося імпортувати TOTP QR: ${(e as Error).message}`);
+        }
+    }
+
     async function share() {
-        const grantee = shareForm.grantee.trim().toLowerCase();
+        const grantee = (shareForm.principal?.email ?? shareForm.grantee).trim().toLowerCase();
         if (!grantee || !current) {
             return;
         }
@@ -400,6 +432,16 @@ export function ItemDialog({ session, settings, collections, item, availableTags
         try {
             if (!itemKey) {
                 throw new Error('Немає ключа запису — розшифруйте запис перед шерингом.');
+            }
+            if (shareForm.principal?.type === 'GROUP') {
+                const created = await api<Permission>(`/api/vault/items/${current.id}/permissions`, {
+                    method: 'POST', body: JSON.stringify({ granteeType: 'GROUP', grantee,
+                        directorySubjectId: shareForm.principal.id, role: shareForm.role }),
+                });
+                setError(created.warning ?? 'Групу додано. Видайте ключі доступним учасникам кнопкою Provision.');
+                setShareForm({ grantee: '', role: shareForm.role, principal: null });
+                setPermissions(await api<Permission[]>(`/api/vault/items/${current.id}/permissions`));
+                return;
             }
             let recipient: { publicKey: string };
             try {
@@ -413,6 +455,7 @@ export function ItemDialog({ session, settings, collections, item, availableTags
             const body: Record<string, unknown> = {
                 granteeType: 'USER',
                 grantee,
+                directorySubjectId: shareForm.principal?.id,
                 role: shareForm.role,
                 wrappedKey: await pmc.wrapItemKey(itemKey, recipientKey),
             };
@@ -423,13 +466,40 @@ export function ItemDialog({ session, settings, collections, item, availableTags
             if (created.warning) {
                 setError(created.warning);
             }
-            setShareForm({ ...shareForm, grantee: '' });
+            setShareForm({ grantee: '', role: shareForm.role, principal: null });
             setCurrent({ ...current, itemType: 'SHARED' });
             set('type', 'SHARED');
             setPermissions(await api<Permission[]>(`/api/vault/items/${current.id}/permissions`));
         } catch (e) {
             setError((e as Error).message);
         }
+    }
+
+    async function lookupDirectory(query: string) {
+        setShareForm((form) => ({ ...form, grantee: query, principal: null }));
+        if (query.trim().length < 2) { setDirectoryMatches([]); return; }
+        try { setDirectoryMatches(await api<DirectoryPrincipal[]>(`/api/directory/principals?query=${encodeURIComponent(query)}`)); }
+        catch (e) { setError((e as Error).message); }
+    }
+
+    async function provisionGroup(permission: Permission) {
+        if (!current || !itemKey) return;
+        try {
+            const members = await api<PermissionMemberInfo[]>(`/api/vault/items/${current.id}/permissions/${permission.id}/members`);
+            const pending = members.filter((member) => member.status === 'PENDING_PROVISIONING');
+            const keys = await api<Record<string, { publicKey: string }>>('/api/keys/lookup', {
+                method: 'POST', body: JSON.stringify(pending.map((member) => member.memberEmail)),
+            });
+            const provisioned = await Promise.all(pending.filter((member) => keys[member.memberEmail]).map(async (member) => ({
+                email: member.memberEmail,
+                wrappedKey: await pmc.wrapItemKey(itemKey, await pmc.importPublicKey(keys[member.memberEmail].publicKey)),
+            })));
+            if (provisioned.length === 0) { setError('У жодного pending учасника ще немає ключів у vault.'); return; }
+            await api(`/api/vault/items/${current.id}/permissions/${permission.id}/provision`, {
+                method: 'POST', body: JSON.stringify({ members: provisioned }),
+            });
+            setPermissions(await api<Permission[]>(`/api/vault/items/${current.id}/permissions`));
+        } catch (e) { setError((e as Error).message); }
     }
 
     async function shareExternally() {
@@ -683,6 +753,11 @@ export function ItemDialog({ session, settings, collections, item, availableTags
                             <input id="f-totp-seed" type="password" autoComplete="off" readOnly={!canEdit}
                                    value={fields.totpSeed} onChange={(e) => set('totpSeed', e.target.value)} />
                         </label>
+                        {canEdit && <label>Імпортувати TOTP QR
+                            <input id="import-totp-qr" type="file" accept="image/png,image/jpeg,image/webp,image/gif"
+                                   onChange={importTotpQr} />
+                            <span className="hint">Зображення обробляється лише у браузері.</span>
+                        </label>}
                         {fields.totpSeed && <div className="row" id="totp-code">
                             <strong>{totpCode || 'Невірний seed'}</strong>
                             <span className="hint">оновлення через {totpSeconds} с</span>
@@ -748,15 +823,17 @@ export function ItemDialog({ session, settings, collections, item, availableTags
                                 {permissions.map((p) => (
                                     <li key={p.id}>
                                         <span className="row">{p.granteeType === 'GROUP' ? <IconUsers /> : <IconUser />} {p.grantee} — {p.role.toLowerCase()}</span>
-                                        <button type="button" className="secondary small"
-                                                onClick={() => revoke(p.id)}>{t('revoke')}</button>
+                                        <span className="row">
+                                            {p.granteeType === 'GROUP' && p.status === 'ACTIVE' && <button type="button" className="secondary small" onClick={() => provisionGroup(p)}>Provision</button>}
+                                            <button type="button" className="secondary small" onClick={() => revoke(p.id)}>{t('revoke')}</button>
+                                        </span>
                                     </li>
                                 ))}
                             </ul>
                             <div className="row share-controls">
-                                <input id="share-grantee" type="email" placeholder="email користувача"
+                                <input id="share-grantee" placeholder="Користувач або група домену"
                                        value={shareForm.grantee}
-                                       onChange={(e) => setShareForm({ ...shareForm, grantee: e.target.value })} />
+                                       onChange={(e) => void lookupDirectory(e.target.value)} />
                                 <select id="share-role" value={shareForm.role}
                                         onChange={(e) => setShareForm({ ...shareForm, role: e.target.value })}>
                                     <option value="VIEWER">Viewer</option>
@@ -764,6 +841,13 @@ export function ItemDialog({ session, settings, collections, item, availableTags
                                 </select>
                                 <button type="button" id="share-btn" className="secondary" onClick={share}>{t('share')}</button>
                             </div>
+                            {directoryMatches.length > 0 && <ul className="permission-list" aria-label="Directory results">
+                                {directoryMatches.map((principal) => <li key={`${principal.type}:${principal.id}`}>
+                                    <button type="button" className="linklike" onClick={() => { setShareForm({ ...shareForm, grantee: principal.email, principal }); setDirectoryMatches([]); }}>
+                                        {principal.type === 'GROUP' ? <IconUsers /> : <IconUser />} {principal.displayName} — {principal.email}
+                                    </button>
+                                </li>)}
+                            </ul>}
                         </div>
                     )}
                     {showShare && <section id="external-share-section">

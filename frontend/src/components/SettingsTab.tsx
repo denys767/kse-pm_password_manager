@@ -24,7 +24,7 @@ async function resizeToAvatar(file: File): Promise<string> {
     return canvas.toDataURL('image/jpeg', 0.85);
 }
 
-export function SettingsTab({ settings, onSaved, isAdmin, config }: Props) {
+export function SettingsTab({ settings, onSaved, config }: Props) {
     const { t } = useI18n();
     const { preference, setPreference } = useTheme();
     const [syncMode, setSyncMode] = useState<SyncMode>(settings.defaultSyncMode);
@@ -111,87 +111,7 @@ export function SettingsTab({ settings, onSaved, isAdmin, config }: Props) {
                     </a>
                 </div>
             )}
-            {isAdmin && <GroupAllowlistCard />}
+            {/* Google Workspace is the source of groups; there is no local/Keycloak allowlist. */}
         </section>
-    );
-}
-
-/**
- * A Keycloak group only shows up in the Collections "managed group" selector once
- * it's both a real Keycloak group AND allowlisted here — this card manages the
- * allowlist half, reading real group names straight from Keycloak so admins don't
- * have to type them blind or use curl against /api/admin/collection-groups.
- */
-function GroupAllowlistCard() {
-    const [keycloakGroups, setKeycloakGroups] = useState<string[]>([]);
-    const [allowed, setAllowed] = useState<string[]>([]);
-    const [error, setError] = useState<string | null>(null);
-    const [busy, setBusy] = useState<string | null>(null);
-
-    async function refresh() {
-        try {
-            const [kc, allow] = await Promise.all([
-                api<string[]>('/api/admin/collection-groups/keycloak'),
-                api<string[]>('/api/admin/collection-groups'),
-            ]);
-            setKeycloakGroups(kc);
-            setAllowed(allow);
-            setError(null);
-        } catch (e) {
-            setError((e as Error).message);
-        }
-    }
-
-    useEffect(() => { void refresh(); }, []);
-
-    async function toggle(group: string, isAllowed: boolean) {
-        setBusy(group);
-        try {
-            if (isAllowed) {
-                await api(`/api/admin/collection-groups/${encodeURIComponent(group)}`, { method: 'DELETE' });
-            } else {
-                await api('/api/admin/collection-groups', { method: 'POST', body: JSON.stringify({ groupName: group }) });
-            }
-            await refresh();
-        } catch (e) {
-            setError((e as Error).message);
-        } finally {
-            setBusy(null);
-        }
-    }
-
-    const allowedSet = new Set(allowed.map((g) => g.toLowerCase()));
-    // Allowlisted names that no longer match a live Keycloak group (renamed/deleted) still need to be visible so they can be removed.
-    const orphaned = allowed.filter((g) => !keycloakGroups.some((k) => k.toLowerCase() === g.toLowerCase()));
-    const rows = [...keycloakGroups, ...orphaned];
-
-    return (
-        <div className="card narrow" style={{ marginTop: 18 }}>
-            <h3>Keycloak-групи для колекцій</h3>
-            <p className="hint">
-                Селектор "managed group" у Colections показує лише групи, позначені тут — вони мають
-                фізично існувати в Keycloak. Google Workspace-групи тут не з'являються автоматично:
-                спершу створіть відповідну групу в Keycloak Admin Console (Groups) з тими самими
-                учасниками, і лише тоді вона зʼявиться в списку нижче.
-            </p>
-            {error && <p className="error">{error}</p>}
-            {rows.length === 0 && <p className="hint">У Keycloak ще немає жодної групи.</p>}
-            <ul className="permission-list">
-                {rows.map((group) => {
-                    const isAllowed = allowedSet.has(group.toLowerCase());
-                    const exists = keycloakGroups.some((k) => k.toLowerCase() === group.toLowerCase());
-                    return (
-                        <li key={group} className="row" style={{ justifyContent: 'space-between' }}>
-                            <span>{group}{!exists && <small className="hint"> (видалено з Keycloak)</small>}</span>
-                            <label className="row" style={{ margin: 0 }}>
-                                <input type="checkbox" checked={isAllowed} disabled={busy === group}
-                                       onChange={() => toggle(group, isAllowed)} />
-                                Дозволено для колекцій
-                            </label>
-                        </li>
-                    );
-                })}
-            </ul>
-        </div>
     );
 }

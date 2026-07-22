@@ -207,22 +207,16 @@ class VaultApiIntegrationTest {
     }
 
     @Test
-    void groupSharingGrantsAccessByGroupMembershipWithWarning() throws Exception {
+    void legacyKeycloakGroupShareIsRejected() throws Exception {
         String id = createItem(ALICE, "Infra credentials", "PERSONAL");
 
         mockMvc.perform(as(post("/api/vault/items/" + id + "/permissions"), ALICE)
-                        .content("""
+                .content("""
                                 {"granteeType": "GROUP", "grantee": "dev-team", "role": "VIEWER"}
                                 """))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.warning").exists());
-
-        // Group member has permission metadata but no provisioned wrapped key.
+                .andExpect(status().isBadRequest());
+        // A group claim in the Keycloak/dev token no longer grants visibility.
         mockMvc.perform(as(get("/api/vault/items/" + id), BOB).header("X-Dev-Groups", "dev-team"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.accessRole").value("VIEWER"))
-                .andExpect(jsonPath("$.wrappedKey").doesNotExist());
-        mockMvc.perform(as(get("/api/vault/items/" + id), BOB))
                 .andExpect(status().isNotFound());
     }
 

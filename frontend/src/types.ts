@@ -76,7 +76,25 @@ export interface Permission {
     role: 'VIEWER' | 'EDITOR';
     grantedBy: string;
     createdAt: string;
+    status?: 'ACTIVE' | 'RELINK_REQUIRED' | 'REVOKED';
+    directorySubjectId?: string | null;
+    directoryDisplayName?: string | null;
     warning?: string;
+}
+
+export interface DirectoryPrincipal {
+    type: 'USER' | 'GROUP';
+    id: string;
+    email: string;
+    displayName: string;
+    vaultKeyAvailable: boolean;
+    memberCount: number | null;
+}
+
+export interface PermissionMemberInfo {
+    id: string;
+    memberEmail: string;
+    status: 'PENDING_PROVISIONING' | 'ACTIVE' | 'PENDING_REMOVAL';
 }
 
 export interface UserKeysDto {
