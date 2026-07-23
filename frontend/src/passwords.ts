@@ -1,6 +1,7 @@
 /** Password generation, strength estimation and HaveIBeenPwned breach check.
  * Everything runs client-side; HIBP uses k-anonymity (only the first five hex
  * chars of the SHA-1 ever leave the browser). */
+import { tr } from './i18n';
 
 const LOWER = 'abcdefghijklmnopqrstuvwxyz';
 const UPPER = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
@@ -66,7 +67,9 @@ export function estimateStrength(password: string): Strength {
     if (/^[a-zA-Z]+[0-9]{1,4}$/.test(password)) bits *= 0.6;
     if (/(.)\1{2,}/.test(password)) bits *= 0.7;
     const score = bits < 28 ? 0 : bits < 40 ? 1 : bits < 60 ? 2 : bits < 80 ? 3 : 4;
-    const labels = ['дуже слабкий', 'слабкий', 'середній', 'сильний', 'дуже сильний'];
+    const labels = localStorage.getItem('kse-pm-language') === 'en'
+        ? ['very weak', 'weak', 'medium', 'strong', 'very strong']
+        : ['дуже слабкий', 'слабкий', 'середній', 'сильний', 'дуже сильний'];
     return { score, label: labels[score], bits: Math.round(bits) };
 }
 
@@ -116,7 +119,7 @@ async function hibpRange(prefix: string): Promise<Map<string, number>> {
         headers: { 'Add-Padding': 'true' },
     });
     if (!response.ok) {
-        throw new Error(`HIBP недоступний (HTTP ${response.status})`);
+        throw new Error(tr(`HIBP недоступний (HTTP ${response.status})`, `HIBP is unavailable (HTTP ${response.status})`));
     }
     const body = await response.text();
     const matches = new Map<string, number>();

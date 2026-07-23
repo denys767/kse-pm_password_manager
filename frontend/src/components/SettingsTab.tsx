@@ -1,6 +1,8 @@
 import { ChangeEvent, useEffect, useState } from 'react';
 import { api } from '../api';
-import type { FrontendConfig, Settings, SyncMode } from '../types';
+import { verifyPassphrase } from '../auth';
+import { isWebAuthnSupported, registerVaultWebAuthn, removeVaultWebAuthn, vaultWebAuthnEnrolledAt } from '../webauthnVault';
+import type { FrontendConfig, Me, Settings, SyncMode } from '../types';
 import { useI18n } from '../i18n';
 import { useTheme } from '../theme';
 
@@ -9,6 +11,7 @@ interface Props {
     onSaved: (settings: Settings) => void;
     isAdmin: boolean;
     config: FrontendConfig;
+    user: Me;
 }
 
 /** Square-crops and downsizes an uploaded image client-side so the stored data URI stays small. */
@@ -24,15 +27,44 @@ async function resizeToAvatar(file: File): Promise<string> {
     return canvas.toDataURL('image/jpeg', 0.85);
 }
 
-export function SettingsTab({ settings, onSaved, config }: Props) {
-    const { t } = useI18n();
+export function SettingsTab({ settings, onSaved, config, user }: Props) {
+    const { t, language } = useI18n();
+    const tr = (uk: string, en: string) => (language === 'uk' ? uk : en);
     const { preference, setPreference } = useTheme();
     const [syncMode, setSyncMode] = useState<SyncMode>(settings.defaultSyncMode);
     const [clipboardSeconds, setClipboardSeconds] = useState(settings.clipboardClearSeconds);
     const [avatarDataUrl, setAvatarDataUrl] = useState<string | null>(settings.avatarDataUrl);
     const [status, setStatus] = useState('');
+    const [webauthnEnrolledAt, setWebauthnEnrolledAt] = useState<string | null>(() => vaultWebAuthnEnrolledAt(user.email));
+    const [webauthnPass, setWebauthnPass] = useState('');
+    const [webauthnBusy, setWebauthnBusy] = useState(false);
+    const [webauthnStatus, setWebauthnStatus] = useState('');
 
     useEffect(() => { setAvatarDataUrl(settings.avatarDataUrl); }, [settings.avatarDataUrl]);
+    useEffect(() => { setWebauthnEnrolledAt(vaultWebAuthnEnrolledAt(user.email)); }, [user.email]);
+
+    async function enableWebauthn() {
+        setWebauthnStatus('');
+        if (!webauthnPass) { setWebauthnStatus(t('vaultWebauthnWrongPass')); return; }
+        setWebauthnBusy(true);
+        try {
+            if (!await verifyPassphrase(webauthnPass)) { setWebauthnStatus(t('vaultWebauthnWrongPass')); return; }
+            await registerVaultWebAuthn(user, webauthnPass);
+            setWebauthnPass('');
+            setWebauthnEnrolledAt(vaultWebAuthnEnrolledAt(user.email));
+            setWebauthnStatus(t('vaultWebauthnEnabledOk'));
+        } catch (e) {
+            setWebauthnStatus((e as Error).message);
+        } finally {
+            setWebauthnBusy(false);
+        }
+    }
+
+    function disableWebauthn() {
+        removeVaultWebAuthn(user.email);
+        setWebauthnEnrolledAt(null);
+        setWebauthnStatus(t('vaultWebauthnDisabled'));
+    }
 
     async function save(overrides: Partial<Pick<Settings, 'avatarDataUrl'>> = {}) {
         try {
@@ -46,7 +78,7 @@ export function SettingsTab({ settings, onSaved, config }: Props) {
             });
             onSaved(saved);
             setAvatarDataUrl(saved.avatarDataUrl);
-            setStatus('Збережено.');
+            setStatus(tr('Збережено.', 'Saved.'));
             setTimeout(() => setStatus(''), 2000);
         } catch (e) {
             setStatus((e as Error).message);
@@ -75,25 +107,25 @@ export function SettingsTab({ settings, onSaved, config }: Props) {
                         <option value="system">{t('themeSystem')}</option><option value="light">{t('themeLight')}</option><option value="dark">{t('themeDark')}</option>
                     </select>
                 </label>
-                <label>Аватар
+                <label>{tr('Аватар', 'Avatar')}
                     <div className="row">
                         {avatarDataUrl
-                            ? <img className="avatar" src={avatarDataUrl} alt="" width={48} height={48} />
-                            : <span className="avatar" style={{ width: 48, height: 48 }}>?</span>}
+                            ? <img className="avatar large" src={avatarDataUrl} alt="" />
+                            : <span className="avatar large">?</span>}
                         <input id="setting-avatar" type="file" accept="image/*" onChange={uploadAvatar} />
                         {avatarDataUrl && <button type="button" className="secondary small"
-                                                  onClick={() => { setAvatarDataUrl(null); void save({ avatarDataUrl: null }); }}>Видалити</button>}
+                                                  onClick={() => { setAvatarDataUrl(null); void save({ avatarDataUrl: null }); }}>{t('delete')}</button>}
                     </div>
                 </label>
-                <p className="hint">Показується в топбарі й учасникам ваших колекцій. Обрізається до квадрата локально в браузері.</p>
-                <label>Режим збереження за замовчуванням
+                <p className="hint">{tr('Показується в топбарі й учасникам ваших колекцій. Обрізається до квадрата локально в браузері.', 'Shown in the top bar and to members of your collections. Cropped to a square locally in the browser.')}</p>
+                <label>{tr('Режим збереження за замовчуванням', 'Default storage mode')}
                     <select id="setting-sync" value={syncMode}
                             onChange={(e) => setSyncMode(e.target.value as SyncMode)}>
-                        <option value="SERVER_SYNCED">Зберігати на сервері</option>
+                        <option value="SERVER_SYNCED">{tr('Зберігати на сервері', 'Store on the server')}</option>
                         <option value="LOCAL_ONLY">Local-only</option>
                     </select>
                 </label>
-                <label>Очищати clipboard через (секунд)
+                <label>{tr('Очищати clipboard через (секунд)', 'Clear clipboard after (seconds)')}
                     <input id="setting-clipboard" type="number" min={5} max={120}
                            value={clipboardSeconds}
                            onChange={(e) => setClipboardSeconds(Number(e.target.value))} />
@@ -110,6 +142,29 @@ export function SettingsTab({ settings, onSaved, config }: Props) {
                        target="_blank" rel="noopener noreferrer">
                         <button type="button">{t('accountConsole')}</button>
                     </a>
+                </div>
+            )}
+            {config.authMode === 'oidc' && (
+                <div id="vault-webauthn-card" className="card narrow" style={{ marginTop: 18 }}>
+                    <h3>{t('vaultWebauthn')}</h3>
+                    <p className="hint">{t('vaultWebauthnDesc')}</p>
+                    {!isWebAuthnSupported()
+                        ? <p className="hint">{t('vaultWebauthnUnsupported')}</p>
+                        : webauthnEnrolledAt
+                            ? <>
+                                <p className="hint">{t('vaultWebauthnEnrolled', { date: new Date(webauthnEnrolledAt).toLocaleDateString(language === 'uk' ? 'uk-UA' : 'en-US') })}</p>
+                                <button id="webauthn-disable-btn" type="button" className="secondary" onClick={disableWebauthn}>{t('vaultWebauthnDisable')}</button>
+                            </>
+                            : <>
+                                <label>{t('vaultWebauthnPassLabel')}
+                                    <input id="webauthn-passphrase" type="password" autoComplete="current-password"
+                                           value={webauthnPass} onChange={(e) => setWebauthnPass(e.target.value)} />
+                                </label>
+                                <button id="webauthn-enable-btn" type="button" disabled={webauthnBusy} onClick={enableWebauthn}>
+                                    {webauthnBusy ? '…' : t('vaultWebauthnEnable')}
+                                </button>
+                            </>}
+                    {webauthnStatus && <p id="webauthn-status" className="hint">{webauthnStatus}</p>}
                 </div>
             )}
             {/* Google Workspace is the source of groups; there is no local/Keycloak allowlist. */}

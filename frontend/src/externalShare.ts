@@ -1,4 +1,5 @@
 import * as pmc from './crypto';
+import { tr } from './i18n';
 import type { SecretPayload } from './payload';
 import type { SecretType } from './types';
 
@@ -20,7 +21,7 @@ export async function decryptShareSnapshot(fragmentKey: string, encryptedPackage
                                            packageIv: string): Promise<ExternalShareSnapshot> {
     const result = await pmc.decryptExternalShare<ExternalShareSnapshot>(fragmentKey, encryptedPackage, packageIv);
     if (result.version !== 1 || !result.name || !result.type || !result.payload) {
-        throw new Error('Непідтримуваний або пошкоджений пакет.');
+        throw new Error(tr('Непідтримуваний або пошкоджений пакет.', 'Unsupported or corrupted package.'));
     }
     return result;
 }

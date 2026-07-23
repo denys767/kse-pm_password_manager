@@ -23,7 +23,8 @@ export interface Session {
 type Tab = 'vault' | 'dashboard' | 'collections' | 'tags' | 'audit' | 'admin' | 'settings';
 
 export default function App() {
-    const { t } = useI18n();
+    const { t, language } = useI18n();
+    const tr = (uk: string, en: string) => (language === 'uk' ? uk : en);
     const externalShareMatch = window.location.pathname.match(/^\/share\/([0-9a-f-]{36})$/i);
     if (externalShareMatch) return <ExternalSharePage shareId={externalShareMatch[1]} />;
     const [config, setConfig] = useState<FrontendConfig | null>(null);
@@ -57,7 +58,7 @@ export default function App() {
                 }
                 setOidcReady(true);
             })
-            .catch((e) => setFatal(`Не вдалося завантажити конфігурацію: ${e.message}`));
+            .catch((e) => setFatal(tr(`Не вдалося завантажити конфігурацію: ${e.message}`, `Could not load configuration: ${e.message}`)));
     }, []);
 
     const refreshCollections = useCallback(async () => {
@@ -107,7 +108,7 @@ export default function App() {
         return <p className="error" style={{ padding: 24 }}>{fatal}</p>;
     }
     if (!config || !oidcReady) {
-        return <p className="hint" style={{ padding: 24 }}>Завантаження…</p>;
+        return <p className="hint" style={{ padding: 24 }}>{tr('Завантаження…', 'Loading…')}</p>;
     }
 
     const isAuditor = session != null
@@ -116,24 +117,24 @@ export default function App() {
     return (
         <div className="app-shell">
             <header className="topbar">
-                <div className="brand"><span>KSE Password Manager</span></div>
+                <div className="brand"><span className="brand-mark" aria-hidden="true"><IconLock /></span><span>KSE Password Manager</span></div>
                 <div className="header-right">
                     <LanguageSwitcher />
                     {session && (
                         config.authMode === 'oidc' ? (
                             <a id="user-badge" className="topbar-user" href={`${config.keycloakUrl}/realms/${encodeURIComponent(config.realm ?? '')}/account/`}
-                               target="_blank" rel="noopener noreferrer" title="Керування профілем і 2FA в Keycloak Account Console">
+                               target="_blank" rel="noopener noreferrer" title={tr('Керування профілем і 2FA в Account Console', 'Manage your profile and 2FA in the Account Console')}>
                                 {settings.avatarDataUrl
                                     ? <img className="avatar" src={settings.avatarDataUrl} alt="" width={28} height={28} />
-                                    : <span className="avatar">{session.user.email.slice(0, 1).toUpperCase()}</span>}
-                                {session.user.email}
+                                    : <span className="avatar">{(session.user.displayName || session.user.email).slice(0, 1).toUpperCase()}</span>}
+                                <span className="topbar-identity"><strong>{session.user.displayName || session.user.email}</strong><small>{session.user.email}</small></span>
                             </a>
                         ) : (
                             <span id="user-badge" className="topbar-user">
                                 {settings.avatarDataUrl
                                     ? <img className="avatar" src={settings.avatarDataUrl} alt="" width={28} height={28} />
-                                    : <span className="avatar">{session.user.email.slice(0, 1).toUpperCase()}</span>}
-                                {session.user.email}
+                                    : <span className="avatar">{(session.user.displayName || session.user.email).slice(0, 1).toUpperCase()}</span>}
+                                <span className="topbar-identity"><strong>{session.user.displayName || session.user.email}</strong><small>{session.user.email}</small></span>
                             </span>
                         )
                     )}
@@ -174,7 +175,7 @@ export default function App() {
                     {tab === 'tags' && <TagsTab session={session} onSelect={(tag) => { setVaultTagFilter(tag); setTab('vault'); }} />}
                     {tab === 'audit' && <AuditTab />}
                     {tab === 'admin' && <AdminTab />}
-                    {tab === 'settings' && <SettingsTab settings={settings} onSaved={setSettings} isAdmin={session.user.roles.includes('ADMIN')} config={config} />}
+                    {tab === 'settings' && <SettingsTab settings={settings} onSaved={setSettings} isAdmin={session.user.roles.includes('ADMIN')} config={config} user={session.user} />}
                 </main>
             </div>}
         </div>

@@ -52,8 +52,17 @@ interface Fields {
     sync: boolean;
 }
 
+/** Accepts a bare host ("url.com") as well as a full URL: anything without an
+ * explicit scheme gets an https:// prefix so stored links are always openable. */
+function normalizeUrl(raw: string): string | null {
+    const value = raw.trim();
+    if (!value) return null;
+    return /^[a-z][a-z0-9+.-]*:/i.test(value) ? value : `https://${value}`;
+}
+
 export function ItemDialog({ session, settings, collections, item, availableTags, onClose }: Props) {
-    const { t } = useI18n();
+    const { t, language } = useI18n();
+    const tr = (uk: string, en: string) => (language === 'uk' ? uk : en);
     const dialogRef = useRef<HTMLDialogElement>(null);
     const warningRef = useRef<HTMLDialogElement>(null);
     const warningResolve = useRef<((ok: boolean) => void) | null>(null);
@@ -82,6 +91,8 @@ export function ItemDialog({ session, settings, collections, item, availableTags
     const [externalTtl, setExternalTtl] = useState('3600');
     const [externalOneTime, setExternalOneTime] = useState(false);
     const [externalLink, setExternalLink] = useState<{ id: string; url: string } | null>(null);
+    const [linkCopied, setLinkCopied] = useState(false);
+    const [shareAvatars, setShareAvatars] = useState<Record<string, string | null>>({});
     const [tagDraft, setTagDraft] = useState('');
     const [attachmentFile, setAttachmentFile] = useState<File | null>(null);
 
@@ -127,9 +138,11 @@ export function ItemDialog({ session, settings, collections, item, availableTags
                         ? await pmc.decryptField(key, full.encryptedNotes, full.notesIv!)
                         : '');
                 } catch (e) {
-                    setError((e as Error).message.startsWith('Для вас')
+                    // Show the access-specific message directly (both languages);
+                    // fall back to the generic decryption error otherwise.
+                    setError(/^(Для вас|Ви не член|You have|You are not)/.test((e as Error).message)
                         ? (e as Error).message
-                        : 'Не вдалося розшифрувати запис (ключ не підходить).');
+                        : tr('Не вдалося розшифрувати запис (ключ не підходить).', 'Could not decrypt the item (key does not match).'));
                 }
                 setItemKey(key);
                 setFields({
@@ -164,13 +177,13 @@ export function ItemDialog({ session, settings, collections, item, availableTags
             return;
         }
         let cancelled = false;
-        setHibpStatus({ kind: 'checking', message: 'Перевіряю…' });
+        setHibpStatus({ kind: 'checking', message: tr('Перевіряю…', 'Checking…') });
         const timer = window.setTimeout(() => {
             hibpBreachCount(fields.password).then((count) => {
                 if (cancelled) return;
                 setHibpStatus(count === 0
-                    ? { kind: 'clean', message: 'Не знайдено у відомих витоках.' }
-                    : { kind: 'breached', message: `Знайдено у витоках ${count.toLocaleString()} разів — змініть пароль!` });
+                    ? { kind: 'clean', message: tr('Не знайдено у відомих витоках.', 'Not found in known breaches.') }
+                    : { kind: 'breached', message: tr(`Знайдено у витоках ${count.toLocaleString()} разів — змініть пароль!`, `Found in breaches ${count.toLocaleString()} times — change this password!`) });
             }).catch((e: Error) => { if (!cancelled) setHibpStatus({ kind: 'error', message: e.message }); });
         }, 600);
         return () => { cancelled = true; window.clearTimeout(timer); };
@@ -197,6 +210,20 @@ export function ItemDialog({ session, settings, collections, item, availableTags
             window.clearInterval(timer);
         };
     }, [fields.secretType, fields.totpSeed]);
+
+    // Fetch avatars for the users an item is shared with, so the access list
+    // shows faces instead of a generic icon (same source as the collection list).
+    useEffect(() => {
+        const missing = permissions
+            .filter((p) => p.granteeType === 'USER')
+            .map((p) => p.grantee.toLowerCase())
+            .filter((email) => !(email in shareAvatars));
+        if (missing.length === 0) return;
+        Promise.all(missing.map((email) => api<{ avatarDataUrl: string | null }>(`/api/settings/${encodeURIComponent(email)}/avatar`)
+            .then((r) => [email, r.avatarDataUrl] as const)
+            .catch(() => [email, null] as const)))
+            .then((pairs) => setShareAvatars((prev) => ({ ...prev, ...Object.fromEntries(pairs) })));
+    }, [permissions, shareAvatars]);
 
     function set<K extends keyof Fields>(key: K, value: Fields[K]) {
         setFields((f) => {
@@ -230,6 +257,75 @@ export function ItemDialog({ session, settings, collections, item, availableTags
         warningResolve.current = null;
     }
 
+    /** Encrypts the current fields under `key` into the server item payload. */
+    async function buildPayload(key: CryptoKey): Promise<Record<string, unknown>> {
+        const password = await pmc.encryptField(key, fields.password);
+        const notes = await pmc.encryptField(key, serializePayload({
+            version: 1,
+            notes: fields.notes,
+            apiKey: fields.apiKey,
+            apiSecret: fields.apiSecret,
+            sshPrivateKey: fields.sshPrivateKey,
+            sshPublicKey: fields.sshPublicKey,
+            databaseType: fields.databaseType,
+            databaseHost: fields.databaseHost,
+            databasePort: fields.databasePort,
+            databaseName: fields.databaseName,
+            databaseUsername: fields.databaseUsername,
+            databasePassword: fields.databasePassword,
+            cardNumber: fields.cardNumber,
+            cardCvv: fields.cardCvv,
+            cardHolder: fields.cardHolder,
+            cardExpiry: fields.cardExpiry,
+            totpSeed: fields.totpSeed,
+        }));
+        return {
+            name: fields.name.trim(),
+            url: normalizeUrl(fields.url),
+            username: fields.username.trim() || null,
+            encryptedPassword: password.ct,
+            passwordIv: password.iv,
+            encryptedNotes: notes.ct,
+            notesIv: notes.iv,
+            tags: fields.tags.trim() || null,
+            type: fields.secretType,
+            itemType: fields.type,
+            syncMode: 'SERVER_SYNCED',
+        };
+    }
+
+    /**
+     * POSTs a brand-new server-synced item from the current fields and wires up
+     * current + itemKey so the dialog transitions into edit mode. Used both by
+     * the normal Save path and by share(), which needs a persisted item id
+     * before it can attach a permission.
+     */
+    async function createServerItem(): Promise<{ item: PasswordItem; key: CryptoKey }> {
+        const key = itemKey ?? await pmc.generateItemKey();
+        const payload = await buildPayload(key);
+        payload.wrappedKey = await pmc.wrapItemKey(key, session.keys.publicKey);
+        const created = await api<PasswordItem>('/api/vault/items', {
+            method: 'POST',
+            body: JSON.stringify(payload),
+        });
+        setItemKey(key);
+        setCurrent(created);
+        return { item: created, key };
+    }
+
+    /** Returns the persisted item + key, creating it first when sharing a
+     * brand-new record (internal or external share both need an item id). */
+    async function ensurePersistedItem(): Promise<{ item: PasswordItem; key: CryptoKey }> {
+        if (current) {
+            if (!itemKey) throw new Error(tr('Немає ключа запису — розшифруйте запис перед шерингом.', 'No item key — decrypt the item before sharing.'));
+            return { item: current, key: itemKey };
+        }
+        if (!fields.name.trim() || (fields.secretType === 'LOGIN' && !fields.password)) {
+            throw new Error(tr('Спершу заповніть назву та пароль, потім діліться записом.', 'Fill in the name and password first, then share the item.'));
+        }
+        return createServerItem();
+    }
+
     async function save(event: FormEvent) {
         event.preventDefault();
         setError(null);
@@ -242,51 +338,14 @@ export function ItemDialog({ session, settings, collections, item, availableTags
         try {
             // Existing item keeps its key (recipients keep access); new one gets a fresh key.
             const key = itemKey ?? await pmc.generateItemKey();
-            const password = await pmc.encryptField(key, fields.password);
-            const notes = await pmc.encryptField(key, serializePayload({
-                version: 1,
-                notes: fields.notes,
-                apiKey: fields.apiKey,
-                apiSecret: fields.apiSecret,
-                sshPrivateKey: fields.sshPrivateKey,
-                sshPublicKey: fields.sshPublicKey,
-                databaseType: fields.databaseType,
-                databaseHost: fields.databaseHost,
-                databasePort: fields.databasePort,
-                databaseName: fields.databaseName,
-                databaseUsername: fields.databaseUsername,
-                databasePassword: fields.databasePassword,
-                cardNumber: fields.cardNumber,
-                cardCvv: fields.cardCvv,
-                cardHolder: fields.cardHolder,
-                cardExpiry: fields.cardExpiry,
-                totpSeed: fields.totpSeed,
-            }));
-            const payload: Record<string, unknown> = {
-                name: fields.name.trim(),
-                url: fields.url.trim() || null,
-                username: fields.username.trim() || null,
-                encryptedPassword: password.ct,
-                passwordIv: password.iv,
-                encryptedNotes: notes.ct,
-                notesIv: notes.iv,
-                tags: fields.tags.trim() || null,
-                type: fields.secretType,
-                itemType: fields.type,
-                syncMode: 'SERVER_SYNCED',
-            };
             if (fields.sync) {
                 let itemId: string;
                 if (current && !wasLocal) {
-                    await api(`/api/vault/items/${current.id}`, { method: 'PUT', body: JSON.stringify(payload) });
+                    // Already on the server (incl. items share() just persisted).
+                    await api(`/api/vault/items/${current.id}`, { method: 'PUT', body: JSON.stringify(await buildPayload(key)) });
                     itemId = current.id;
                 } else {
-                    payload.wrappedKey = await pmc.wrapItemKey(key, session.keys.publicKey);
-                    const created = await api<PasswordItem>('/api/vault/items', {
-                        method: 'POST',
-                        body: JSON.stringify(payload),
-                    });
-                    itemId = created.id;
+                    itemId = (await createServerItem()).item.id;
                     if (current && wasLocal) {
                         removeLocal(current.id);
                     }
@@ -298,7 +357,7 @@ export function ItemDialog({ session, settings, collections, item, availableTags
                     await uploadAttachment(itemId, key, attachmentFile);
                 }
             } else {
-                await saveLocalOnly(payload, key, wasLocal);
+                await saveLocalOnly(await buildPayload(key), key, wasLocal);
             }
             dialogRef.current?.close();
             onClose(true);
@@ -355,7 +414,7 @@ export function ItemDialog({ session, settings, collections, item, availableTags
     }
 
     async function deleteAttachment() {
-        if (!current?.attachment || !confirm('Видалити вкладення?')) return;
+        if (!current?.attachment || !confirm(tr('Видалити вкладення?', 'Delete the attachment?'))) return;
         try {
             await api(`/api/vault/items/${current.id}/attachment`, { method: 'DELETE' });
             setCurrent({ ...current, attachment: null });
@@ -395,9 +454,22 @@ export function ItemDialog({ session, settings, collections, item, availableTags
 
     async function saveLocalOnly(payload: Record<string, unknown>, key: CryptoKey, wasLocal: boolean) {
         if (payload.itemType === 'SHARED') {
-            throw new Error('Shared-запис не може бути local-only.');
+            throw new Error(tr('Shared-запис не може бути local-only.', 'A shared item cannot be local-only.'));
         }
         if (current && !wasLocal) {
+            // The sync-mode endpoint refuses an item the server still considers
+            // SHARED, so persist the Personal type first. The server rejects
+            // that too while any grant/collection remains — surface a clear ask.
+            if (current.itemType === 'SHARED') {
+                try {
+                    await api(`/api/vault/items/${current.id}`, { method: 'PUT', body: JSON.stringify(payload) });
+                } catch (e) {
+                    if ((e as ApiError).status === 400) {
+                        throw new Error(tr('Спершу відкличте всі доступи (і приберіть колекцію), щоб зробити запис локальним.', 'Revoke all access (and remove the collection) before making this item local.'));
+                    }
+                    throw e;
+                }
+            }
             // The server removes its copy (with an audit event); we keep it locally.
             await api(`/api/vault/items/${current.id}/sync-mode`, {
                 method: 'PATCH',
@@ -420,7 +492,7 @@ export function ItemDialog({ session, settings, collections, item, availableTags
     }
 
     async function remove() {
-        if (!current || !confirm(`Видалити «${current.name}»?`)) {
+        if (!current || !confirm(tr(`Видалити «${current.name}»?`, `Delete “${current.name}”?`))) {
             return;
         }
         if (current.syncMode === 'LOCAL_ONLY') {
@@ -449,7 +521,7 @@ export function ItemDialog({ session, settings, collections, item, availableTags
                 }
             } catch { /* clipboard read may be blocked; best effort */ }
         }, seconds * 1000);
-        setCopyLabel(`Copied (${seconds}s)`);
+        setCopyLabel(tr(`Скопійовано (${seconds}с)`, `Copied (${seconds}s)`));
         setTimeout(() => setCopyLabel('Copy'), 2000);
     }
 
@@ -484,43 +556,44 @@ export function ItemDialog({ session, settings, collections, item, availableTags
             const canvas = document.createElement('canvas');
             canvas.width = bitmap.width; canvas.height = bitmap.height;
             const context = canvas.getContext('2d', { willReadFrequently: true });
-            if (!context) throw new Error('Браузер не підтримує читання зображення.');
+            if (!context) throw new Error(tr('Браузер не підтримує читання зображення.', 'This browser cannot read the image.'));
             context.drawImage(bitmap, 0, 0);
             bitmap.close();
             const image = context.getImageData(0, 0, canvas.width, canvas.height);
             const decoded = jsQR(image.data, image.width, image.height, { inversionAttempts: 'attemptBoth' });
-            if (!decoded) throw new Error('QR-код не знайдено у вибраному файлі.');
+            if (!decoded) throw new Error(tr('QR-код не знайдено у вибраному файлі.', 'No QR code found in the selected file.'));
             const uri = decoded.data.trim();
             const parsed = new URL(uri);
             if (parsed.protocol !== 'otpauth:' || parsed.hostname.toLowerCase() !== 'totp') {
-                throw new Error('QR-код не містить TOTP otpauth URI.');
+                throw new Error(tr('QR-код не містить TOTP otpauth URI.', 'The QR code does not contain a TOTP otpauth URI.'));
             }
             // Validate the actual Base32 secret before placing it in the encrypted form.
             pmc.decodeTotpSeed(uri);
             set('totpSeed', uri);
         } catch (e) {
-            setError(`Не вдалося імпортувати TOTP QR: ${(e as Error).message}`);
+            setError(tr(`Не вдалося імпортувати TOTP QR: ${(e as Error).message}`, `Could not import the TOTP QR: ${(e as Error).message}`));
         }
     }
 
     async function share() {
         const grantee = (shareForm.principal?.email ?? shareForm.grantee).trim().toLowerCase();
-        if (!grantee || !current) {
+        if (!grantee) {
             return;
         }
         setError(null);
         try {
-            if (!itemKey) {
-                throw new Error('Немає ключа запису — розшифруйте запис перед шерингом.');
-            }
+            // When sharing a brand-new record, persist it first: permissions
+            // attach to an existing item id. buildPayload already carries
+            // itemType=SHARED because the type select is switched before this.
+            const { item: target, key } = await ensurePersistedItem();
             if (shareForm.principal?.type === 'GROUP') {
-                const created = await api<Permission>(`/api/vault/items/${current.id}/permissions`, {
+                const created = await api<Permission>(`/api/vault/items/${target.id}/permissions`, {
                     method: 'POST', body: JSON.stringify({ granteeType: 'GROUP', grantee,
                         directorySubjectId: shareForm.principal.id, role: shareForm.role }),
                 });
-                setError(created.warning ?? 'Групу додано. Видайте ключі доступним учасникам кнопкою Provision.');
+                setError(created.warning ?? tr('Групу додано. Видайте ключі доступним учасникам кнопкою Provision.', 'Group added. Grant keys to available members with the Provision button.'));
                 setShareForm({ grantee: '', role: shareForm.role, principal: null });
-                setPermissions(await api<Permission[]>(`/api/vault/items/${current.id}/permissions`));
+                setPermissions(await api<Permission[]>(`/api/vault/items/${target.id}/permissions`));
                 return;
             }
             let recipient: { publicKey: string };
@@ -537,9 +610,9 @@ export function ItemDialog({ session, settings, collections, item, availableTags
                 grantee,
                 directorySubjectId: shareForm.principal?.id,
                 role: shareForm.role,
-                wrappedKey: await pmc.wrapItemKey(itemKey, recipientKey),
+                wrappedKey: await pmc.wrapItemKey(key, recipientKey),
             };
-            const created = await api<Permission>(`/api/vault/items/${current.id}/permissions`, {
+            const created = await api<Permission>(`/api/vault/items/${target.id}/permissions`, {
                 method: 'POST',
                 body: JSON.stringify(body),
             });
@@ -547,9 +620,9 @@ export function ItemDialog({ session, settings, collections, item, availableTags
                 setError(created.warning);
             }
             setShareForm({ grantee: '', role: shareForm.role, principal: null });
-            setCurrent({ ...current, itemType: 'SHARED' });
+            setCurrent({ ...target, itemType: 'SHARED' });
             set('type', 'SHARED');
-            setPermissions(await api<Permission[]>(`/api/vault/items/${current.id}/permissions`));
+            setPermissions(await api<Permission[]>(`/api/vault/items/${target.id}/permissions`));
         } catch (e) {
             setError((e as Error).message);
         }
@@ -568,7 +641,7 @@ export function ItemDialog({ session, settings, collections, item, availableTags
                 email: member.memberEmail,
                 wrappedKey: await pmc.wrapItemKey(itemKey, await pmc.importPublicKey(keys[member.memberEmail].publicKey)),
             })));
-            if (provisioned.length === 0) { setError('У жодного pending учасника ще немає ключів у vault.'); return; }
+            if (provisioned.length === 0) { setError(tr('У жодного pending учасника ще немає ключів у vault.', 'None of the pending members have vault keys yet.')); return; }
             await api(`/api/vault/items/${current.id}/permissions/${permission.id}/provision`, {
                 method: 'POST', body: JSON.stringify({ members: provisioned }),
             });
@@ -577,9 +650,9 @@ export function ItemDialog({ session, settings, collections, item, availableTags
     }
 
     async function shareExternally() {
-        if (!current || !itemKey) return;
         setError(null);
         try {
+            const { item: target } = await ensurePersistedItem();
             const encrypted = await encryptShareSnapshot({
                 version: 1, name: fields.name, url: fields.url, username: fields.username,
                 tags: fields.tags, type: fields.secretType, password: fields.password,
@@ -594,7 +667,7 @@ export function ItemDialog({ session, settings, collections, item, availableTags
                     cardExpiry: fields.cardExpiry, totpSeed: fields.totpSeed,
                 },
             });
-            const created = await api<{ id: string }>(`/api/vault/items/${current.id}/external-shares`, {
+            const created = await api<{ id: string }>(`/api/vault/items/${target.id}/external-shares`, {
                 method: 'POST',
                 body: JSON.stringify({
                     encryptedPackage: encrypted.encryptedPackage, packageIv: encrypted.packageIv,
@@ -619,7 +692,7 @@ export function ItemDialog({ session, settings, collections, item, availableTags
         try {
             const extended = await api<{ expiresAt: string; oneTime: boolean }>(
                 `/api/vault/items/${current.id}/external-shares/${externalLink.id}/extend-24-hours`, { method: 'POST' });
-            setError(`Посилання продовжено до ${new Date(extended.expiresAt).toLocaleString()}${extended.oneTime ? ' (одноразове)' : ''}. URL не змінено.`);
+            setError(tr(`Посилання продовжено до ${new Date(extended.expiresAt).toLocaleString()}${extended.oneTime ? ' (одноразове)' : ''}. URL не змінено.`, `Link extended to ${new Date(extended.expiresAt).toLocaleString()}${extended.oneTime ? ' (one-time)' : ''}. The URL is unchanged.`));
         } catch (e) { setError((e as Error).message); }
     }
 
@@ -690,7 +763,7 @@ export function ItemDialog({ session, settings, collections, item, availableTags
             try {
                 await rotateItemKeyExcluding(remainingUserShares);
             } catch (e) {
-                setError(`Не вдалося ротувати ключ, revoke скасовано: ${(e as Error).message}`);
+                setError(tr(`Не вдалося ротувати ключ, revoke скасовано: ${(e as Error).message}`, `Could not rotate the key; revoke was cancelled: ${(e as Error).message}`));
                 return;
             }
         }
@@ -734,17 +807,30 @@ export function ItemDialog({ session, settings, collections, item, availableTags
                 notes: payload.notes,
             }));
             setVersions(null);
-            setError('Версію підставлено у форму — натисніть Save, щоб відновити.');
+            setError(tr('Версію підставлено у форму — натисніть Save, щоб відновити.', 'Version loaded into the form — press Save to restore it.'));
         } catch {
-            setError('Не вдалося розшифрувати цю версію.');
+            setError(tr('Не вдалося розшифрувати цю версію.', 'Could not decrypt this version.'));
         }
     }
 
     // Sharing only makes sense for a Shared record. Existing grants keep the
     // section visible so the owner can still revoke them — the server refuses
     // to turn a shared item back into a personal one until they are gone.
-    const showShare = current !== null && isOwner && current.syncMode !== 'LOCAL_ONLY' && loaded
+    // In add mode (current === null) the section shows as soon as Shared is
+    // picked; share() then persists the item on the first grant.
+    const showShare = isOwner && loaded && current?.syncMode !== 'LOCAL_ONLY'
         && (sharedType || permissions.length > 0);
+    // External sharing is a standalone encrypted snapshot, NOT an internal
+    // permission grant — the backend accepts it for personal items too. So it
+    // must NOT require SHARED type or existing permissions (that coupling hid
+    // the "Create link" control for ordinary personal passwords). Show it for
+    // any owned, server-synced item (or a new one that will be server-synced);
+    // shareExternally() persists a brand-new item first. Local-only is excluded
+    // because an external share needs a server-side item id.
+    // (current === null || itemKey) hides the control for an existing item whose
+    // key could not be decrypted, where generation would fail on click anyway.
+    const showExternalShare = isOwner && loaded && fields.sync && current?.syncMode !== 'LOCAL_ONLY'
+        && (current === null || itemKey !== null);
 
     return (
         <>
@@ -756,8 +842,10 @@ export function ItemDialog({ session, settings, collections, item, availableTags
                                value={fields.name} onChange={(e) => set('name', e.target.value)} />
                     </label>
                     <label>URL
-                        <input id="f-url" type="url" maxLength={2048} readOnly={!canEdit}
-                               value={fields.url} onChange={(e) => set('url', e.target.value)} />
+                        <input id="f-url" type="text" inputMode="url" maxLength={2048} readOnly={!canEdit}
+                               placeholder="url.com" value={fields.url}
+                               onChange={(e) => set('url', e.target.value)}
+                               onBlur={() => { const n = normalizeUrl(fields.url); if (n && n !== fields.url) set('url', n); }} />
                     </label>
                     <label>{t('username')}
                         <input id="f-username" maxLength={255} autoComplete="off" readOnly={!canEdit}
@@ -791,7 +879,7 @@ export function ItemDialog({ session, settings, collections, item, availableTags
                                     <div className={`strength-bar s${s.score}`}
                                          style={{ width: `${(s.score + 1) * 20}%` }} />
                                 </div>
-                                <span className="hint">{s.label} (~{s.bits} біт)</span>
+                                <span className="hint">{s.label} (~{s.bits} {tr('біт', 'bits')})</span>
                                 {hibpStatus && (
                                     <span className={`hint hibp-status hibp-${hibpStatus.kind}`} id="hibp-status">
                                         {hibpStatus.kind === 'clean' && <IconCheck />}
@@ -802,7 +890,7 @@ export function ItemDialog({ session, settings, collections, item, availableTags
                             </div>
                         );
                     })()}
-                    <label>Шаблон секрету
+                    <label>{tr('Шаблон секрету', 'Secret template')}
                         <select id="f-secret-type" disabled={!canEdit || current !== null} value={fields.secretType}
                                 onChange={(e) => set('secretType', e.target.value as SecretType)}>
                             <option value="LOGIN">Login</option>
@@ -859,18 +947,18 @@ export function ItemDialog({ session, settings, collections, item, availableTags
                                    value={fields.databasePassword} onChange={(e) => set('databasePassword', e.target.value)} />
                         </label>
                     </>}
-                    {current && <p className="hint">Шаблон секрету фіксується під час створення запису.</p>}
+                    {current && <p className="hint">{tr('Шаблон секрету фіксується під час створення запису.', 'The secret template is fixed when the item is created.')}</p>}
                     {fields.secretType === 'CARD' && <>
-                        <label>Номер картки
+                        <label>{tr('Номер картки', 'Card number')}
                             <input id="f-card-number" inputMode="numeric" autoComplete="off" readOnly={!canEdit}
                                    value={fields.cardNumber} onChange={(e) => set('cardNumber', e.target.value)} />
                         </label>
-                        <label>Власник картки
+                        <label>{tr('Власник картки', 'Cardholder')}
                             <input id="f-card-holder" autoComplete="off" readOnly={!canEdit}
                                    value={fields.cardHolder} onChange={(e) => set('cardHolder', e.target.value)} />
                         </label>
                         <div className="row">
-                            <label>Термін дії
+                            <label>{tr('Термін дії', 'Expiry')}
                                 <input id="f-card-expiry" placeholder="MM/YY" autoComplete="off" readOnly={!canEdit}
                                        value={fields.cardExpiry} onChange={(e) => set('cardExpiry', e.target.value)} />
                             </label>
@@ -881,26 +969,26 @@ export function ItemDialog({ session, settings, collections, item, availableTags
                         </div>
                     </>}
                     {fields.secretType === 'LOGIN' && <>
-                        <label>TOTP seed (Base32 або otpauth URI)
+                        <label>{tr('TOTP seed (Base32 або otpauth URI)', 'TOTP seed (Base32 or otpauth URI)')}
                             <input id="f-totp-seed" type="password" autoComplete="off" readOnly={!canEdit}
                                    value={fields.totpSeed} onChange={(e) => set('totpSeed', e.target.value)} />
                         </label>
-                        {canEdit && <label>Імпортувати TOTP QR
+                        {canEdit && <label>{tr('Імпортувати TOTP QR', 'Import TOTP QR')}
                             <input id="import-totp-qr" type="file" accept="image/png,image/jpeg,image/webp,image/gif"
                                    onChange={importTotpQr} />
-                            <span className="hint">Зображення обробляється лише у браузері.</span>
+                            <span className="hint">{tr('Зображення обробляється лише у браузері.', 'The image is processed in the browser only.')}</span>
                         </label>}
                         {fields.totpSeed && <div className="row" id="totp-code">
-                            <strong>{totpCode || 'Невірний seed'}</strong>
-                            <span className="hint">оновлення через {totpSeconds} с</span>
+                            <strong>{totpCode || tr('Невірний seed', 'Invalid seed')}</strong>
+                            <span className="hint">{tr(`оновлення через ${totpSeconds} с`, `refreshes in ${totpSeconds}s`)}</span>
                             {totpCode && <button type="button" id="copy-totp" className="secondary small"
-                                                 onClick={copyTotp}>Copy</button>}
+                                                 onClick={copyTotp}>{t('copy')}</button>}
                             {totpCode && <button type="button" id="show-totp-qr" className="secondary small"
-                                                 onClick={toggleTotpQr}>{totpQr ? 'Приховати QR' : 'Показати QR'}</button>}
+                                                 onClick={toggleTotpQr}>{totpQr ? tr('Приховати QR', 'Hide QR') : tr('Показати QR', 'Show QR')}</button>}
                         </div>}
                         {totpQr && <div className="totp-qr">
                             <img src={totpQr} alt="TOTP QR code" width={160} height={160} />
-                            <span className="hint">Відскануйте в Google Authenticator / Authy, щоб мати той самий код на телефоні.</span>
+                            <span className="hint">{tr('Відскануйте в Google Authenticator / Authy, щоб мати той самий код на телефоні.', 'Scan it in Google Authenticator / Authy to get the same code on your phone.')}</span>
                         </div>}
                     </>}
                     <label>{t('notes')}
@@ -940,28 +1028,28 @@ export function ItemDialog({ session, settings, collections, item, availableTags
                         <input id="f-sync" type="checkbox" checked={fields.sync}
                                disabled={sharedType || !isOwner || collectionSel !== ''}
                                onChange={(e) => set('sync', e.target.checked)} />
-                        <span>Зберігати на сервері</span>
+                        <span>{tr('Зберігати на сервері', 'Store on the server')}</span>
                     </label>
                     <p className="hint" id="sync-hint">
                         {sharedType
-                            ? 'Shared-записи завжди зберігаються на сервері, інакше sharing не працює.'
-                            : 'Вимкнено — запис залишиться тільки в цьому браузері (у зашифрованому вигляді).'}
+                            ? tr('Shared-записи завжди зберігаються на сервері, інакше sharing не працює.', 'Shared items are always stored on the server, otherwise sharing cannot work.')
+                            : tr('Вимкнено — запис залишиться тільки в цьому браузері (у зашифрованому вигляді).', 'Off — the item stays in this browser only (encrypted).')}
                     </p>
                     {fields.sync && canEdit && <section id="attachment-section">
-                        <h4>Вкладення</h4>
-                        <p className="hint">Одне вкладення шифрується AES-GCM у браузері та зберігається як непрозорий файл у Google Drive власника. Ліміт розміру не встановлюється застосунком; діють лише квоти й обмеження Google Drive.</p>
+                        <h4>{tr('Вкладення', 'Attachment')}</h4>
+                        <p className="hint">{tr('Одне вкладення шифрується AES-GCM у браузері та зберігається як непрозорий файл у Google Drive власника. Ліміт розміру не встановлюється застосунком; діють лише квоти й обмеження Google Drive.', 'One attachment is encrypted with AES-GCM in the browser and stored as an opaque file in the owner’s Google Drive. The app sets no size limit; only Google Drive quotas and limits apply.')}</p>
                         {current?.attachment && !attachmentFile && <div className="row attachment-row">
-                            <span>Зашифроване вкладення · {current.attachment.ciphertextSize.toLocaleString()} B</span>
-                            <button type="button" className="secondary small" onClick={downloadAttachment}>Завантажити</button>
+                            <span>{tr('Зашифроване вкладення', 'Encrypted attachment')} · {current.attachment.ciphertextSize.toLocaleString()} B</span>
+                            <button type="button" className="secondary small" onClick={downloadAttachment}>{tr('Завантажити', 'Download')}</button>
                             {isOwner && <button type="button" className="secondary small" onClick={deleteAttachment}>{t('delete')}</button>}
                         </div>}
-                        {isOwner && <label>Замінити вкладення
+                        {isOwner && <label>{tr('Замінити вкладення', 'Replace attachment')}
                             <input id="f-attachment" type="file" onChange={(event) => setAttachmentFile(event.target.files?.[0] ?? null)} />
-                            {attachmentFile && <span className="hint">Буде зашифровано і завантажено після Save: {attachmentFile.name} ({attachmentFile.size.toLocaleString()} B)</span>}
+                            {attachmentFile && <span className="hint">{tr(`Буде зашифровано і завантажено після Save: ${attachmentFile.name} (${attachmentFile.size.toLocaleString()} B)`, `Will be encrypted and uploaded after Save: ${attachmentFile.name} (${attachmentFile.size.toLocaleString()} B)`)}</span>}
                         </label>}
-                        {!isOwner && <p className="hint">Вкладення недоступне для заміни без прав власника.</p>}
+                        {!isOwner && <p className="hint">{tr('Вкладення недоступне для заміни без прав власника.', 'The attachment cannot be replaced without owner rights.')}</p>}
                     </section>}
-                    {!fields.sync && <p className="hint">Local-only записи виключені з вкладень Drive і серверних адміністраторських операцій.</p>}
+                    {!fields.sync && <p className="hint">{tr('Local-only записи виключені з вкладень Drive і серверних адміністраторських операцій.', 'Local-only items are excluded from Drive attachments and server-side admin operations.')}</p>}
 
                     {showShare && (
                         <div id="share-section">
@@ -969,9 +1057,13 @@ export function ItemDialog({ session, settings, collections, item, availableTags
                             <ul id="permission-list" className="permission-list">
                                 {permissions.map((p) => (
                                     <li key={p.id}>
-                                        <span className="row">{p.granteeType === 'GROUP' ? <IconUsers /> : <IconUser />} {p.grantee} — {p.role.toLowerCase()}</span>
+                                        <span className="row">{p.granteeType === 'GROUP'
+                                            ? <IconUsers />
+                                            : shareAvatars[p.grantee.toLowerCase()]
+                                                ? <img className="avatar" src={shareAvatars[p.grantee.toLowerCase()]!} alt="" width={20} height={20} />
+                                                : <IconUser />} {p.grantee} — {p.role.toLowerCase()}</span>
                                         <span className="row">
-                                            {p.granteeType === 'GROUP' && p.status === 'ACTIVE' && <button type="button" className="secondary small" onClick={() => provisionGroup(p)}>Provision</button>}
+                                            {p.granteeType === 'GROUP' && p.status === 'ACTIVE' && <button type="button" className="secondary small" onClick={() => provisionGroup(p)}>{tr('Видати ключі', 'Provision')}</button>}
                                             <button type="button" className="secondary small" onClick={() => revoke(p.id)}>{t('revoke')}</button>
                                         </span>
                                     </li>
@@ -994,20 +1086,20 @@ export function ItemDialog({ session, settings, collections, item, availableTags
                             </div>
                         </div>
                     )}
-                    {showShare && <section id="external-share-section">
+                    {showExternalShare && <section id="external-share-section">
                         <h4>{t('externalShare')}</h4>
-                        <p className="hint">Окремий зашифрований снапшот; AES-ключ є лише після <code>#</code> у посиланні.</p>
+                        <p className="hint">{tr('Окремий зашифрований снапшот; AES-ключ є лише після ', 'A separate encrypted snapshot; the AES key lives only after ')}<code>#</code>{tr(' у посиланні.', ' in the link.')}</p>
                         <div className="row external-share-controls">
-                            <label>Строк дії<select id="external-share-ttl" value={externalTtl} onChange={(e) => setExternalTtl(e.target.value)}>
-                                <option value="900">15 хвилин</option><option value="3600">1 година</option>
-                                <option value="86400">24 години</option><option value="604800">7 днів</option>
+                            <label>{tr('Строк дії', 'Expires in')}<select id="external-share-ttl" value={externalTtl} onChange={(e) => setExternalTtl(e.target.value)}>
+                                <option value="900">{tr('15 хвилин', '15 minutes')}</option><option value="3600">{tr('1 година', '1 hour')}</option>
+                                <option value="86400">{tr('24 години', '24 hours')}</option><option value="604800">{tr('7 днів', '7 days')}</option>
                             </select></label>
-                            <label className="checkbox-row"><input id="external-share-one-time" type="checkbox" checked={externalOneTime} onChange={(e) => setExternalOneTime(e.target.checked)} /> Одноразовий перегляд</label>
+                            <label className="checkbox-row"><input id="external-share-one-time" type="checkbox" checked={externalOneTime} onChange={(e) => setExternalOneTime(e.target.checked)} /> {tr('Одноразовий перегляд', 'One-time view')}</label>
                             <button type="button" id="external-share-create" className="secondary" onClick={shareExternally}>{t('createLink')}</button>
                         </div>
                         {externalLink && <div className="external-link"><input readOnly value={externalLink.url} aria-label="External share link" />
-                            <button type="button" className="secondary small" onClick={() => navigator.clipboard.writeText(externalLink.url)}>{t('copy')}</button>
-                            <button type="button" className="secondary small" onClick={extendExternalShare}>+24 год</button>
+                            <button type="button" className={`secondary small${linkCopied ? ' copied' : ''}`} onClick={async () => { await navigator.clipboard.writeText(externalLink.url); setLinkCopied(true); setTimeout(() => setLinkCopied(false), 2000); }}>{linkCopied ? <><IconCheck /> {tr('Скопійовано', 'Copied')}</> : t('copy')}</button>
+                            <button type="button" className="secondary small" onClick={extendExternalShare}>{tr('+24 год', '+24 h')}</button>
                             <button type="button" className="secondary small" onClick={revokeExternalShare}>{t('revoke')}</button></div>}
                     </section>}
 
@@ -1015,17 +1107,17 @@ export function ItemDialog({ session, settings, collections, item, availableTags
                         <div id="history-section">
                             <button type="button" id="history-btn" className="linklike"
                                     onClick={() => toggleHistory().catch((e) => setError((e as Error).message))}>
-                                {versions === null ? 'Показати історію версій' : 'Сховати історію'}
+                                {versions === null ? tr('Показати історію версій', 'Show version history') : tr('Сховати історію', 'Hide history')}
                             </button>
                             {versions !== null && (
                                 <ul id="version-list" className="permission-list">
-                                    {versions.length === 0 && <li><span className="hint">Попередніх версій немає.</span></li>}
+                                    {versions.length === 0 && <li><span className="hint">{tr('Попередніх версій немає.', 'No previous versions.')}</span></li>}
                                     {versions.map((version) => (
                                         <li key={version.id}>
                                             <span>{new Date(version.replacedAt).toLocaleString()} · {version.name} · {version.replacedBy}</span>
                                             {canEdit && (
                                                 <button type="button" className="secondary small"
-                                                        onClick={() => restoreVersion(version)}>Відновити</button>
+                                                        onClick={() => restoreVersion(version)}>{tr('Відновити', 'Restore')}</button>
                                             )}
                                         </li>
                                     ))}
@@ -1045,16 +1137,17 @@ export function ItemDialog({ session, settings, collections, item, availableTags
             </dialog>
 
             <dialog id="warning-dialog" ref={warningRef}>
-                <h3>Local-only запис</h3>
+                <h3>{tr('Local-only запис', 'Local-only item')}</h3>
                 <p>
-                    Цей запис не буде доступний з іншого пристрою і <strong>не може бути відновлений
-                    адміністратором</strong>. Він зберігається лише в цьому браузері (у зашифрованому вигляді).
+                    {tr('Цей запис не буде доступний з іншого пристрою і ', 'This item will not be available on another device and ')}
+                    <strong>{tr('не може бути відновлений адміністратором', 'cannot be recovered by an administrator')}</strong>
+                    {tr('. Він зберігається лише в цьому браузері (у зашифрованому вигляді).', '. It is stored in this browser only (encrypted).')}
                 </p>
                 <div className="dialog-actions">
                     <button id="warning-cancel" className="secondary" type="button"
-                            onClick={() => answerWarning(false)}>Скасувати</button>
+                            onClick={() => answerWarning(false)}>{t('cancel')}</button>
                     <button id="warning-confirm" className="danger" type="button"
-                            onClick={() => answerWarning(true)}>Зрозуміло, вимкнути синхронізацію</button>
+                            onClick={() => answerWarning(true)}>{tr('Зрозуміло, вимкнути синхронізацію', 'Understood, disable sync')}</button>
                 </div>
             </dialog>
         </>
