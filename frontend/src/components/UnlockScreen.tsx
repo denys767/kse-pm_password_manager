@@ -1,7 +1,9 @@
-import { FormEvent, useEffect, useState } from 'react';
+import { FormEvent, useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import { assessPassphrase, PassphraseAssessment } from '../passphrase';
 import { reauthenticateForVaultReset } from '../auth';
+import { hasVaultWebAuthn, unlockWithVaultWebAuthn } from '../webauthnVault';
+import { hasAcceptedTos, recordTosAcceptance, TOS_SECTIONS } from '../termsOfService';
 import type { Me } from '../types';
 import { useI18n } from '../i18n';
 
@@ -18,15 +20,23 @@ interface Props {
 type Impact = { allowed: boolean; ownedItemsToDelete: number; incomingSharesToRemove: number; membershipsToRemove: number; blockers: { kind: string; id: string; name: string; reason: string }[] };
 
 export function UnlockScreen({ devMode, user, hasVault, startRecovery, onUnlock, onCreate, onReset }: Props) {
-    const { language } = useI18n(); const tr = (uk: string, en: string) => language === 'uk' ? uk : en;
+    const { language, t } = useI18n(); const tr = (uk: string, en: string) => language === 'uk' ? uk : en;
     const [email, setEmail] = useState(''); const [roles, setRoles] = useState(''); const [groups, setGroups] = useState('');
     const [passphrase, setPassphrase] = useState(''); const [confirmation, setConfirmation] = useState('');
     const [assessment, setAssessment] = useState<PassphraseAssessment | null>(null);
     const [error, setError] = useState<string | null>(null); const [busy, setBusy] = useState(false);
     const [recovering, setRecovering] = useState(false); const [impact, setImpact] = useState<Impact | null>(null);
     const [successors, setSuccessors] = useState<Record<string, string>>({});
+    const [tosAccepted, setTosAccepted] = useState(false);
+    const tosDialogRef = useRef<HTMLDialogElement>(null);
 
     const creating = !hasVault || recovering;
+    useEffect(() => {
+        if (creating && user) setTosAccepted(hasAcceptedTos(user.email));
+    }, [creating, user]);
+    // WebAuthn unlock is a per-device convenience enrolled in Settings; only offer
+    // it on the plain unlock screen (not while creating/resetting) for this user.
+    const webAuthnAvailable = !devMode && hasVault && !recovering && !!user && hasVaultWebAuthn(user.email);
     useEffect(() => {
         if (!creating || !user || !passphrase) { setAssessment(null); return; }
         let active = true;
@@ -36,16 +46,28 @@ export function UnlockScreen({ devMode, user, hasVault, startRecovery, onUnlock,
 
     async function submit(event: FormEvent) {
         event.preventDefault(); setError(null);
-        if (!passphrase || (devMode && !email)) { setError(tr('Вкажіть email і Vault Passphrase.', 'Enter an email and Vault passphrase.')); return; }
+        if (devMode && !email) { setError(tr('Вкажіть email і Vault Passphrase.', 'Enter an email and Vault passphrase.')); return; }
+        if (!passphrase) { setError(tr('Вкажіть Vault Passphrase.', 'Enter your Vault passphrase.')); return; }
         if (creating) {
             if (passphrase !== confirmation) { setError(tr('Passphrase і підтвердження не збігаються.', 'The passphrase and confirmation do not match.')); return; }
             if (!assessment || assessment.score < 3) { setError(tr('Оберіть сильнішу Vault Passphrase.', 'Choose a stronger Vault passphrase.')); return; }
+            if (!tosAccepted) { setError(t('tosRequired')); return; }
         }
         setBusy(true);
         try {
             if (recovering) await onReset(passphrase);
             else if (!hasVault) await onCreate(passphrase);
             else await onUnlock(passphrase, devMode ? { email: email.trim().toLowerCase(), roles, groups } : undefined);
+            if (creating && user) recordTosAcceptance(user.email);
+        } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
+    }
+
+    async function unlockWithWebAuthn() {
+        if (!user) return;
+        setError(null); setBusy(true);
+        try {
+            const recovered = await unlockWithVaultWebAuthn(user.email);
+            await onUnlock(recovered);
         } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
     }
 
@@ -96,10 +118,31 @@ export function UnlockScreen({ devMode, user, hasVault, startRecovery, onUnlock,
                 {devMode && <><label>{tr('Email (режим розробки)', 'Email (development mode)')}<input id="dev-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} /></label><label>{tr('Ролі', 'Roles')}<input id="dev-roles" value={roles} onChange={(e) => setRoles(e.target.value)} /></label><label>{tr('Групи', 'Groups')}<input id="dev-groups" value={groups} onChange={(e) => setGroups(e.target.value)} /></label></>}
                 <label>{tr('Vault Passphrase', 'Vault passphrase')}<input id="passphrase" type="password" autoComplete={creating ? 'new-password' : 'current-password'} value={passphrase} onChange={(e) => setPassphrase(e.target.value)} autoFocus /></label>
                 {creating && <><label>{tr('Підтвердіть Vault Passphrase', 'Confirm Vault passphrase')}<input id="passphrase-confirmation" type="password" autoComplete="new-password" value={confirmation} onChange={(e) => setConfirmation(e.target.value)} /></label>
-                    {assessment && <div className={`passphrase-strength s${assessment.score}`}><div className="strength-track"><div className="strength-bar" style={{ width: `${(assessment.score + 1) * 20}%` }} /></div><strong>{assessment.label}</strong><span>{assessment.message}</span></div>}</>}
-                <button id="unlock-btn" type="submit" disabled={busy}>{busy ? tr('Зачекайте…', 'Please wait…') : recovering ? tr('Скинути та створити Vault', 'Reset and create vault') : !hasVault ? tr('Створити Vault', 'Create vault') : tr('Розблокувати Vault', 'Unlock vault')}</button>
+                    {assessment && <div className={`passphrase-strength s${assessment.score}`}><div className="strength-track"><div className="strength-bar" style={{ width: `${(assessment.score + 1) * 20}%` }} /></div><strong>{assessment.label}</strong><span>{assessment.message}</span></div>}
+                    <label className="checkbox-row tos-row">
+                        <input id="tos-checkbox" type="checkbox" checked={tosAccepted} onChange={(e) => setTosAccepted(e.target.checked)} />
+                        <span>{t('tosCheckboxLabel')} — <button type="button" className="linklike" onClick={() => tosDialogRef.current?.showModal()}>{t('tosReview')}</button></span>
+                    </label></>}
+                <button id="unlock-btn" type="submit" disabled={busy || (creating && !tosAccepted)}>{busy ? tr('Зачекайте…', 'Please wait…') : recovering ? tr('Скинути та створити Vault', 'Reset and create vault') : !hasVault ? tr('Створити Vault', 'Create vault') : tr('Розблокувати Vault', 'Unlock vault')}</button>
                 {error && <p id="unlock-error" className="error">{error}</p>}
             </form>
+            {creating && <dialog id="tos-dialog" ref={tosDialogRef}>
+                <h3>{t('tosDialogTitle')}</h3>
+                <div className="tos-text">
+                    {TOS_SECTIONS.map((section) => <div key={section.title}>
+                        <h4>{section.title}</h4>
+                        {section.paragraphs.map((p, i) => <p key={i}>{p}</p>)}
+                    </div>)}
+                </div>
+                <div className="dialog-actions">
+                    <span className="spacer" />
+                    <button type="button" className="secondary" onClick={() => tosDialogRef.current?.close()}>{t('tosClose')}</button>
+                    <button type="button" onClick={() => { setTosAccepted(true); tosDialogRef.current?.close(); }}>{t('tosAccept')}</button>
+                </div>
+            </dialog>}
+            {webAuthnAvailable && <><div className="unlock-divider"><span>{tr('або', 'or')}</span></div>
+                <button id="webauthn-unlock-btn" type="button" className="secondary" disabled={busy} onClick={unlockWithWebAuthn}>
+                    {tr('Розблокувати через Passkey', 'Unlock with a passkey')}</button></>}
             {hasVault && !recovering && <button className="linklike recovery-link" onClick={requestRecovery}>{tr('Забули Vault Passphrase?', 'Forgot your Vault passphrase?')}</button>}
             {recovering && <button id="recovery-back" className="linklike recovery-link" onClick={cancelRecovery}>{tr('← Повернутися назад', '← Go back')}</button>}
             {recovering && <div className="recovery-box">{impact?.blockers.length ? <><strong>{tr('Спершу передайте командні ресурси', 'Transfer team resources first')}</strong><p>{tr('Новий власник уже має бути користувачем із доступом до запису або членом колекції.', 'The new owner must already be a user with access to the item or a member of the collection.')}</p>{impact.blockers.map((b) => <div className="transfer-row" key={b.id}><span>{b.name} <small>({b.reason})</small></span><input type="email" placeholder="new.owner@kse.org.ua" value={successors[b.id] || ''} onChange={(e) => setSuccessors((s) => ({ ...s, [b.id]: e.target.value }))} /><button type="button" className="secondary small" disabled={busy} onClick={() => transfer(b)}>{tr('Передати', 'Transfer')}</button></div>)}</> : <><strong>{tr('Незворотна дія', 'Irreversible action')}</strong><p>{tr(`Буде видалено ${impact?.ownedItemsToDelete ?? 0} ваших записів і відкликано доступи. Team resources не видаляються.`, `${impact?.ownedItemsToDelete ?? 0} of your items will be deleted and their shares revoked. Team resources are not deleted.`)}</p></>}</div>}

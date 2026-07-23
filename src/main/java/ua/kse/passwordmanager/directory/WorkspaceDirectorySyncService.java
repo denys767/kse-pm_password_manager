@@ -57,8 +57,16 @@ public class WorkspaceDirectorySyncService {
         var sourceGroups = directory.listGroups();
         var membershipsByGroup = new LinkedHashMap<String, Set<String>>();
         for (DirectoryGroup source : sourceGroups) {
-            membershipsByGroup.put(source.email().toLowerCase(Locale.ROOT),
-                    new HashSet<>(directory.memberEmails(source.id())));
+            // Normalize case before de-duplicating: Google occasionally returns the
+            // same member with inconsistent casing, and HashSet dedupes by exact
+            // string, so lowering case only at save time let case-variant
+            // duplicates slip through and collide on the (group_email,
+            // member_email) unique constraint mid-transaction.
+            Set<String> normalizedMembers = new HashSet<>();
+            for (String member : directory.memberEmails(source.id())) {
+                normalizedMembers.add(member.toLowerCase(Locale.ROOT));
+            }
+            membershipsByGroup.put(source.email().toLowerCase(Locale.ROOT), normalizedMembers);
         }
         Set<String> presentUsers = sourceUsers.stream().map(u -> u.email().toLowerCase(Locale.ROOT)).collect(java.util.stream.Collectors.toSet());
         Set<String> presentGroups = new HashSet<>(membershipsByGroup.keySet());

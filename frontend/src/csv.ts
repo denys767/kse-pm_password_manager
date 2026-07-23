@@ -1,5 +1,6 @@
 /** CSV v4 support. Sensitive values only exist in this explicit browser-side
  * export/import flow; the server receives ciphertext commands, never CSV. */
+import { tr } from './i18n';
 import type { SecretType } from './types';
 
 export type CsvAction = 'create' | 'update' | 'delete';
@@ -87,7 +88,7 @@ export function previewCsv(text: string): CsvPreview {
         const at = header.indexOf(column.toLowerCase());
         if (at >= 0) index.set(column.toLowerCase(), at);
     }
-    if (!index.has('name') && !index.has('id')) throw new Error('CSV має містити колонку name або id');
+    if (!index.has('name') && !index.has('id')) throw new Error(tr('CSV має містити колонку name або id', 'The CSV must contain a name or id column'));
     const rows: CsvRow[] = cells.slice(1).map((line, position) => {
         const rowNumber = position + 2;
         const value = (column: string) => {
@@ -95,10 +96,10 @@ export function previewCsv(text: string): CsvPreview {
             return at === undefined ? '' : (line[at] ?? '').trim();
         };
         const actionValue = (value('action') || 'create').toLowerCase();
-        if (!ACTIONS.includes(actionValue as CsvAction)) throw new Error(`Рядок ${rowNumber}: невідома action '${actionValue}'`);
+        if (!ACTIONS.includes(actionValue as CsvAction)) throw new Error(tr(`Рядок ${rowNumber}: невідома action '${actionValue}'`, `Row ${rowNumber}: unknown action '${actionValue}'`));
         const action = actionValue as CsvAction;
         const rawType = (value('type') || 'LOGIN').toUpperCase();
-        if (!TYPES.includes(rawType as SecretType)) throw new Error(`Рядок ${rowNumber}: невідомий type '${rawType}'`);
+        if (!TYPES.includes(rawType as SecretType)) throw new Error(tr(`Рядок ${rowNumber}: невідомий type '${rawType}'`, `Row ${rowNumber}: unknown type '${rawType}'`));
         const item: CsvRow = {
             version: value('version') || '4', action, id: value('id'), updatedAt: value('updatedAt'),
             name: value('name'), secretType: rawType as SecretType,
@@ -110,10 +111,10 @@ export function previewCsv(text: string): CsvPreview {
             cardNumber: value('cardNumber'), cardCvv: value('cardCvv'), cardHolder: value('cardHolder'), cardExpiry: value('cardExpiry'),
             totpSeed: value('totpSeed'), fileName: value('fileName'), fileData: value('fileData'),
         };
-        if (item.version !== '4') throw new Error(`Рядок ${rowNumber}: підтримується лише CSV version=4`);
-        if (action === 'create' && !item.name) throw new Error(`Рядок ${rowNumber}: create потребує name`);
+        if (item.version !== '4') throw new Error(tr(`Рядок ${rowNumber}: підтримується лише CSV version=4`, `Row ${rowNumber}: only CSV version=4 is supported`));
+        if (action === 'create' && !item.name) throw new Error(tr(`Рядок ${rowNumber}: create потребує name`, `Row ${rowNumber}: create requires a name`));
         if ((action === 'update' || action === 'delete') && (!item.id || !item.updatedAt)) {
-            throw new Error(`Рядок ${rowNumber}: ${action} потребує id та updatedAt з експорту`);
+            throw new Error(tr(`Рядок ${rowNumber}: ${action} потребує id та updatedAt з експорту`, `Row ${rowNumber}: ${action} requires id and updatedAt from the export`));
         }
         return item;
     });

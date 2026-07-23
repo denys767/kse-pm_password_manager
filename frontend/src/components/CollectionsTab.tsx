@@ -15,7 +15,8 @@ interface Props {
 }
 
 export function CollectionsTab({ session, collections, onChanged }: Props) {
-    const { t } = useI18n();
+    const { t, language } = useI18n();
+    const tr = (uk: string, en: string) => (language === 'uk' ? uk : en);
     const [name, setName] = useState('');
     const [directoryGroup, setDirectoryGroup] = useState('');
     const [availableGroups, setAvailableGroups] = useState<string[]>([]);
@@ -170,7 +171,7 @@ export function CollectionsTab({ session, collections, onChanged }: Props) {
     }
 
     async function removeCollection(collection: Collection) {
-        if (!confirm(`Видалити колекцію «${collection.name}»?`)) {
+        if (!confirm(tr(`Видалити колекцію «${collection.name}»?`, `Delete the collection “${collection.name}”?`))) {
             return;
         }
         setError(null);
@@ -189,14 +190,14 @@ export function CollectionsTab({ session, collections, onChanged }: Props) {
                 <input id="collection-name" placeholder={t('collectionName')}
                        value={name} onChange={(e) => setName(e.target.value)} />
                 <select id="directory-group" value={directoryGroup} onChange={(e) => setDirectoryGroup(e.target.value)}>
-                    <option value="">Без доменної групи</option>
+                    <option value="">{tr('Без доменної групи', 'No domain group')}</option>
                     {availableGroups.map((group) => <option key={group} value={group}>{group}</option>)}
                 </select>
                 <button id="create-collection-btn" onClick={create}>{t('createCollection')}</button>
             </div>
             <p className="hint">
-                Колекція — командний vault: її ключ видається кожному члену окремо (обгорнутий його
-                публічним ключем), тому всі члени можуть розшифровувати записи колекції.
+                {tr('Колекція — командний vault: її ключ видається кожному члену окремо (обгорнутий його публічним ключем), тому всі члени можуть розшифровувати записи колекції.',
+                    'A collection is a team vault: its key is granted to each member individually (wrapped with their public key), so every member can decrypt the collection’s items.')}
             </p>
             {error && <p className="error" id="collections-error">{error}</p>}
             <ul id="collection-list" className="item-list">
@@ -272,7 +273,7 @@ export function CollectionsTab({ session, collections, onChanged }: Props) {
                     </li>
                 ))}
             </ul>
-            {collections.length === 0 && <p className="hint">Колекцій поки немає.</p>}
+            {collections.length === 0 && <p className="hint">{tr('Колекцій поки немає.', 'No collections yet.')}</p>}
         </section>
     );
 }

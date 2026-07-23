@@ -1,6 +1,7 @@
 import Keycloak from 'keycloak-js';
 import { api, setAuthHeaderProvider } from './api';
 import * as pmc from './crypto';
+import { tr } from './i18n';
 import type { FrontendConfig, UserKeysDto } from './types';
 
 export interface VaultKeys {
@@ -110,6 +111,22 @@ export async function resetVault(passphrase: string): Promise<VaultKeys> {
 }
 
 /**
+ * Confirms a passphrase without changing session state by re-deriving the KEK
+ * and decrypting the stored private key. Used before wrapping the passphrase for
+ * WebAuthn unlock, so a typo can never be sealed into the authenticator blob.
+ */
+export async function verifyPassphrase(passphrase: string): Promise<boolean> {
+    const stored = await api<UserKeysDto>('/api/keys/me');
+    const kek = await pmc.deriveKek(passphrase, stored.kdfSalt, stored.kdfAlgorithm);
+    try {
+        await pmc.importEncryptedPrivateKey(stored.encryptedPrivateKey, stored.privateKeyIv, kek);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/**
  * First unlock generates the keypair and uploads it (private key encrypted
  * with the KEK); later unlocks download and decrypt it — a wrong passphrase
  * fails AES-GCM authentication and is reported cleanly. Works across devices
@@ -134,7 +151,7 @@ export async function loadOrCreateKeys(passphrase: string): Promise<VaultKeys> {
     try {
         privateKey = await pmc.importEncryptedPrivateKey(stored.encryptedPrivateKey, stored.privateKeyIv, kek);
     } catch {
-        throw new Error('Невірний passphrase для цього vault.');
+        throw new Error(tr('Невірний passphrase для цього vault.', 'Wrong passphrase for this vault.'));
     }
     return { kek, privateKey, publicKey: await pmc.importPublicKey(stored.publicKey) };
 }

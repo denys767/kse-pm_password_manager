@@ -25,7 +25,8 @@ interface Props {
 type DialogState = { mode: 'add' } | { mode: 'edit'; item: PasswordItem } | null;
 
 export function VaultTab({ session, settings, collections, openItemId, onItemOpened, tagFilter, onClearTagFilter }: Props) {
-    const { t } = useI18n();
+    const { t, language } = useI18n();
+    const tr = (uk: string, en: string) => (language === 'uk' ? uk : en);
     const [serverItems, setServerItems] = useState<PasswordItem[]>([]);
     const [localItems, setLocalItems] = useState<PasswordItem[]>([]);
     const [search, setSearch] = useState('');
@@ -51,7 +52,7 @@ export function VaultTab({ session, settings, collections, openItemId, onItemOpe
 
     /** Decrypts every readable item and downloads a plaintext CSV. */
     async function exportCsv() {
-        setBusy('Експортую…');
+        setBusy(tr('Експортую…', 'Exporting…'));
         setError(null);
         try {
             const rows: CsvRow[] = [];
@@ -104,7 +105,7 @@ export function VaultTab({ session, settings, collections, openItemId, onItemOpe
             link.click();
             URL.revokeObjectURL(link.href);
             if (skipped > 0) {
-                setError(`Пропущено ${skipped} записів без доступного ключа.`);
+                setError(tr(`Пропущено ${skipped} записів без доступного ключа.`, `Skipped ${skipped} items without an available key.`));
             }
         } finally {
             setBusy(null);
@@ -123,9 +124,9 @@ export function VaultTab({ session, settings, collections, openItemId, onItemOpe
         try {
             const preview = previewCsv(await file.text());
             setCsvPreview(preview);
-            if (preview.rows.length === 0) setError('У файлі не знайдено записів для імпорту.');
+            if (preview.rows.length === 0) setError(tr('У файлі не знайдено записів для імпорту.', 'No items to import were found in the file.'));
         } catch (e) {
-            setError(`Імпорт: ${(e as Error).message}`);
+            setError(tr(`Імпорт: ${(e as Error).message}`, `Import: ${(e as Error).message}`));
         }
     }
 
@@ -135,7 +136,7 @@ export function VaultTab({ session, settings, collections, openItemId, onItemOpe
             setError(csvPreview.warnings.join(' '));
             return;
         }
-        setBusy('Шифрую та імпортую…'); setError(null);
+        setBusy(tr('Шифрую та імпортую…', 'Encrypting and importing…')); setError(null);
         try {
             const commands = [];
             for (const row of csvPreview.rows) commands.push(await csvCommand(row));
@@ -145,7 +146,7 @@ export function VaultTab({ session, settings, collections, openItemId, onItemOpe
             await api('/api/vault/imports/commit', { method: 'POST', body: JSON.stringify({ commands }) });
             setCsvPreview(null);
             await refresh();
-        } catch (e) { setError(`Імпорт: ${(e as Error).message}`); }
+        } catch (e) { setError(tr(`Імпорт: ${(e as Error).message}`, `Import: ${(e as Error).message}`)); }
         finally { setBusy(null); }
     }
 
@@ -156,7 +157,7 @@ export function VaultTab({ session, settings, collections, openItemId, onItemOpe
         const existing = row.action === 'update'
             ? serverItems.find((item) => item.id === row.id) : undefined;
         if (row.action === 'update' && !existing) {
-            throw new Error(`Запис ${row.id} недоступний для update`);
+            throw new Error(tr(`Запис ${row.id} недоступний для update`, `Item ${row.id} is not available for update`));
         }
         const key = existing ? await unwrapItemKeyFor(existing, collections, session.keys) : await pmc.generateItemKey();
         const password = await pmc.encryptField(key, row.password);
@@ -219,8 +220,8 @@ export function VaultTab({ session, settings, collections, openItemId, onItemOpe
                 <strong>CSV v4 preview:</strong> {csvPreview.createCount} create, {csvPreview.updateCount} update, {csvPreview.deleteCount} delete.
                 {csvPreview.warnings.map((warning) => <p key={warning} className="error">{warning}</p>)}
                 <button type="button" disabled={busy !== null || csvPreview.warnings.length > 0}
-                    onClick={() => void commitCsvImport()}>Підтвердити імпорт</button>{' '}
-                <button type="button" className="secondary" disabled={busy !== null} onClick={() => setCsvPreview(null)}>Скасувати</button>
+                    onClick={() => void commitCsvImport()}>{tr('Підтвердити імпорт', 'Confirm import')}</button>{' '}
+                <button type="button" className="secondary" disabled={busy !== null} onClick={() => setCsvPreview(null)}>{t('cancel')}</button>
             </section>}
             <ul id="item-list" className="item-list">
                 {items.map((item) => (

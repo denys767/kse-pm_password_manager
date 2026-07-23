@@ -15,8 +15,24 @@ const messages = {
     addSecret: { uk: '+ Додати запис', en: '+ Add item' }, open: { uk: 'Відкрити', en: 'Open' },
     emptyVault: { uk: 'Vault порожній. Додайте перший запис.', en: 'Your vault is empty. Add your first item.' },
     account: { uk: 'Обліковий запис', en: 'Account' }, accountConsole: { uk: 'Відкрити Account Console', en: 'Open Account Console' },
-    accountDescription: { uk: 'У Account Console можна змінити ваші особисті дані, включно з біометрією/пін-кодами та іншими ключами.', en: 'In Keycloak Account Console you can update your personal details, including biometrics.' },
+    accountDescription: { uk: 'У Account Console можна змінити ваші особисті дані, включно з біометрією/пін-кодами та іншими ключами.', en: 'In the Account Console you can update your personal details, including biometrics.' },
     passkeyOptionalHint: { uk: 'Passkey не обов’язковий: його можна налаштувати будь-коли пізніше в Account Console → Signing in → Set up passkey.', en: 'A passkey is optional: you can set one up any time later in Account Console → Signing in → Set up passkey.' },
+    vaultWebauthn: { uk: 'Розблокування через Passkey', en: 'Unlock with a passkey' },
+    vaultWebauthnDesc: { uk: 'Прив’яжіть біометрію або PIN цього пристрою, щоб розблоковувати Vault без введення Passphrase. Зберігається лише в цьому браузері; Passphrase на сервер не надсилається.', en: 'Bind this device’s biometrics or PIN to unlock the vault without typing your passphrase. Stored only in this browser; the passphrase is never sent to the server.' },
+    vaultWebauthnPassLabel: { uk: 'Підтвердіть Vault Passphrase, щоб увімкнути', en: 'Confirm your Vault passphrase to enable' },
+    vaultWebauthnEnable: { uk: 'Увімкнути Passkey', en: 'Enable passkey' },
+    vaultWebauthnDisable: { uk: 'Вимкнути на цьому пристрої', en: 'Disable on this device' },
+    vaultWebauthnEnrolled: { uk: 'Увімкнено на цьому пристрої {date}.', en: 'Enabled on this device {date}.' },
+    vaultWebauthnEnabledOk: { uk: 'Passkey-розблокування увімкнено.', en: 'Passkey unlock enabled.' },
+    vaultWebauthnDisabled: { uk: 'Passkey-розблокування вимкнено на цьому пристрої.', en: 'Passkey unlock disabled on this device.' },
+    vaultWebauthnWrongPass: { uk: 'Невірний Vault Passphrase.', en: 'Incorrect Vault passphrase.' },
+    vaultWebauthnUnsupported: { uk: 'Цей браузер або пристрій не підтримує Passkey.', en: 'This browser or device does not support passkeys.' },
+    tosCheckboxLabel: { uk: 'Я прочитав(-ла) і погоджуюсь з Умовами надання послуг та Ліцензійною угодою (EULA)', en: 'I have read and agree to the Terms of Service and the End User License Agreement (EULA)' },
+    tosReview: { uk: 'Переглянути', en: 'Review' },
+    tosDialogTitle: { uk: 'Умови надання послуг', en: 'Terms of Service' },
+    tosAccept: { uk: 'Погоджуюсь', en: 'I agree' },
+    tosClose: { uk: 'Закрити', en: 'Close' },
+    tosRequired: { uk: 'Щоб створити Vault Passphrase, підтвердіть Умови надання послуг та EULA.', en: 'To create a Vault passphrase, confirm the Terms of Service and EULA.' },
     name: { uk: 'Назва', en: 'Name' }, username: { uk: 'Ім’я користувача / логін', en: 'Username / login' }, password: { uk: 'Пароль', en: 'Password' },
     notes: { uk: 'Нотатки', en: 'Notes' }, itemType: { uk: 'Тип запису', en: 'Item type' }, collection: { uk: 'Колекція', en: 'Collection' },
     sharedAccess: { uk: 'Спільний доступ', en: 'Shared access' }, externalShare: { uk: 'Зовнішній спільний доступ', en: 'External sharing' },
@@ -42,6 +58,12 @@ type Key = keyof typeof messages;
 type Translation = { language: Language; setLanguage: (language: Language) => void; t: (key: Key, values?: Values) => string };
 const I18nContext = createContext<Translation | null>(null);
 const storageKey = 'kse-pm-language';
+
+/** Non-hook language lookup for pure modules (reads the persisted choice).
+ * Components should prefer useI18n(); this exists for plain .ts helpers. */
+export function tr(uk: string, en: string): string {
+    return localStorage.getItem(storageKey) === 'en' ? en : uk;
+}
 
 export function I18nProvider({ children }: { children: ReactNode }) {
     const [language, setLanguage] = useState<Language>(() => localStorage.getItem(storageKey) === 'en' ? 'en' : 'uk');

@@ -2,10 +2,10 @@
    `styles` key replaces rather than merges with the parent's, so overriding
    just the background variable here would otherwise drop the rest of it). */
 :root {
-    --keycloak-logo-url: url('../img/keycloak-logo-text.svg');
+    --keycloak-logo-url: url('../img/kse-logo.svg');
     --keycloak-bg-logo-url: linear-gradient(rgba(0, 0, 0, 0.6), rgba(0, 0, 0, 0.6)), url("../img/login-bg.jpg");
-    --keycloak-logo-height: 63px;
-    --keycloak-logo-width: 300px;
+    --keycloak-logo-height: 64px;
+    --keycloak-logo-width: 320px;
     --keycloak-card-top-color: var(--pf-v5-global--palette--blue-400);
 }
 

@@ -5,6 +5,7 @@
  *  collection:   my RSA private key ──unwraps──▶ collection key ──unwraps──▶ item key
  */
 import * as pmc from './crypto';
+import { tr } from './i18n';
 import type { VaultKeys } from './auth';
 import type { Collection, PasswordItem } from './types';
 
@@ -12,7 +13,7 @@ export async function unwrapCollectionKey(
     collectionId: string, collections: Collection[], keys: VaultKeys): Promise<CryptoKey> {
     const collection = collections.find((c) => c.id === collectionId);
     if (!collection) {
-        throw new Error('Ви не член колекції цього запису.');
+        throw new Error(tr('Ви не член колекції цього запису.', 'You are not a member of this item’s collection.'));
     }
     // The collection key is an AES key wrapped RSA-OAEP, same as an item key.
     return pmc.unwrapItemKey(collection.myWrappedKey, keys.privateKey);
@@ -31,6 +32,6 @@ export async function unwrapItemKeyFor(
         return pmc.unwrapItemKeyWithKek(
             item.collectionWrappedKey, item.collectionWrappedKeyIv!, collectionKey);
     }
-    throw new Error('Для вас ще не надано ключ до цього запису '
-        + '(попросіть owner-а поділитися напряму або через колекцію).');
+    throw new Error(tr('Для вас ще не надано ключ до цього запису (попросіть owner-а поділитися напряму або через колекцію).',
+        'You have not been granted a key to this item yet (ask the owner to share it directly or via a collection).'));
 }
