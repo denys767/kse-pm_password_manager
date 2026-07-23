@@ -2,12 +2,15 @@ import { API_ORIGIN, DEFAULT_CLIPBOARD_CLEAR_SECONDS, OIDC_CLIENT_ID } from './c
 import * as pmc from './crypto';
 import { matchesOrigin } from './origin';
 import { emptyPayload, parsePayload, serializePayload } from './payload';
-import type { Collection, FrontendConfig, PasswordItem, Settings, UserKeysDto } from './types';
+import { assertionResponse, createResponse } from './webauthn';
+import type { Collection, FrontendConfig, PasskeyCredential, PasswordItem, Settings, UserKeysDto } from './types';
 
 interface VaultKeys { kek: CryptoKey; privateKey: CryptoKey; publicKey: CryptoKey; }
 let token: string | undefined;
 let vaultKeys: VaultKeys | undefined;
 let creatingOffscreen: Promise<void> | undefined;
+let passkeyAttached = false;
+const canceledWebAuthnRequests = new Set<number>();
 
 function b64url(bytes: Uint8Array): string { return btoa(String.fromCharCode(...bytes)).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', ''); }
 async function sha256B64url(value: string): Promise<string> { return b64url(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)))); }
@@ -19,6 +22,8 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     if (!response.ok) throw new Error(`API error ${response.status}`);
     return response.status === 204 ? null as T : response.json() as Promise<T>;
 }
+// Avoid shadowing this authenticated API primitive in WebAuthn event handlers.
+const requestApi = request;
 async function config(): Promise<FrontendConfig> {
     const response = await fetch(`${API_ORIGIN}/api/config`);
     if (!response.ok) throw new Error('Не вдалося завантажити OIDC configuration.');
@@ -50,7 +55,50 @@ async function unlock(passphrase: string): Promise<void> {
             privateKey: await pmc.importEncryptedPrivateKey(stored.encryptedPrivateKey, stored.privateKeyIv, kek),
             publicKey: await pmc.importPublicKey(stored.publicKey),
         };
+        await attachPasskeyProvider();
     } catch { throw new Error('Невірний passphrase для цього vault.'); }
+}
+async function detachPasskeyProvider(): Promise<void> {
+    passkeyAttached = false;
+    try { await chrome.webAuthenticationProxy.detach(); } catch { /* already detached or unavailable */ }
+}
+async function attachPasskeyProvider(): Promise<void> {
+    if (!vaultKeys || passkeyAttached) return;
+    try { await chrome.webAuthenticationProxy.attach(); passkeyAttached = true; }
+    catch { passkeyAttached = false; /* another provider owns the system authenticator */ }
+}
+function canceled(id: number): boolean { return canceledWebAuthnRequests.has(id) || !vaultKeys || !passkeyAttached; }
+async function useSystemAuthenticator(requestId: number, complete: (value: { requestId: number; error: { name: string; message: string } }) => Promise<void>): Promise<void> {
+    // Proxy attachment suppresses the native authenticator. Detach before
+    // responding so the site can retry and Chrome will use the system provider.
+    await detachPasskeyProvider();
+    if (!canceledWebAuthnRequests.has(requestId)) await complete({ requestId, error: { name: 'NotAllowedError', message: 'No matching vault passkey. The system authenticator is enabled; retry this request to use it.' } });
+}
+async function onCreatePasskey(request: { requestId: number; requestDetailsJson: string }): Promise<void> {
+    try {
+        if (!vaultKeys) return useSystemAuthenticator(request.requestId, chrome.webAuthenticationProxy.completeCreateRequest);
+        const options = JSON.parse(request.requestDetailsJson) as Record<string, unknown>;
+        const origin = options.origin; const items = await requestApi<PasswordItem[]>('/api/vault/items');
+        const item = items.find(value => typeof origin === 'string' && matchesOrigin(value.url, origin) && value.accessRole !== 'PASSKEY_ONLY');
+        if (!item) return useSystemAuthenticator(request.requestId, chrome.webAuthenticationProxy.completeCreateRequest);
+        const result = await createResponse(options, item, vaultKeys.publicKey);
+        await requestApi('/api/passkeys', { method: 'POST', body: JSON.stringify({ ...result.payload, algorithm: 'ES256' }) });
+        if (!canceled(request.requestId)) await chrome.webAuthenticationProxy.completeCreateRequest({ requestId: request.requestId, responseJson: result.responseJson });
+    } catch (error) { if (!canceled(request.requestId)) await chrome.webAuthenticationProxy.completeCreateRequest({ requestId: request.requestId, error: { name: 'NotAllowedError', message: (error as Error).message } }); }
+}
+async function onGetPasskey(request: { requestId: number; requestDetailsJson: string }): Promise<void> {
+    try {
+        if (!vaultKeys) return useSystemAuthenticator(request.requestId, chrome.webAuthenticationProxy.completeGetRequest);
+        const options = JSON.parse(request.requestDetailsJson) as Record<string, unknown>; const rpId = options.rpId;
+        if (typeof rpId !== 'string') throw new Error('Missing RP ID.');
+        const candidates = await requestApi<PasskeyCredential[]>(`/api/passkeys?rpId=${encodeURIComponent(rpId)}`);
+        const allowed = options.allowCredentials as Array<{ id?: string }> | undefined;
+        const passkey = candidates.find(candidate => !allowed?.length || allowed.some(entry => entry.id === candidate.credentialId));
+        if (!passkey) return useSystemAuthenticator(request.requestId, chrome.webAuthenticationProxy.completeGetRequest);
+        const result = await assertionResponse(options, passkey, vaultKeys.privateKey);
+        await requestApi(`/api/passkeys/${passkey.id}/counter`, { method: 'POST', body: JSON.stringify({ signCounter: result.nextCounter }) });
+        if (!canceled(request.requestId)) await chrome.webAuthenticationProxy.completeGetRequest({ requestId: request.requestId, responseJson: result.responseJson });
+    } catch (error) { if (!canceled(request.requestId)) await chrome.webAuthenticationProxy.completeGetRequest({ requestId: request.requestId, error: { name: 'NotAllowedError', message: (error as Error).message } }); }
 }
 async function itemKey(item: PasswordItem, collections: Collection[]): Promise<CryptoKey> {
     if (!vaultKeys) throw new Error('Vault заблокований.');
@@ -144,12 +192,20 @@ async function copy(value: string): Promise<void> {
 }
 chrome.alarms.onAlarm.addListener((alarm) => { if (alarm.name === 'clear-password-clipboard') void ensureOffscreen().then(() => chrome.runtime.sendMessage({ type: 'clipboard-clear' })); });
 
+// MV3 service workers may be restarted between requests, so register every
+// proxy listener synchronously at module evaluation time.
+chrome.webAuthenticationProxy.onCreateRequest.addListener((request) => { void onCreatePasskey(request); });
+chrome.webAuthenticationProxy.onGetRequest.addListener((request) => { void onGetPasskey(request); });
+chrome.webAuthenticationProxy.onIsUvpaaRequest.addListener((request) => { void chrome.webAuthenticationProxy.completeIsUvpaaRequest({ requestId: request.requestId, isUvpaa: Boolean(vaultKeys && passkeyAttached) }); });
+chrome.webAuthenticationProxy.onRequestCanceled.addListener((requestId) => { canceledWebAuthnRequests.add(requestId); });
+
 chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
     void (async () => {
         const m = message as { type: string; item?: PasswordItem };
         if (m.type === 'login') { await login(); return { loggedIn: true }; }
-        if (m.type === 'lock') { vaultKeys = undefined; return { locked: true }; }
-        if (m.type === 'status') return { loggedIn: Boolean(token), unlocked: Boolean(vaultKeys) };
+        if (m.type === 'lock') { vaultKeys = undefined; await detachPasskeyProvider(); return { locked: true }; }
+        if (m.type === 'logout') { vaultKeys = undefined; token = undefined; await detachPasskeyProvider(); return { loggedOut: true }; }
+        if (m.type === 'status') return { loggedIn: Boolean(token), unlocked: Boolean(vaultKeys), passkeyProvider: passkeyAttached };
         if (m.type === 'unlock') { await unlock((message as { passphrase: string }).passphrase); return { unlocked: true }; }
         if (m.type === 'items') return await request<PasswordItem[]>('/api/vault/items');
         if (m.type === 'copy' && m.item) { const value = await secrets(m.item); await copy(value.password); void request(`/api/vault/items/${m.item.id}/copy-event`, { method: 'POST' }); return { copied: true }; }

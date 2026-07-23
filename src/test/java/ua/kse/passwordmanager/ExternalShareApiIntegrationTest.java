@@ -70,4 +70,21 @@ class ExternalShareApiIntegrationTest {
         mockMvc.perform(as(delete("/api/vault/items/" + itemId + "/external-shares/" + active))).andExpect(status().isNoContent());
         mockMvc.perform(get("/api/external-shares/" + active)).andExpect(status().isGone());
     }
+
+    @Test
+    void extendKeepsTheSameShareIdAndOneTimeMode() throws Exception {
+        String itemId = item();
+        String shareId = share(itemId, true);
+        String body = mockMvc.perform(as(post("/api/vault/items/" + itemId + "/external-shares/" + shareId
+                        + "/extend-24-hours")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(shareId))
+                .andExpect(jsonPath("$.oneTime").value(true))
+                .andReturn().getResponse().getContentAsString();
+        Instant expiry = Instant.parse(objectMapper.readTree(body).get("expiresAt").asText());
+        org.junit.jupiter.api.Assertions.assertTrue(expiry.isAfter(Instant.now().plusSeconds(86_000)));
+        // The unchanged public URL remains usable and still consumes one-time shares.
+        mockMvc.perform(get("/api/external-shares/" + shareId)).andExpect(status().isOk());
+        mockMvc.perform(get("/api/external-shares/" + shareId)).andExpect(status().isGone());
+    }
 }

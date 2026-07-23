@@ -15,10 +15,22 @@ docker compose up -d
 1. У [Google Cloud Console](https://console.cloud.google.com) створіть OAuth 2.0 Client ID
    (тип Web application) з redirect URI:
    `http://localhost:8081/realms/kse-pm/broker/google/endpoint`
-2. У Keycloak Admin Console → realm `kse-pm` → Identity providers → google —
-   вставте отримані Client ID / Client Secret (в realm-export.json це плейсхолдери
-   `REPLACE_WITH_GOOGLE_CLIENT_ID/SECRET`).
-3. `hostedDomain: kse.org.ua` обмежує вхід корпоративними акаунтами.
+2. Client Secret задається змінною середовища `GOOGLE_CLIENT_SECRET` (див.
+   `example.env`) — `realm-export.json` містить лише плейсхолдер
+   `${GOOGLE_CLIENT_SECRET}`, який Keycloak підставляє зі свого середовища при
+   імпорті; `docker-compose.yml`/`docker-compose.prod.yml` прокидають цю змінну
+   в контейнер Keycloak. Без неї "Sign in with Google" падає з узагальненою
+   сторінкою Keycloak "We are sorry... Invalid username or password" (обмін
+   коду на токен з Google повертає `invalid_client`). Client ID вже прописаний
+   у файлі — новий створювати не потрібно, якщо не заводите власний Google Cloud
+   проєкт.
+3. `hostedDomain: kse.org.ua` обмежує вхід корпоративними акаунтами — вхід
+   акаунтом поза цим доменом (наприклад особистий `@gmail.com` для локального
+   тесту без адмін-доступу до Workspace) також падає з тим самим "We are
+   sorry... Invalid username or password". Для демо на своєму домені тимчасово
+   очистіть поле Hosted Domain у Identity providers → google (Admin Console)
+   або в локальній копії `realm-export.json` перед імпортом, і поверніть
+   значення `kse.org.ua` перед пушем/production.
 4. Mapping email/name виконує сам брокер (`trustEmail: true`); групи мапляться
    protocol-mapper'ом `groups` у claim `groups` токена. Membership у групи
    (`dev-team`, `finance`, …) призначається в Keycloak → Users → Groups, ролі
@@ -40,23 +52,73 @@ Keycloak завершує SSO-сесію та повертає на застос
 > `docker-compose.yml` та `realm-export.json` це вже задано; після оновлення
 > контейнера сторінка `Signing in` показує керування passkeys поруч із OTP.
 
-> **Поточний стан входу (2026-07-22):** Browser flow дозволяє лише passkey
+> **Поточний стан входу (2026-07-23):** Browser flow дозволяє лише passkey
 > (`WebAuthn Passwordless`) або Google SSO. Email/password форму та автоматичний
 > redirect до Google вимкнено. Для passkey потрібен раніше зареєстрований
-> discoverable credential на пристрої.
+> discoverable credential на пристрої; Google — основна (primary) кнопка,
+> passkey — вторинна, бо passkey має не кожен.
 >
-> **Реєстрація passkey знову обов'язкова для нових користувачів**
-> (`webauthn-register-passwordless`: `defaultAction: true`). Required actions в
-> Keycloak виконуються одразу після *будь-якої* успішної автентифікації,
-> незалежно від того, який step у flow її забезпечив — тобто після першого
-> входу через Google SSO новий користувач одразу отримує екран реєстрації
-> passkey, перш ніж потрапити в застосунок. Це не залежить від того, що
-> username+webauthn-форма для логіну вимкнена: required action — окремий
-> механізм, що спрацьовує вже після успішної Google-автентифікації.
-> Наявні користувачі, що вже логінились раніше (коли `defaultAction` був
-> `false`), нічого в черзі не мають і passkey реєструють лише добровільно
-> через Account Console — required action не проставляється заднім числом.
+> **Реєстрація passkey опційна (2026-07-23):**
+> `webauthn-register-passwordless` має `defaultAction: false`, тож новий
+> користувач після Google SSO потрапляє одразу в застосунок і додає passkey
+> добровільно через Account Console (підказку про це показує вкладка
+> Settings — `passkeyOptionalHint`). Required actions виконуються після
+> *будь-якої* успішної автентифікації, незалежно від того, який step у flow
+> її забезпечив; при `defaultAction: true` це давало екран реєстрації passkey
+> одразу після першого Google-логіну. Required action не проставляється
+> заднім числом, тож перемикання `defaultAction` впливає лише на нових
+> користувачів.
 >
+> **Не вимикайте `webauthn-authenticator-passwordless` у browser flow, щоб
+> зробити passkey опційним (спроба 2026-07-23, відкочена того ж дня).**
+> Опційність задається виключно через `defaultAction: false` на required
+> action. Сам execution має лишатися `ALTERNATIVE`, бо саме він рендерить
+> сторінку входу (кастомний `webauthn-authenticate.ftl` із кнопками Google
+> та Passkey). З `DISABLED` у flow лишаються тільки `auth-cookie` (без сесії
+> не спрацьовує) та `identity-provider-redirector` (без `defaultProvider` не
+> робить нічого) — жоден execution не може автентифікувати, і Keycloak падає
+> з `AuthenticationFlowException` → `error="invalid_user_credentials"`,
+> `userId="null"`, а користувач бачить "We are sorry... Invalid username or
+> password" ще до будь-якого вводу. Користувач без passkey нічого не ламає:
+> він просто натискає кнопку Google на тій самій сторінці.
+>
+> **"Cannot login, credential setup required" при додаванні passkey — виправлено
+> (2026-07-23).** Account Console → Signing in → Set up passkey запускає
+> application-initiated action (`kc_action=webauthn-register-passwordless`), а вона
+> **примусово переавтентифіковує**: SSO-cookie ігнорується. Далі у
+> `browser-passwordless` не лишається кроку, який може автентифікувати цього
+> користувача: `identity-provider-redirector` без `defaultProvider` — no-op, а
+> `webauthn-authenticator-passwordless` пропускається, бо юзер уже відомий і
+> passkey у нього ще немає (він саме його й додає). Flow падає з
+> `AuthenticationFlowException: authenticator: webauthn-authenticator-passwordless`
+> → `error="invalid_user_credentials"` і сторінкою "Unexpected error when handling
+> authentication request to identity provider. Cannot login, credential setup required."
+>
+> Рішення — **окремий browser flow `browser-google-reauth`** (є в
+> `realm-export.json`): `auth-cookie` + `identity-provider-redirector` з
+> `defaultProvider=google`, прив'язаний **лише до клієнта `account-console`**
+> через client-level authentication flow override
+> (`./keycloak/bind-account-console-flow.sh`). При AIA cookie обходиться →
+> redirector веде на Google → після повернення відпрацьовує required action і
+> з'являється екран реєстрації passkey. Звичайний вхід у застосунок
+> (`kse-pm-web`) не змінився: та сама сторінка з кнопками Passkey і Google.
+>
+> **Перевірені глухі кути (не повторювати):**
+> 1. `defaultProvider=google` на redirector'і у **realm-wide** `browser-passwordless`
+>    авто-редіректить **кожен** вхід на Google — сторінка з passkey не рендериться
+>    взагалі. Перевірено в обох позиціях: і до, і після webauthn-кроку (позиція не
+>    має значення).
+> 2. CONDITIONAL-підпотік `Condition - user configured` + webauthn, з
+>    `identity-provider-redirector` як ALTERNATIVE-сусідом: Keycloak пише
+>    `REQUIRED and ALTERNATIVE elements at same level! Those alternative executions
+>    will be ignored`, а сама умова падає з `NullPointerException: Cannot invoke
+>    "UserModel.credentialManager()" because "user" is null` на звичайному вході, де
+>    користувач ще невідомий (та сама причина, що й у відкоченій post-broker-login
+>    спробі нижче).
+> 3. Клієнт `account-console` **не можна** описати в `realm-export.json`: Keycloak
+>    створює дефолтні клієнти сам, тож імпорт падає з `Duplicate resource error`
+>    (`CLIENT(REALM_ID, CLIENT_ID)` unique violation). Тому прив'язка — скриптом.
+
 > **Спроба зробити passkey 2FA на кожному вході — відкочена (2026-07-21).**
 > Пробували `postBrokerLoginFlowAlias` на Google IdP з conditional subflow
 > (`Condition - user configured` → `WebAuthn Passwordless Authenticator`,
@@ -85,6 +147,17 @@ Keycloak завершує SSO-сесію та повертає на застос
 > `realm-export.json` створює базовий realm, але не містить кастомного Browser
 > flow. Імпорт також не оновлює realm, який уже існує. Тому ці кроки потрібно
 > виконати у **кожному** запущеному Keycloak realm `kse-pm` вручну.
+
+> **Обов'язковий крок після імпорту (і для вже наявних realm):**
+>
+> ```bash
+> ./keycloak/bind-account-console-flow.sh            # localhost:8081, realm kse-pm, admin/admin
+> ./keycloak/bind-account-console-flow.sh https://kc.example.org kse-pm admin "$KEYCLOAK_ADMIN_PASSWORD"
+> ```
+>
+> Прив'язує flow `browser-google-reauth` до клієнта `account-console`. Без цього
+> "Set up passkey" падає з "Cannot login, credential setup required" (див. вище).
+> Скрипт ідемпотентний.
 
 У Keycloak Admin Console, realm `kse-pm`:
 
@@ -147,19 +220,14 @@ mvn spring-boot:run -Dspring-boot.run.profiles=dev   # H2 + X-Dev-User headers
 
 ## Collections: read-only group suggestions
 
-`realm-export.json` містить confidential client `kse-pm-admin` з увімкненим
-service account і єдиною роллю `realm-management:view-users`. Перед імпортом/першим
-запуском замініть його `secret` плейсхолдер або після імпорту згенеруйте Client secret
-у **Clients → kse-pm-admin → Credentials** і передайте те саме значення застосунку:
+Групи для Collections більше **не** читаються з Keycloak. Джерело — Google
+Workspace Directory API (`CollectionGroupService` → `WorkspaceDirectoryClient`);
+клієнт `kse-pm-admin`, змінна `KEYCLOAK_ADMIN_CLIENT_SECRET` і
+`KeycloakAdminClient` видалені. Keycloak лишається виключно OIDC-брокером входу.
 
-```bash
-export KEYCLOAK_ADMIN_CLIENT_SECRET='...'
-```
-
-Backend отримує access token через `client_credentials`, шукає group і читає її
-members через Admin REST API. Це **лише UX-підказка**: manager все одно явно вибирає
-email-и, а браузер обгортає collection key публічним ключем кожного вибраного
-користувача. Отже, додавання до Keycloak group не надає E2E-доступу автоматично.
+Це **лише UX-підказка**: manager все одно явно вибирає email-и, а браузер
+обгортає collection key публічним ключем кожного вибраного користувача. Отже,
+членство в Google-групі не надає E2E-доступу автоматично.
 
 ## Login/logout audit events: потрібен provider
 
@@ -188,7 +256,7 @@ SPI. Власний SPI тут навмисно не додано без тес�
 
 `nginx/nginx.conf` повертає `404` для public `/api/audit/keycloak-events`; це
 обов’язково зберігає endpoint internal. У `docker-compose.prod.yml` обидва секрети
-`KEYCLOAK_ADMIN_CLIENT_SECRET` та `KEYCLOAK_EVENTS_SECRET` є обов’язковими.
+`KEYCLOAK_EVENTS_SECRET` є обов’язковим.
 
 **Live-статус (2026-07-19):** endpoint перевірено реальними HTTP POST з валідним
 shared secret: LOGIN, LOGOUT і шість LOGIN_ERROR збережені, а LOGIN_FAILED

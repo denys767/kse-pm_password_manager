@@ -1,11 +1,11 @@
 {
   "name": "kse-password-manager-extension",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "build": "tsc --noEmit && vite build && vite build --config vite.config.content.ts",
-    "test": "npm run build && node dist/crypto-test.js && node dist/origin-test.js"
+    "test": "npm run build && node dist/crypto-test.js && node dist/origin-test.js && node dist/webauthn-test.js"
   },
   "dependencies": {
     "hash-wasm": "^4.12.0",

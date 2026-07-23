@@ -12,6 +12,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import ua.kse.passwordmanager.audit.AuditAction;
 import ua.kse.passwordmanager.audit.AuditService;
+import ua.kse.passwordmanager.attachment.AttachmentService;
 import ua.kse.passwordmanager.auth.CurrentUser;
 import ua.kse.passwordmanager.collections.CollectionMember;
 import ua.kse.passwordmanager.collections.CollectionMemberRepository;
@@ -32,6 +33,7 @@ public class VaultService {
     private final CollectionMemberRepository collectionMemberRepository;
     private final SharingService sharingService;
     private final AuditService auditService;
+    private final AttachmentService attachments;
 
     public VaultService(PasswordItemRepository itemRepository,
                         PermissionRepository permissionRepository,
@@ -39,7 +41,8 @@ public class VaultService {
                         ItemVersionRepository itemVersionRepository,
                         CollectionMemberRepository collectionMemberRepository,
                         SharingService sharingService,
-                        AuditService auditService) {
+                        AuditService auditService,
+                        AttachmentService attachments) {
         this.itemRepository = itemRepository;
         this.permissionRepository = permissionRepository;
         this.itemKeyRepository = itemKeyRepository;
@@ -47,39 +50,38 @@ public class VaultService {
         this.collectionMemberRepository = collectionMemberRepository;
         this.sharingService = sharingService;
         this.auditService = auditService;
+        this.attachments = attachments;
     }
 
     @Transactional(readOnly = true)
-    public List<PasswordItemResponse> list(CurrentUser user) {
+    public List<PasswordItemResponse> list(CurrentUser user, boolean extensionClient) {
         Map<UUID, String> wrappedKeys = itemKeyRepository.findByUserEmail(user.email()).stream()
                 .collect(Collectors.toMap(k -> k.getItem().getId(), ItemKey::getWrappedKey));
         List<PasswordItemResponse> result = new ArrayList<>();
         Set<UUID> seen = new HashSet<>();
         for (PasswordItem item : itemRepository.findByOwnerEmailOrderByNameAsc(user.email())) {
             seen.add(item.getId());
-            result.add(PasswordItemResponse.from(item, AccessRole.OWNER, wrappedKeys.get(item.getId())));
+            result.add(PasswordItemResponse.from(item, AccessRole.OWNER, wrappedKeys.get(item.getId()), extensionClient));
         }
         for (PasswordItem item : itemRepository.findSharedWith(user.email())) {
             if (seen.add(item.getId())) {
-                result.add(PasswordItemResponse.from(item, sharingService.resolveAccess(item, user),
-                        wrappedKeys.get(item.getId())));
+                result.add(responseFor(item, user, wrappedKeys.get(item.getId()), extensionClient));
             }
         }
         for (PasswordItem item : itemRepository.findDirectorySharedWith(user.email())) {
             if (seen.add(item.getId())) {
-                result.add(PasswordItemResponse.from(item, sharingService.resolveAccess(item, user),
-                        wrappedKeys.get(item.getId())));
+                result.add(responseFor(item, user, wrappedKeys.get(item.getId()), extensionClient));
             }
         }
         // Items visible through collection membership.
         List<UUID> collectionIds = collectionMemberRepository.findByMemberEmail(user.email()).stream()
+                .filter(member -> member.getStatus().hasCryptographicAccess())
                 .map(member -> member.getCollection().getId())
                 .toList();
         if (!collectionIds.isEmpty()) {
             for (PasswordItem item : itemRepository.findByCollectionIdInOrderByNameAsc(collectionIds)) {
                 if (seen.add(item.getId())) {
-                    result.add(PasswordItemResponse.from(item,
-                            sharingService.resolveAccess(item, user), wrappedKeys.get(item.getId())));
+                    result.add(responseFor(item, user, wrappedKeys.get(item.getId()), extensionClient));
                 }
             }
         }
@@ -146,23 +148,53 @@ public class VaultService {
         return PasswordItemResponse.from(item, AccessRole.OWNER, request.wrappedKey());
     }
 
+    /** Validate all commands without changing storage.  It is deliberately
+     * called again in {@link #importBatch} because a preview is not a lock. */
+    @Transactional(readOnly = true)
+    public VaultImportPreview previewImport(CurrentUser user, VaultImportBatchRequest request) {
+        for (VaultImportCommand command : request.commands()) validateImportCommand(user, command);
+        return importPreview(request);
+    }
+
+    /** Applies every encrypted CSV action in a single database transaction.
+     * Any rejected action rolls back preceding item/key/audit changes. */
     @Transactional
-    public PasswordItemResponse get(CurrentUser user, UUID id) {
+    public VaultImportPreview importBatch(CurrentUser user, VaultImportBatchRequest request) {
+        for (VaultImportCommand command : request.commands()) validateImportCommand(user, command);
+        for (VaultImportCommand command : request.commands()) {
+            switch (command.action()) {
+                case CREATE -> create(user, command.item());
+                case UPDATE -> update(user, command.itemId(), command.item());
+                case DELETE -> delete(user, command.itemId());
+            }
+        }
+        return importPreview(request);
+    }
+
+    @Transactional
+    public PasswordItemResponse get(CurrentUser user, UUID id, boolean extensionClient) {
         var access = readableItem(user, id);
         auditService.record(user.email(), AuditAction.ITEM_VIEWED, access.item().getId(),
                 access.item().getName(), null, null);
-        return PasswordItemResponse.from(access.item(), access.role(), wrappedKeyFor(user, id));
+        return PasswordItemResponse.from(access.item(), access.role(), wrappedKeyFor(user, id), extensionClient);
     }
 
     @Transactional
     public PasswordItemResponse update(CurrentUser user, UUID id, PasswordItemRequest request) {
         var access = readableItem(user, id);
-        if (!access.role().canEdit()) {
+        if (!access.role().canEditItem()) {
             throw new ForbiddenException("Viewer role cannot modify this item");
         }
         PasswordItem item = access.item();
         if (request.syncMode() == SyncMode.LOCAL_ONLY) {
             throw new BadRequestException("Use the sync-mode endpoint to make an item local-only");
+        }
+        // The encrypted payload is template-shaped in the client. Changing this
+        // discriminator would make existing ciphertext ambiguous to every
+        // recipient, so callers must create a new record instead.
+        SecretType requestedType = request.type() == null ? SecretType.LOGIN : request.type();
+        if (item.getType() != requestedType) {
+            throw new BadRequestException("Secret type is immutable; create a new item for a different template");
         }
         if (item.getItemType() == ItemType.SHARED && request.itemType() == ItemType.PERSONAL
                 && (!permissionRepository.findByItemId(item.getId()).isEmpty()
@@ -180,12 +212,13 @@ public class VaultService {
     @Transactional
     public void delete(CurrentUser user, UUID id) {
         var access = readableItem(user, id);
-        if (!access.role().isOwner()) {
+        if (!access.role().canDeleteItem()) {
             throw new ForbiddenException("Only the owner can delete an item");
         }
         permissionRepository.deleteByItemId(id);
         itemKeyRepository.deleteByItemId(id);
         itemVersionRepository.deleteByItemId(id);
+        attachments.deleteForItem(access.item());
         itemRepository.delete(access.item());
         auditService.record(user.email(), AuditAction.ITEM_DELETED, id, access.item().getName(),
                 null, null);
@@ -232,6 +265,7 @@ public class VaultService {
         permissionRepository.deleteByItemId(id);
         itemKeyRepository.deleteByItemId(id);
         itemVersionRepository.deleteByItemId(id);
+        attachments.deleteForItem(item);
         itemRepository.delete(item);
         return new PasswordItemResponse(snapshot.id(), snapshot.name(), snapshot.url(),
                 snapshot.username(), snapshot.encryptedPassword(), snapshot.passwordIv(),
@@ -293,15 +327,60 @@ public class VaultService {
                 .orElse(null);
     }
 
+    private void validateImportCommand(CurrentUser user, VaultImportCommand command) {
+        if (command.action() == VaultImportAction.CREATE) {
+            if (command.item() == null) throw new BadRequestException("create import command requires an item");
+            if (command.item().syncMode() != SyncMode.SERVER_SYNCED) {
+                throw new BadRequestException("Imports may create only server-synchronised items");
+            }
+            if (command.item().wrappedKey() == null || command.item().wrappedKey().isBlank()) {
+                throw new BadRequestException("create import command requires wrappedKey");
+            }
+            return;
+        }
+        if (command.itemId() == null || command.expectedUpdatedAt() == null) {
+            throw new BadRequestException(command.action().name().toLowerCase(Locale.ROOT)
+                    + " import command requires itemId and expectedUpdatedAt");
+        }
+        ItemAccess access = readableItem(user, command.itemId());
+        if (!access.item().getUpdatedAt().equals(command.expectedUpdatedAt())) {
+            throw new BadRequestException("Item changed since CSV export: " + command.itemId());
+        }
+        if (command.action() == VaultImportAction.UPDATE) {
+            if (command.item() == null) throw new BadRequestException("update import command requires an item");
+            if (!access.role().canEditItem()) throw new ForbiddenException("Item is not editable");
+        } else if (!access.role().canDeleteItem()) {
+            throw new ForbiddenException("Only the owner can delete an imported item");
+        }
+    }
+
+    private static VaultImportPreview importPreview(VaultImportBatchRequest request) {
+        int creates = 0, updates = 0, deletes = 0;
+        for (VaultImportCommand command : request.commands()) {
+            switch (command.action()) {
+                case CREATE -> creates++;
+                case UPDATE -> updates++;
+                case DELETE -> deletes++;
+            }
+        }
+        return new VaultImportPreview(creates, updates, deletes);
+    }
+
     private ItemAccess readableItem(CurrentUser user, UUID id) {
         PasswordItem item = itemRepository.findById(id)
                 .orElseThrow(() -> new NotFoundException("Item not found"));
         AccessRole role = sharingService.resolveAccess(item, user);
-        if (!role.canRead()) {
+        if (!role.canReadItemCiphertext()) {
             // Hide the item's existence from users without access.
             throw new NotFoundException("Item not found");
         }
         return new ItemAccess(item, role);
+    }
+
+    private PasswordItemResponse responseFor(PasswordItem item, CurrentUser user,
+                                             String wrappedKey, boolean extensionClient) {
+        return PasswordItemResponse.from(item, sharingService.resolveAccess(item, user),
+                wrappedKey, extensionClient);
     }
 
     private static void apply(PasswordItem item, PasswordItemRequest request) {

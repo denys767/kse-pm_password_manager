@@ -10,7 +10,8 @@ import { SettingsTab } from './components/SettingsTab';
 import { DashboardTab } from './components/DashboardTab';
 import { ExternalSharePage } from './components/ExternalSharePage';
 import { TagsTab } from './components/TagsTab';
-import { IconActivity, IconCollections, IconDashboard, IconLock, IconSettings, IconTag, IconVault } from './components/Icons';
+import { AdminTab } from './components/AdminTab';
+import { IconActivity, IconCollections, IconDashboard, IconLock, IconSettings, IconTag, IconUsers, IconVault } from './components/Icons';
 import { LanguageSwitcher, useI18n } from './i18n';
 import type { Collection, FrontendConfig, Me, Settings } from './types';
 
@@ -19,7 +20,7 @@ export interface Session {
     keys: VaultKeys;
 }
 
-type Tab = 'vault' | 'dashboard' | 'collections' | 'tags' | 'audit' | 'settings';
+type Tab = 'vault' | 'dashboard' | 'collections' | 'tags' | 'audit' | 'admin' | 'settings';
 
 export default function App() {
     const { t } = useI18n();
@@ -153,11 +154,12 @@ export default function App() {
                     <button id="collections-tab-btn" className={`nav-item ${tab === 'collections' ? 'active' : ''}`} aria-current={tab === 'collections' ? 'page' : undefined} onClick={() => setTab('collections')}><IconCollections /> <span>{t('collections')}</span></button>
                     <button id="tags-tab-btn" className={`nav-item ${tab === 'tags' ? 'active' : ''}`} aria-current={tab === 'tags' ? 'page' : undefined} onClick={() => setTab('tags')}><IconTag /> <span>{t('tags')}</span></button>
                     {isAuditor && <><p className="sidebar-label">SECURITY</p><button id="audit-tab-btn" className={`nav-item ${tab === 'audit' ? 'active' : ''}`} aria-current={tab === 'audit' ? 'page' : undefined} onClick={() => setTab('audit')}><IconActivity /> <span>{t('activity')}</span></button></>}
+                    {session.user.roles.includes('ADMIN') && <button id="admin-tab-btn" className={`nav-item ${tab === 'admin' ? 'active' : ''}`} aria-current={tab === 'admin' ? 'page' : undefined} onClick={() => setTab('admin')}><IconUsers /> <span>{t('admin')}</span></button>}
                     <div className="sidebar-bottom"><button className={`nav-item ${tab === 'settings' ? 'active' : ''}`} aria-current={tab === 'settings' ? 'page' : undefined} onClick={() => setTab('settings')}><IconSettings /> <span>{t('settings')}</span></button></div>
                 </aside>
                 <main id="app" className="workspace-main">
                     <div className="page-heading">
-                        <div><h1>{tab === 'vault' ? t('vault') : tab === 'dashboard' ? t('dashboard') : tab === 'collections' ? t('collections') : tab === 'tags' ? t('tags') : tab === 'audit' ? t('activity') : t('settings')}</h1></div>
+                        <div><h1>{tab === 'vault' ? t('vault') : tab === 'dashboard' ? t('dashboard') : tab === 'collections' ? t('collections') : tab === 'tags' ? t('tags') : tab === 'audit' ? t('activity') : tab === 'admin' ? t('admin') : t('settings')}</h1></div>
                     </div>
                     {tab === 'vault' && (
                         <VaultTab session={session} settings={settings} collections={collections} tagFilter={vaultTagFilter} onClearTagFilter={() => setVaultTagFilter(null)}
@@ -171,6 +173,7 @@ export default function App() {
                     )}
                     {tab === 'tags' && <TagsTab session={session} onSelect={(tag) => { setVaultTagFilter(tag); setTab('vault'); }} />}
                     {tab === 'audit' && <AuditTab />}
+                    {tab === 'admin' && <AdminTab />}
                     {tab === 'settings' && <SettingsTab settings={settings} onSaved={setSettings} isAdmin={session.user.roles.includes('ADMIN')} config={config} />}
                 </main>
             </div>}

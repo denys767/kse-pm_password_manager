@@ -10,4 +10,6 @@ class UnavailableWorkspaceDirectoryClient implements WorkspaceDirectoryClient {
     public List<DirectoryPrincipal> search(String q, List<DirectoryPrincipal.Type> t, int l) { throw unavailable(); }
     public Optional<DirectoryPrincipal> find(DirectoryPrincipal.Type t, String id) { throw unavailable(); }
     public List<String> memberEmails(String id) { throw unavailable(); }
+    public List<DirectoryUser> listUsers() { throw unavailable(); }
+    public List<DirectoryGroup> listGroups() { throw unavailable(); }
 }

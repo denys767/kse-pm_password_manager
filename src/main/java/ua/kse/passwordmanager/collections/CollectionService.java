@@ -48,9 +48,9 @@ public class CollectionService {
 
     @Transactional
     public CollectionResponse create(CurrentUser user, CreateCollectionRequest request) {
-        String group = normalizedOptional(request.keycloakGroup());
-        if (group != null && !groupService.isAllowed(group)) {
-            throw new BadRequestException("Keycloak group is not allowed for collections");
+        String group = normalizedOptional(request.directoryGroup());
+        if (group != null && !groupService.exists(group)) {
+            throw new BadRequestException("Group does not exist in Google Workspace");
         }
         Collection collection = collectionRepository.save(
                 new Collection(request.name().trim(), user.email(), group));
@@ -78,12 +78,12 @@ public class CollectionService {
     }
 
     /**
-     * Looks up a Keycloak group only after authorizing the manager. The returned
+     * Looks up a Workspace group only after authorizing the manager. The returned
      * emails are suggestions: adding each one still requires client-side key
      * wrapping in {@link #addMember(CurrentUser, UUID, AddMemberRequest)}.
      */
     @Transactional(readOnly = true)
-    public List<String> keycloakSuggestions(CurrentUser user, UUID collectionId, String group) {
+    public List<String> directorySuggestions(CurrentUser user, UUID collectionId, String group) {
         CollectionMember me = requireMembership(user, collectionId);
         if (!me.getRole().canManageMembers()) {
             throw new ForbiddenException("Only a manager can request member suggestions");
@@ -92,7 +92,7 @@ public class CollectionService {
         if (normalizedGroup == null) {
             throw new BadRequestException("group is required");
         }
-        if (!normalizedGroup.equals(me.getCollection().getKeycloakGroup()) || !groupService.isAllowed(normalizedGroup)) {
+        if (!normalizedGroup.equals(me.getCollection().getDirectoryGroup()) || !groupService.exists(normalizedGroup)) {
             throw new BadRequestException("group is not configured for this collection");
         }
         var existing = memberRepository.findByCollectionId(collectionId).stream()
@@ -110,7 +110,7 @@ public class CollectionService {
     public void syncGroup(CurrentUser user, UUID collectionId) {
         CollectionMember me = requireMembership(user, collectionId);
         if (!me.getRole().canManageMembers()) throw new ForbiddenException("Only a manager can sync group membership");
-        if (me.getCollection().getKeycloakGroup() == null) throw new BadRequestException("Collection has no Keycloak group");
+        if (me.getCollection().getDirectoryGroup() == null) throw new BadRequestException("Collection has no Workspace group");
         groupService.sync(me.getCollection(), user.email());
     }
 

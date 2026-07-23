@@ -1,7 +1,7 @@
 import { ChangeEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { api } from './../api';
 import * as pmc from '../crypto';
-import { parseCsv, toCsv, CsvRow } from '../csv';
+import { previewCsv, toCsv, CsvPreview, CsvRow } from '../csv';
 import { emptyPayload, parsePayload, serializePayload } from '../payload';
 import { unwrapItemKeyFor } from '../itemKeys';
 import { loadLocalItems } from '../localItems';
@@ -32,6 +32,7 @@ export function VaultTab({ session, settings, collections, openItemId, onItemOpe
     const [dialog, setDialog] = useState<DialogState>(null);
     const [error, setError] = useState<string | null>(null);
     const [busy, setBusy] = useState<string | null>(null);
+    const [csvPreview, setCsvPreview] = useState<CsvPreview | null>(null);
     const importInput = useRef<HTMLInputElement>(null);
 
     const refresh = useCallback(async () => {
@@ -62,6 +63,10 @@ export function VaultTab({ session, settings, collections, openItemId, onItemOpe
                         ? await pmc.decryptField(key, item.encryptedNotes, item.notesIv!)
                         : '');
                     rows.push({
+                        version: '4',
+                        action: 'create',
+                        id: item.id,
+                        updatedAt: item.updatedAt,
                         name: item.name,
                         secretType: item.type ?? 'LOGIN',
                         url: item.url || '',
@@ -72,11 +77,21 @@ export function VaultTab({ session, settings, collections, openItemId, onItemOpe
                         apiKey: payload.apiKey,
                         apiSecret: payload.apiSecret,
                         sshPrivateKey: payload.sshPrivateKey,
+                        sshPublicKey: payload.sshPublicKey,
+                        databaseType: payload.databaseType,
+                        databaseHost: payload.databaseHost,
+                        databasePort: payload.databasePort,
+                        databaseName: payload.databaseName,
+                        databaseUsername: payload.databaseUsername,
+                        databasePassword: payload.databasePassword,
                         cardNumber: payload.cardNumber,
                         cardCvv: payload.cardCvv,
                         cardHolder: payload.cardHolder,
                         cardExpiry: payload.cardExpiry,
                         totpSeed: payload.totpSeed,
+                        // Permission wrappers and Drive attachment ciphertext are
+                        // intentionally not emitted as plaintext CSV columns.
+                        permissions: '', fileName: '', fileData: '',
                     });
                 } catch {
                     skipped++;
@@ -96,59 +111,74 @@ export function VaultTab({ session, settings, collections, openItemId, onItemOpe
         }
     }
 
-    /** Imports CSV rows as personal server-synced items, each with its own key. */
+    /** Parse locally first. A deliberate second confirmation makes destructive
+     * v4 update/delete actions visible before encrypted commands are sent. */
     async function importCsv(event: ChangeEvent<HTMLInputElement>) {
         const file = event.target.files?.[0];
         event.target.value = '';
         if (!file) {
             return;
         }
-        setBusy('Імпортую…');
         setError(null);
         try {
-            const rows = parseCsv(await file.text());
-            let imported = 0;
-            for (const row of rows) {
-                const key = await pmc.generateItemKey();
-                const password = await pmc.encryptField(key, row.password);
-                const notes = await pmc.encryptField(key, serializePayload({
-                    ...emptyPayload(),
-                    notes: row.notes,
-                    apiKey: row.apiKey,
-                    apiSecret: row.apiSecret,
-                    sshPrivateKey: row.sshPrivateKey,
-                    cardNumber: row.cardNumber,
-                    cardCvv: row.cardCvv,
-                    cardHolder: row.cardHolder,
-                    cardExpiry: row.cardExpiry,
-                    totpSeed: row.totpSeed,
-                }));
-                await api('/api/vault/items', {
-                    method: 'POST',
-                    body: JSON.stringify({
-                        name: row.name,
-                        url: row.url || null,
-                        username: row.username || null,
-                        encryptedPassword: password.ct,
-                        passwordIv: password.iv,
-                        encryptedNotes: notes.ct,
-                        notesIv: notes.iv,
-                        tags: row.tags || null,
-                        type: row.secretType,
-                        itemType: 'PERSONAL',
-                        syncMode: 'SERVER_SYNCED',
-                        wrappedKey: await pmc.wrapItemKey(key, session.keys.publicKey),
-                    }),
-                });
-                imported++;
-            }
-            await refresh();
-            setError(imported > 0 ? null : 'У файлі не знайдено записів для імпорту.');
+            const preview = previewCsv(await file.text());
+            setCsvPreview(preview);
+            if (preview.rows.length === 0) setError('У файлі не знайдено записів для імпорту.');
         } catch (e) {
             setError(`Імпорт: ${(e as Error).message}`);
-        } finally {
-            setBusy(null);
         }
+    }
+
+    async function commitCsvImport() {
+        if (!csvPreview) return;
+        if (csvPreview.warnings.length) {
+            setError(csvPreview.warnings.join(' '));
+            return;
+        }
+        setBusy('Шифрую та імпортую…'); setError(null);
+        try {
+            const commands = [];
+            for (const row of csvPreview.rows) commands.push(await csvCommand(row));
+            // Preview is also server-side: it checks access and optimistic
+            // versions immediately before one transactional commit.
+            await api('/api/vault/imports/preview', { method: 'POST', body: JSON.stringify({ commands }) });
+            await api('/api/vault/imports/commit', { method: 'POST', body: JSON.stringify({ commands }) });
+            setCsvPreview(null);
+            await refresh();
+        } catch (e) { setError(`Імпорт: ${(e as Error).message}`); }
+        finally { setBusy(null); }
+    }
+
+    async function csvCommand(row: CsvRow) {
+        if (row.action === 'delete') {
+            return { action: 'DELETE', itemId: row.id, expectedUpdatedAt: row.updatedAt };
+        }
+        const existing = row.action === 'update'
+            ? serverItems.find((item) => item.id === row.id) : undefined;
+        if (row.action === 'update' && !existing) {
+            throw new Error(`Запис ${row.id} недоступний для update`);
+        }
+        const key = existing ? await unwrapItemKeyFor(existing, collections, session.keys) : await pmc.generateItemKey();
+        const password = await pmc.encryptField(key, row.password);
+        const notes = await pmc.encryptField(key, serializePayload({
+            ...emptyPayload(), notes: row.notes, apiKey: row.apiKey, apiSecret: row.apiSecret,
+            sshPrivateKey: row.sshPrivateKey, sshPublicKey: row.sshPublicKey,
+            databaseType: row.databaseType, databaseHost: row.databaseHost, databasePort: row.databasePort,
+            databaseName: row.databaseName, databaseUsername: row.databaseUsername, databasePassword: row.databasePassword,
+            cardNumber: row.cardNumber, cardCvv: row.cardCvv, cardHolder: row.cardHolder,
+            cardExpiry: row.cardExpiry, totpSeed: row.totpSeed,
+        }));
+        return {
+            action: row.action.toUpperCase(), itemId: row.action === 'update' ? row.id : null,
+            expectedUpdatedAt: row.action === 'update' ? row.updatedAt : null,
+            item: {
+                name: row.name, url: row.url || null, username: row.username || null,
+                encryptedPassword: password.ct, passwordIv: password.iv, encryptedNotes: notes.ct, notesIv: notes.iv,
+                tags: row.tags || null, type: row.secretType,
+                itemType: existing?.itemType ?? 'PERSONAL', syncMode: 'SERVER_SYNCED',
+                wrappedKey: existing ? null : await pmc.wrapItemKey(key, session.keys.publicKey),
+            },
+        };
     }
 
     const query = search.trim().toLowerCase();
@@ -185,6 +215,13 @@ export function VaultTab({ session, settings, collections, openItemId, onItemOpe
             {tagFilter && <div className="active-tag-filter"><span>{t('activeTag')} <strong>{tagFilter}</strong></span><button type="button" className="secondary small" onClick={onClearTagFilter}>{t('clear')}</button></div>}
             {busy && <p className="hint">{busy}</p>}
             {error && <p className="error">{error}</p>}
+            {csvPreview && <section className="csv-preview" aria-live="polite">
+                <strong>CSV v4 preview:</strong> {csvPreview.createCount} create, {csvPreview.updateCount} update, {csvPreview.deleteCount} delete.
+                {csvPreview.warnings.map((warning) => <p key={warning} className="error">{warning}</p>)}
+                <button type="button" disabled={busy !== null || csvPreview.warnings.length > 0}
+                    onClick={() => void commitCsvImport()}>Підтвердити імпорт</button>{' '}
+                <button type="button" className="secondary" disabled={busy !== null} onClick={() => setCsvPreview(null)}>Скасувати</button>
+            </section>}
             <ul id="item-list" className="item-list">
                 {items.map((item) => (
                     <li key={item.id} onClick={() => setDialog({ mode: 'edit', item })}>

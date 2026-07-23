@@ -64,7 +64,13 @@ export function oidcLogout(): void {
 
 export function reauthenticateForVaultReset(): void {
     sessionStorage.setItem('pm.vault-reset', '1');
-    keycloak?.login({ prompt: 'login', maxAge: 0, redirectUri: window.location.href });
+    // The vault reset is a destructive step-up, so it forces a fresh SSO login
+    // (prompt=login, maxAge=0). idpHint=google routes that forced re-auth
+    // straight to Google instead of the passkey page: re-authenticating an
+    // already-known user through webauthn-authenticator-passwordless fails with
+    // "credential setup required" for anyone who has not registered a passkey
+    // yet, and every KSE user can always re-authenticate with Google.
+    keycloak?.login({ prompt: 'login', maxAge: 0, idpHint: 'google', redirectUri: window.location.href });
 }
 
 export function consumeVaultResetIntent(): boolean {

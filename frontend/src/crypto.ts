@@ -181,6 +181,45 @@ export async function decryptField(itemKey: CryptoKey, ctB64: string, ivB64: str
     return td.decode(await aesDecrypt(itemKey, ctB64, ivB64));
 }
 
+// ---------------------------------------------------------- attachments ---
+
+export interface EncryptedAttachment {
+    ciphertext: ArrayBuffer;
+    nonce: string;
+    encryptedFilename: Encrypted;
+    wrappedFileKey: Encrypted;
+    ciphertextSha256: string;
+}
+
+/** Encrypt one attachment with a fresh AES-GCM file key. The item key wraps
+ * that file key, so attachment plaintext and filename never reach the API. */
+export async function encryptAttachment(file: File, itemKey: CryptoKey): Promise<EncryptedAttachment> {
+    const fileKey = await generateItemKey();
+    const nonce = crypto.getRandomValues(new Uint8Array(12));
+    const plaintext = await file.arrayBuffer();
+    const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce }, fileKey, plaintext);
+    const digest = await crypto.subtle.digest('SHA-256', ciphertext);
+    return {
+        ciphertext,
+        nonce: b64(nonce),
+        encryptedFilename: await encryptField(fileKey, file.name),
+        wrappedFileKey: await wrapItemKeyWithKek(fileKey, itemKey),
+        ciphertextSha256: [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join(''),
+    };
+}
+
+export async function decryptAttachment(ciphertext: ArrayBuffer, nonce: string, wrappedFileKey: Encrypted,
+                                        itemKey: CryptoKey): Promise<ArrayBuffer> {
+    const fileKey = await unwrapItemKeyWithKek(wrappedFileKey.ct, wrappedFileKey.iv, itemKey);
+    return crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(nonce) }, fileKey, ciphertext);
+}
+
+export async function decryptAttachmentFilename(encryptedFilename: Encrypted, wrappedFileKey: Encrypted,
+                                                itemKey: CryptoKey): Promise<string> {
+    const fileKey = await unwrapItemKeyWithKek(wrappedFileKey.ct, wrappedFileKey.iv, itemKey);
+    return decryptField(fileKey, encryptedFilename.ct, encryptedFilename.iv);
+}
+
 /** Encrypts a self-contained external snapshot with a fresh AES-256 key.
  * The returned key is URL-fragment material only: callers must not send or
  * persist it. */

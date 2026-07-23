@@ -32,9 +32,9 @@ public class Collection {
     @Column(nullable = false)
     private String ownerEmail;
 
-    /** Optional Keycloak group used only to suggest explicit members. */
+    /** Optional Google Workspace group used only to suggest explicit members. */
     @Column
-    private String keycloakGroup;
+    private String directoryGroup;
 
     @Column(nullable = false)
     private Instant createdAt;
@@ -45,10 +45,10 @@ public class Collection {
     protected Collection() {
     }
 
-    public Collection(String name, String ownerEmail, String keycloakGroup) {
+    public Collection(String name, String ownerEmail, String directoryGroup) {
         this.name = name;
         this.ownerEmail = ownerEmail;
-        this.keycloakGroup = keycloakGroup;
+        this.directoryGroup = directoryGroup;
     }
 
     @PrePersist
@@ -82,8 +82,8 @@ public class Collection {
         this.ownerEmail = ownerEmail;
     }
 
-    public String getKeycloakGroup() {
-        return keycloakGroup;
+    public String getDirectoryGroup() {
+        return directoryGroup;
     }
 
     public Instant getCreatedAt() {

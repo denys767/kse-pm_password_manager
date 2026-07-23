@@ -7,9 +7,15 @@ export interface PasswordItem {
     encryptedNotes: string | null; notesIv: string | null;
     tags: string | null; type: string | null; itemType: 'PERSONAL' | 'SHARED';
     syncMode: 'SERVER_SYNCED' | 'LOCAL_ONLY';
+    accessRole?: 'VIEWER' | 'EDITOR' | 'AUTOFILL_ONLY' | 'PASSKEY_ONLY' | 'OWNER';
     wrappedKey: string | null; collectionId: string | null;
     collectionWrappedKey: string | null; collectionWrappedKeyIv: string | null;
     kekWrappedKey?: Encrypted;
 }
 export interface Collection { id: string; myWrappedKey: string; }
 export interface Settings { clipboardClearSeconds: number; defaultSyncMode: 'SERVER_SYNCED' | 'LOCAL_ONLY'; }
+export interface PasskeyCredential {
+    id: string; itemId: string; relyingPartyId: string; credentialId: string; userHandle: string;
+    algorithm: 'ES256'; publicKey: string; encryptedPrivateMaterial: string; privateMaterialIv: string;
+    transports: string | null; signCounter: number; wrappedCredentialKey: string;
+}

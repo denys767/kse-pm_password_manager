@@ -5,12 +5,15 @@ import java.util.Locale;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.core.env.Environment;
 import ua.kse.passwordmanager.audit.AuditAction;
 import ua.kse.passwordmanager.audit.AuditService;
 import ua.kse.passwordmanager.auth.CurrentUser;
 import ua.kse.passwordmanager.collections.CollectionMemberRepository;
 import ua.kse.passwordmanager.directory.DirectoryPrincipal;
 import ua.kse.passwordmanager.directory.WorkspaceDirectoryClient;
+import ua.kse.passwordmanager.directory.WorkspaceGroupRepository;
+import ua.kse.passwordmanager.directory.WorkspaceGroup;
 import ua.kse.passwordmanager.common.BadRequestException;
 import ua.kse.passwordmanager.common.ForbiddenException;
 import ua.kse.passwordmanager.common.NotFoundException;
@@ -33,7 +36,9 @@ public class SharingService {
     private final CollectionMemberRepository collectionMemberRepository;
     private final PermissionMemberRepository permissionMemberRepository;
     private final WorkspaceDirectoryClient directory;
+    private final WorkspaceGroupRepository workspaceGroups;
     private final AuditService auditService;
+    private final boolean development;
 
     public SharingService(PermissionRepository permissionRepository,
                           PasswordItemRepository itemRepository,
@@ -41,14 +46,17 @@ public class SharingService {
                           CollectionMemberRepository collectionMemberRepository,
                           PermissionMemberRepository permissionMemberRepository,
                           WorkspaceDirectoryClient directory,
-                          AuditService auditService) {
+                          WorkspaceGroupRepository workspaceGroups,
+                          AuditService auditService, Environment environment) {
         this.permissionRepository = permissionRepository;
         this.itemRepository = itemRepository;
         this.itemKeyRepository = itemKeyRepository;
         this.collectionMemberRepository = collectionMemberRepository;
         this.permissionMemberRepository = permissionMemberRepository;
         this.directory = directory;
+        this.workspaceGroups = workspaceGroups;
         this.auditService = auditService;
+        this.development = java.util.List.of(environment.getActiveProfiles()).contains("dev");
     }
 
     /** Effective role of the user on an item: ownership wins, then the highest
@@ -59,57 +67,70 @@ public class SharingService {
         }
         AccessRole best = AccessRole.NONE;
         for (Permission permission : permissionRepository.findByItemId(item.getId())) {
-            boolean matches = switch (permission.getGranteeType()) {
+            boolean matches = permission.isActive() && switch (permission.getGranteeType()) {
                 case USER -> permission.getGrantee().equalsIgnoreCase(user.email());
-                case GROUP -> permission.isActive() && permissionMemberRepository
-                        .existsByPermissionItemIdAndMemberEmailAndStatus(item.getId(), user.email(), PermissionMemberStatus.ACTIVE);
+                case GROUP -> permissionMemberRepository
+                        .existsByPermissionIdAndMemberEmailAndStatus(permission.getId(), user.email(), PermissionMemberStatus.ACTIVE);
             };
             if (!matches) {
                 continue;
             }
-            AccessRole granted = permission.getRole() == PermissionRole.EDITOR
-                    ? AccessRole.EDITOR
-                    : AccessRole.VIEWER;
-            if (granted.ordinal() > best.ordinal()) {
-                best = granted;
-            }
+            best = AccessRole.mostPermissive(best, permission.getRole().accessRole());
         }
         // Collection membership grants access to every item in the collection.
         if (item.getCollectionId() != null) {
             AccessRole viaCollection = collectionMemberRepository
                     .findByCollectionIdAndMemberEmail(item.getCollectionId(), user.email())
+                    // A materialized Google group member has no usable access
+                    // until a collection key was actually provisioned.  In
+                    // particular PENDING_REMOVAL must block the API before a
+                    // key rotation finishes.
+                    .filter(member -> member.getStatus().hasCryptographicAccess())
                     .map(member -> member.getRole().canEditItems() ? AccessRole.EDITOR : AccessRole.VIEWER)
                     .orElse(AccessRole.NONE);
-            if (viaCollection.ordinal() > best.ordinal()) {
-                best = viaCollection;
-            }
+            best = AccessRole.mostPermissive(best, viaCollection);
         }
         return best;
     }
 
     @Transactional
     public PermissionResponse share(CurrentUser user, UUID itemId, ShareRequest request) {
-        PasswordItem item = ownedItem(user, itemId);
+        PasswordItem item = shareableItem(user, itemId);
         String grantee = request.grantee().trim().toLowerCase(Locale.ROOT);
         if (request.granteeType() == GranteeType.USER && grantee.equalsIgnoreCase(item.getOwnerEmail())) {
             throw new BadRequestException("Cannot share an item with its owner");
         }
-        if (request.granteeType() == GranteeType.USER
+        if (request.granteeType() == GranteeType.USER && request.role().requiresItemKey()
                 && (request.wrappedKey() == null || request.wrappedKey().isBlank())) {
             throw new BadRequestException(
                     "wrappedKey is required: wrap the item key with the recipient's public key");
         }
-        if (request.granteeType() == GranteeType.GROUP
-                && (request.directorySubjectId() == null || request.directorySubjectId().isBlank())) {
+        boolean directorySubjectMissing = request.directorySubjectId() == null || request.directorySubjectId().isBlank();
+        // A GROUP share needs directory resolution to enumerate members (below),
+        // so a legacy Keycloak group claim without a directorySubjectId must be
+        // rejected here rather than fail later against the directory.
+        if (request.granteeType() == GranteeType.GROUP && directorySubjectMissing) {
             throw new BadRequestException("directorySubjectId is required for a Google Workspace group");
         }
+        // The Directory API accepts the primary email as a principal key, so a
+        // USER share where the caller typed a full address instead of picking an
+        // autocomplete suggestion is resolved here rather than rejected: the
+        // invariant is "the grantee is a real, in-domain Workspace principal",
+        // not "the client already knew its immutable id".
         DirectoryPrincipal principal = null;
-        if (request.directorySubjectId() != null && !request.directorySubjectId().isBlank()) {
+        if (!directorySubjectMissing || !development) {
+            String key = directorySubjectMissing ? grantee : request.directorySubjectId();
             principal = directory.find(request.granteeType() == GranteeType.USER
-                            ? DirectoryPrincipal.Type.USER : DirectoryPrincipal.Type.GROUP,
-                    request.directorySubjectId())
+                            ? DirectoryPrincipal.Type.USER : DirectoryPrincipal.Type.GROUP, key)
                     .orElseThrow(() -> new BadRequestException("Directory principal was not found or is outside the domain"));
             grantee = principal.email().toLowerCase(Locale.ROOT);
+            if (principal.type() == DirectoryPrincipal.Type.GROUP && !user.isAdmin()) {
+                WorkspaceGroup group = workspaceGroups.findById(grantee)
+                        .orElseThrow(() -> new BadRequestException("Google group is not materialized in Workspace"));
+                if (!group.isDirectoryPresent() || !group.isVisibleToUsers()) {
+                    throw new ForbiddenException("This Google Workspace group is not visible for sharing");
+                }
+            }
         }
 
         final String resolvedGrantee = grantee;
@@ -128,13 +149,19 @@ public class SharingService {
         }
 
         if (request.granteeType() == GranteeType.USER) {
-            ItemKey itemKey = itemKeyRepository.findByItemIdAndUserEmail(itemId, resolvedGrantee)
-                    .map(existing -> {
-                        existing.setWrappedKey(request.wrappedKey());
-                        return existing;
-                    })
-                    .orElseGet(() -> new ItemKey(item, resolvedGrantee, request.wrappedKey()));
-            itemKeyRepository.save(itemKey);
+            if (request.role().requiresItemKey()) {
+                ItemKey itemKey = itemKeyRepository.findByItemIdAndUserEmail(itemId, resolvedGrantee)
+                        .map(existing -> {
+                            existing.setWrappedKey(request.wrappedKey());
+                            return existing;
+                        })
+                        .orElseGet(() -> new ItemKey(item, resolvedGrantee, request.wrappedKey()));
+                itemKeyRepository.save(itemKey);
+            } else {
+                // A downgrade to PASSKEY_ONLY must remove a previously granted
+                // password key in the same transaction.
+                itemKeyRepository.deleteByItemIdAndUserEmail(itemId, resolvedGrantee);
+            }
             upsertMember(permission, resolvedGrantee, PermissionMemberStatus.ACTIVE);
         } else {
             for (String email : directory.memberEmails(permission.getDirectorySubjectId())) {
@@ -167,14 +194,14 @@ public class SharingService {
     }
 
     public List<PermissionResponse> listPermissions(CurrentUser user, UUID itemId) {
-        ownedItem(user, itemId);
+        shareableItem(user, itemId);
         return permissionRepository.findByItemId(itemId).stream()
                 .map(PermissionResponse::from)
                 .toList();
     }
 
     public List<PermissionMemberResponse> listMembers(CurrentUser user, UUID itemId, UUID permissionId) {
-        ownedItem(user, itemId);
+        shareableItem(user, itemId);
         permissionRepository.findByIdAndItemId(permissionId, itemId)
                 .orElseThrow(() -> new NotFoundException("Permission not found"));
         return permissionMemberRepository.findByPermissionId(permissionId).stream().map(PermissionMemberResponse::from).toList();
@@ -243,12 +270,21 @@ public class SharingService {
         PasswordItem item = itemRepository.findById(itemId)
                 .orElseThrow(() -> new NotFoundException("Item not found"));
         AccessRole role = resolveAccess(item, user);
-        if (!role.canRead()) {
+        if (!role.canReadItemCiphertext()) {
             // Hide the item's existence from users without access.
             throw new NotFoundException("Item not found");
         }
-        if (!role.isOwner()) {
+        if (!role.canRevokeGrants()) {
             throw new ForbiddenException("Only the owner can manage access");
+        }
+        return item;
+    }
+
+    private PasswordItem shareableItem(CurrentUser user, UUID itemId) {
+        PasswordItem item = itemRepository.findById(itemId)
+                .orElseThrow(() -> new NotFoundException("Item not found"));
+        if (!resolveAccess(item, user).canCreateShares()) {
+            throw new ForbiddenException("Only the owner or an editor can add shares");
         }
         return item;
     }

@@ -17,23 +17,12 @@
   "webAuthnPolicyPasswordlessAvoidSameAuthenticatorRegister": false,
   "webAuthnPolicyPasswordlessAcceptableAaguids": [],
   "requiredActions": [
-    { "alias": "CONFIGURE_TOTP", "name": "Configure OTP", "providerId": "CONFIGURE_TOTP", "enabled": true, "defaultAction": false, "priority": 10 },
-    { "alias": "UPDATE_PASSWORD", "name": "Update Password", "providerId": "UPDATE_PASSWORD", "enabled": false, "defaultAction": false, "priority": 20 },
-    { "alias": "UPDATE_PROFILE", "name": "Update Profile", "providerId": "UPDATE_PROFILE", "enabled": true, "defaultAction": false, "priority": 30 },
-    { "alias": "VERIFY_EMAIL", "name": "Verify Email", "providerId": "VERIFY_EMAIL", "enabled": true, "defaultAction": false, "priority": 50 },
-    { "alias": "TERMS_AND_CONDITIONS", "name": "Terms and Conditions", "providerId": "TERMS_AND_CONDITIONS", "enabled": false, "defaultAction": false, "priority": 60 },
-    { "alias": "delete_account", "name": "Delete Account", "providerId": "delete_account", "enabled": false, "defaultAction": false, "priority": 60 },
-    { "alias": "update_user_locale", "name": "Update User Locale", "providerId": "update_user_locale", "enabled": true, "defaultAction": false, "priority": 1000 },
-    { "alias": "webauthn-register", "name": "Webauthn Register", "providerId": "webauthn-register", "enabled": true, "defaultAction": false, "priority": 70 },
-    { "alias": "webauthn-register-passwordless", "name": "Webauthn Register Passwordless", "providerId": "webauthn-register-passwordless", "enabled": true, "defaultAction": true, "priority": 80 },
-    { "alias": "delete_credential", "name": "Delete Credential", "providerId": "delete_credential", "enabled": true, "defaultAction": false, "priority": 100 },
-    { "alias": "idp_link", "name": "Linking Identity Provider", "providerId": "idp_link", "enabled": true, "defaultAction": false, "priority": 110 },
-    { "alias": "CONFIGURE_RECOVERY_AUTHN_CODES", "name": "Recovery Authentication Codes", "providerId": "CONFIGURE_RECOVERY_AUTHN_CODES", "enabled": false, "defaultAction": false, "priority": 120 }
+    { "alias": "webauthn-register-passwordless", "name": "Webauthn Register Passwordless", "providerId": "webauthn-register-passwordless", "enabled": true, "defaultAction": false, "priority": 10 }
   ],
   "authenticationFlows": [
     {
       "alias": "browser-passwordless",
-      "description": "Passkey or Google login only; no email/password form.",
+      "description": "No email/password form. Passkey execution renders the choice page (passkey + Google); see docs/KEYCLOAK.md.",
       "providerId": "basic-flow",
       "topLevel": true,
       "builtIn": false,
@@ -42,16 +31,23 @@
         { "authenticator": "identity-provider-redirector", "requirement": "ALTERNATIVE", "priority": 25, "userSetupAllowed": false, "autheticatorFlow": false },
         { "authenticator": "webauthn-authenticator-passwordless", "requirement": "ALTERNATIVE", "priority": 30, "userSetupAllowed": false, "autheticatorFlow": false }
       ]
+    },
+    {
+      "alias": "browser-google-reauth",
+      "description": "account-console only: SSO cookie, otherwise straight to Google, so 'Set up passkey' can re-authenticate a user who has no passkey. Never bind realm-wide. See docs/KEYCLOAK.md.",
+      "providerId": "basic-flow",
+      "topLevel": true,
+      "builtIn": false,
+      "authenticationExecutions": [
+        { "authenticator": "auth-cookie", "requirement": "ALTERNATIVE", "priority": 10, "userSetupAllowed": false, "autheticatorFlow": false },
+        { "authenticator": "identity-provider-redirector", "requirement": "ALTERNATIVE", "priority": 20, "userSetupAllowed": false, "autheticatorFlow": false,
+          "authenticatorConfig": "google-reauth-default" }
+      ]
     }
   ],
-  "roles": {
-    "realm": [
-      { "name": "user", "description": "Regular vault user" },
-      { "name": "admin", "description": "Application administrator" },
-      { "name": "security", "description": "Security officer with audit access" }
-    ]
-  },
-  "defaultRoles": ["user"],
+  "authenticatorConfig": [
+    { "alias": "google-reauth-default", "config": { "defaultProvider": "google" } }
+  ],
   "clients": [
     {
       "clientId": "kse-pm-web",
@@ -65,65 +61,42 @@
       "attributes": {
         "pkce.code.challenge.method": "S256",
         "post.logout.redirect.uris": "http://localhost:8080/*"
-      },
-      "protocolMappers": [
-        {
-          "name": "groups",
-          "protocol": "openid-connect",
-          "protocolMapper": "oidc-group-membership-mapper",
-          "consentRequired": false,
-          "config": {
-            "claim.name": "groups",
-            "full.path": "false",
-            "id.token.claim": "true",
-            "access.token.claim": "true",
-            "userinfo.token.claim": "true"
-          }
-        }
-      ]
+      }
     },
     {
-      "clientId": "kse-pm-admin",
-      "name": "KSE Password Manager Admin API (read-only)",
-      "description": "Service account used only to suggest Keycloak group members for Collections.",
+      "clientId": "kse-pm-extension",
+      "name": "KSE Password Manager Extension",
       "protocol": "openid-connect",
-      "publicClient": false,
-      "standardFlowEnabled": false,
+      "publicClient": true,
+      "standardFlowEnabled": true,
       "directAccessGrantsEnabled": false,
-      "serviceAccountsEnabled": true,
-      "fullScopeAllowed": true,
-      "secret": "jtp1A0OYbuI5lCDqxZ3HJAmFcRhiac97"
-    }
-  ],
-  "users": [
-    {
-      "username": "service-account-kse-pm-admin",
-      "enabled": true,
-      "serviceAccountClientId": "kse-pm-admin",
-      "clientRoles": {
-        "realm-management": ["view-users"]
-      }
+      "redirectUris": ["https://*.chromiumapp.org/*", "chrome-extension://*/*"],
+      "webOrigins": ["chrome-extension://*"],
+      "attributes": { "pkce.code.challenge.method": "S256" },
+      "protocolMappers": [{
+        "name": "extension-audience",
+        "protocol": "openid-connect",
+        "protocolMapper": "oidc-audience-mapper",
+        "consentRequired": false,
+        "config": { "included.client.audience": "kse-pm-extension", "id.token.claim": "false", "access.token.claim": "true" }
+      }]
     }
   ],
   "identityProviders": [
     {
       "alias": "google",
-      "displayName": "Google Workspace",
+      "displayName": "Google",
       "providerId": "google",
       "enabled": true,
       "trustEmail": true,
       "firstBrokerLoginFlowAlias": "first broker login",
       "config": {
-        "clientId": "59264947390-tqkrc2i2ppsmvnc0sepnp2ggfvanpbts.apps.googleusercontent.com",
-        "clientSecret": "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",
-        "hostedDomain": "kse.org.ua",
+        "clientId": "1079689084620-atn9rami8ug35fqdqp197bngglrckjb7.apps.googleusercontent.com",
+        "clientSecret": "${GOOGLE_CLIENT_SECRET}",
+        "hostedDomain": "kse-ai-analyzer.biz.ua",
         "syncMode": "IMPORT",
         "defaultScope": "openid profile email"
       }
     }
-  ],
-  "groups": [
-    { "name": "dev-team" },
-    { "name": "finance" }
   ]
 }

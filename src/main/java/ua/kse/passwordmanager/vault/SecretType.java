@@ -9,6 +9,7 @@ public enum SecretType {
     LOGIN,
     API_CREDENTIALS,
     SSH_KEY,
+    DATABASE,
     CARD,
     SECURE_NOTE
 }

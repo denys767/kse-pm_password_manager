@@ -3,21 +3,27 @@ package ua.kse.passwordmanager.auth;
 import java.util.List;
 import java.util.Set;
 import java.time.Instant;
-import java.util.stream.Collectors;
 import org.springframework.security.core.Authentication;
-import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Value;
 
 @Component
 public class AuthFacade {
+    private final String extensionClientId;
+    public AuthFacade(@Value("${pm.extension.oauth-client-id:kse-pm-extension}") String extensionClientId) {
+        this.extensionClientId = extensionClientId;
+    }
 
     public CurrentUser current() {
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
         if (auth == null || !auth.isAuthenticated()) {
             throw new IllegalStateException("No authenticated user in security context");
+        }
+        if (auth instanceof GovernedAuthenticationToken governed) {
+            return governed.getPrincipal();
         }
         if (auth.getPrincipal() instanceof CurrentUser devUser) {
             return devUser;
@@ -29,15 +35,10 @@ public class AuthFacade {
                     jwt.getClaimAsString("preferred_username"),
                     jwt.getSubject());
             String name = firstNonBlank(jwt.getClaimAsString("name"), email);
-            Set<String> roles = rolesFrom(jwtAuth.getAuthorities());
-            List<String> groupsClaim = jwt.getClaimAsStringList("groups");
-            Set<String> groups = groupsClaim == null
-                    ? Set.of()
-                    : groupsClaim.stream()
-                            .map(g -> g.startsWith("/") ? g.substring(1) : g)
-                            .map(String::toLowerCase)
-                            .collect(Collectors.toUnmodifiableSet());
-            return new CurrentUser(email.toLowerCase(), name, roles, groups);
+            // This branch is intentionally identity-only and is only reachable
+            // for endpoints excluded from governance. API method security always
+            // receives GovernedAuthenticationToken.
+            return new CurrentUser(email.toLowerCase(), name, Set.of(), Set.of());
         }
         throw new IllegalStateException("Unsupported authentication type: " + auth.getClass());
     }
@@ -45,11 +46,12 @@ public class AuthFacade {
     /** Destructive vault recovery requires a recent interactive SSO login. */
     public boolean hasRecentAuthentication() {
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
-        if (auth != null && auth.getPrincipal() instanceof CurrentUser) {
+        Jwt jwt = jwt(auth);
+        if (auth != null && auth.getPrincipal() instanceof CurrentUser && jwt == null) {
             return true; // Explicitly insecure development profile.
         }
-        if (auth instanceof JwtAuthenticationToken jwtAuth) {
-            Object authTime = jwtAuth.getToken().getClaim("auth_time");
+        if (jwt != null) {
+            Object authTime = jwt.getClaim("auth_time");
             if (authTime instanceof Number seconds) {
                 return Instant.now().minusSeconds(300).isBefore(Instant.ofEpochSecond(seconds.longValue()));
             }
@@ -57,15 +59,28 @@ public class AuthFacade {
         return false;
     }
 
-    private static Set<String> rolesFrom(Iterable<? extends GrantedAuthority> authorities) {
-        Set<String> roles = new java.util.HashSet<>();
-        for (GrantedAuthority a : authorities) {
-            String value = a.getAuthority();
-            if (value.startsWith("ROLE_")) {
-                roles.add(value.substring("ROLE_".length()).toUpperCase());
-            }
+    /** Both azp and aud must identify the dedicated extension client.  Keycloak
+     * needs an audience mapper for this client; accepting azp alone would let a
+     * token minted for a different resource cross this API boundary. */
+    public boolean isExtensionClient() {
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        Jwt jwt = jwt(auth);
+        if (auth != null && auth.getPrincipal() instanceof CurrentUser && jwt == null) {
+            // Test/dev profile uses explicit headers because it has no JWT.
+            return auth.getDetails() instanceof ClientAccess access && access.extensionClient();
         }
-        return Set.copyOf(roles);
+        if (jwt == null) return false;
+        String authorizedParty = jwt.getClaimAsString("azp");
+        List<String> audience = jwt.getAudience();
+        return extensionClientId.equals(authorizedParty) && audience.contains(extensionClientId);
+    }
+
+    public record ClientAccess(boolean extensionClient) { }
+
+    private static Jwt jwt(Authentication auth) {
+        if (auth instanceof GovernedAuthenticationToken token) return token.getJwt();
+        if (auth instanceof JwtAuthenticationToken token) return token.getToken();
+        return null;
     }
 
     private static String firstNonBlank(String... values) {

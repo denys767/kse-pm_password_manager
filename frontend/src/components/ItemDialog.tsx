@@ -1,7 +1,7 @@
 import { ChangeEvent, FormEvent, useEffect, useRef, useState } from 'react';
 import qrcode from 'qrcode-generator';
 import jsQR from 'jsqr';
-import { api, ApiError } from '../api';
+import { api, apiBinary, ApiError } from '../api';
 import * as pmc from '../crypto';
 import { unwrapCollectionKey, unwrapItemKeyFor } from '../itemKeys';
 import { loadLocalItems, saveLocalItems } from '../localItems';
@@ -9,10 +9,11 @@ import { estimateStrength, generatePassword, hibpBreachCount } from '../password
 import { emptyPayload, parsePayload, serializePayload } from '../payload';
 import { encryptShareSnapshot } from '../externalShare';
 import { IconCheck, IconEye, IconEyeOff, IconRefresh, IconUser, IconUsers, IconWarning } from './Icons';
+import { DirectoryPicker } from './DirectoryPicker';
 import { parseTags, serializeTags } from '../tags';
 import { useI18n } from '../i18n';
 import type { Session } from '../App';
-import type { Collection, DirectoryPrincipal, ItemVersion, PasswordItem, Permission, PermissionMemberInfo, SecretType, Settings } from '../types';
+import type { AttachmentMetadata, Collection, DirectoryPrincipal, ItemVersion, PasswordItem, Permission, PermissionMemberInfo, SecretType, Settings } from '../types';
 
 interface Props {
     session: Session;
@@ -35,6 +36,13 @@ interface Fields {
     apiKey: string;
     apiSecret: string;
     sshPrivateKey: string;
+    sshPublicKey: string;
+    databaseType: string;
+    databaseHost: string;
+    databasePort: string;
+    databaseName: string;
+    databaseUsername: string;
+    databasePassword: string;
     cardNumber: string;
     cardCvv: string;
     cardHolder: string;
@@ -61,7 +69,6 @@ export function ItemDialog({ session, settings, collections, item, availableTags
     const [itemKey, setItemKey] = useState<CryptoKey | null>(null);
     const [permissions, setPermissions] = useState<Permission[]>([]);
     const [shareForm, setShareForm] = useState({ grantee: '', role: 'VIEWER', principal: null as DirectoryPrincipal | null });
-    const [directoryMatches, setDirectoryMatches] = useState<DirectoryPrincipal[]>([]);
     const [error, setError] = useState<string | null>(null);
     const [showPassword, setShowPassword] = useState(false);
     const [copyLabel, setCopyLabel] = useState('Copy');
@@ -76,6 +83,7 @@ export function ItemDialog({ session, settings, collections, item, availableTags
     const [externalOneTime, setExternalOneTime] = useState(false);
     const [externalLink, setExternalLink] = useState<{ id: string; url: string } | null>(null);
     const [tagDraft, setTagDraft] = useState('');
+    const [attachmentFile, setAttachmentFile] = useState<File | null>(null);
 
     const isOwner = !current || !current.accessRole || current.accessRole === 'OWNER';
     const canEdit = !current || ((isOwner || current.accessRole === 'EDITOR') && itemKey !== null);
@@ -101,6 +109,13 @@ export function ItemDialog({ session, settings, collections, item, availableTags
                 const full = item.syncMode === 'LOCAL_ONLY'
                     ? item
                     : await api<PasswordItem>(`/api/vault/items/${item.id}`);
+                if (full.syncMode !== 'LOCAL_ONLY' && full.encryptedPassword) {
+                    try {
+                        full.attachment = await api<AttachmentMetadata>(`/api/vault/items/${full.id}/attachment`);
+                    } catch (e) {
+                        if ((e as ApiError).status !== 404) throw e;
+                    }
+                }
                 setCurrent(full);
                 let key: CryptoKey | null = null;
                 let password = '';
@@ -234,6 +249,13 @@ export function ItemDialog({ session, settings, collections, item, availableTags
                 apiKey: fields.apiKey,
                 apiSecret: fields.apiSecret,
                 sshPrivateKey: fields.sshPrivateKey,
+                sshPublicKey: fields.sshPublicKey,
+                databaseType: fields.databaseType,
+                databaseHost: fields.databaseHost,
+                databasePort: fields.databasePort,
+                databaseName: fields.databaseName,
+                databaseUsername: fields.databaseUsername,
+                databasePassword: fields.databasePassword,
                 cardNumber: fields.cardNumber,
                 cardCvv: fields.cardCvv,
                 cardHolder: fields.cardHolder,
@@ -272,6 +294,9 @@ export function ItemDialog({ session, settings, collections, item, availableTags
                 if (isOwner) {
                     await assignCollection(itemId, key);
                 }
+                if (attachmentFile) {
+                    await uploadAttachment(itemId, key, attachmentFile);
+                }
             } else {
                 await saveLocalOnly(payload, key, wasLocal);
             }
@@ -280,6 +305,61 @@ export function ItemDialog({ session, settings, collections, item, availableTags
         } catch (e) {
             setError((e as Error).message);
         }
+    }
+
+    /** The selected file is encrypted before it crosses the browser boundary.
+     * There is intentionally no client-side size gate: Drive/Workspace quotas
+     * and the Drive protocol are the only applicable limits. */
+    async function uploadAttachment(itemId: string, key: CryptoKey, file: File) {
+        const encrypted = await pmc.encryptAttachment(file, key);
+        const encodedMetadata = btoa(JSON.stringify({
+            encryptedFilename: encrypted.encryptedFilename.ct,
+            encryptedFilenameIv: encrypted.encryptedFilename.iv,
+            mimeType: file.type || 'application/octet-stream',
+            ciphertextSize: encrypted.ciphertext.byteLength,
+            ciphertextSha256: encrypted.ciphertextSha256,
+            nonce: encrypted.nonce,
+            wrappedFileKey: encrypted.wrappedFileKey.ct,
+            wrappedFileKeyIv: encrypted.wrappedFileKey.iv,
+        })).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
+        try {
+            const response = await apiBinary(`/api/vault/items/${itemId}/attachment`, {
+                method: 'PUT', body: encrypted.ciphertext,
+                headers: { 'Content-Type': 'application/octet-stream', 'X-Kse-Attachment-Metadata': encodedMetadata },
+            });
+            const metadata = await response.json() as AttachmentMetadata;
+            setCurrent((value) => value ? { ...value, attachment: metadata } : value);
+            setAttachmentFile(null);
+        } catch (e) { throw e; }
+    }
+
+    async function downloadAttachment() {
+        if (!current?.attachment || !itemKey) return;
+        setError(null);
+        try {
+            const encrypted = await apiBinary(`/api/vault/items/${current.id}/attachment/content`);
+            const attachment = current.attachment;
+            const [filename, plaintext] = await Promise.all([
+                pmc.decryptAttachmentFilename(
+                    { ct: attachment.encryptedFilename, iv: attachment.encryptedFilenameIv },
+                    { ct: attachment.wrappedFileKey, iv: attachment.wrappedFileKeyIv }, itemKey),
+                encrypted.arrayBuffer().then((ciphertext) => pmc.decryptAttachment(ciphertext, attachment.nonce,
+                    { ct: attachment.wrappedFileKey, iv: attachment.wrappedFileKeyIv }, itemKey)),
+            ]);
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(new Blob([plaintext], { type: attachment.mimeType }));
+            link.download = filename;
+            link.click();
+            URL.revokeObjectURL(link.href);
+        } catch (e) { setError((e as Error).message); }
+    }
+
+    async function deleteAttachment() {
+        if (!current?.attachment || !confirm('Видалити вкладення?')) return;
+        try {
+            await api(`/api/vault/items/${current.id}/attachment`, { method: 'DELETE' });
+            setCurrent({ ...current, attachment: null });
+        } catch (e) { setError((e as Error).message); }
     }
 
     function removeLocal(id: string) {
@@ -448,7 +528,7 @@ export function ItemDialog({ session, settings, collections, item, availableTags
                 recipient = await api(`/api/keys/${encodeURIComponent(grantee)}`);
             } catch (e) {
                 throw (e as ApiError).status === 404
-                    ? new Error(`У ${grantee} ще немає ключів — користувач має увійти у vault хоча б раз.`)
+                    ? new Error(t('noKeysForUser', { user: grantee }))
                     : e;
             }
             const recipientKey = await pmc.importPublicKey(recipient.publicKey);
@@ -475,12 +555,6 @@ export function ItemDialog({ session, settings, collections, item, availableTags
         }
     }
 
-    async function lookupDirectory(query: string) {
-        setShareForm((form) => ({ ...form, grantee: query, principal: null }));
-        if (query.trim().length < 2) { setDirectoryMatches([]); return; }
-        try { setDirectoryMatches(await api<DirectoryPrincipal[]>(`/api/directory/principals?query=${encodeURIComponent(query)}`)); }
-        catch (e) { setError((e as Error).message); }
-    }
 
     async function provisionGroup(permission: Permission) {
         if (!current || !itemKey) return;
@@ -511,7 +585,11 @@ export function ItemDialog({ session, settings, collections, item, availableTags
                 tags: fields.tags, type: fields.secretType, password: fields.password,
                 payload: {
                     version: 1, notes: fields.notes, apiKey: fields.apiKey, apiSecret: fields.apiSecret,
-                    sshPrivateKey: fields.sshPrivateKey, cardNumber: fields.cardNumber,
+                    sshPrivateKey: fields.sshPrivateKey, sshPublicKey: fields.sshPublicKey,
+                    databaseType: fields.databaseType, databaseHost: fields.databaseHost,
+                    databasePort: fields.databasePort, databaseName: fields.databaseName,
+                    databaseUsername: fields.databaseUsername, databasePassword: fields.databasePassword,
+                    cardNumber: fields.cardNumber,
                     cardCvv: fields.cardCvv, cardHolder: fields.cardHolder,
                     cardExpiry: fields.cardExpiry, totpSeed: fields.totpSeed,
                 },
@@ -536,6 +614,15 @@ export function ItemDialog({ session, settings, collections, item, availableTags
         } catch (e) { setError((e as Error).message); }
     }
 
+    async function extendExternalShare() {
+        if (!current || !externalLink) return;
+        try {
+            const extended = await api<{ expiresAt: string; oneTime: boolean }>(
+                `/api/vault/items/${current.id}/external-shares/${externalLink.id}/extend-24-hours`, { method: 'POST' });
+            setError(`Посилання продовжено до ${new Date(extended.expiresAt).toLocaleString()}${extended.oneTime ? ' (одноразове)' : ''}. URL не змінено.`);
+        } catch (e) { setError((e as Error).message); }
+    }
+
     /**
      * Rotates the item's AES key so the recipient being revoked cannot decrypt
      * anything written after this point, even if they saved the old wrapped
@@ -555,6 +642,13 @@ export function ItemDialog({ session, settings, collections, item, availableTags
             apiKey: fields.apiKey,
             apiSecret: fields.apiSecret,
             sshPrivateKey: fields.sshPrivateKey,
+            sshPublicKey: fields.sshPublicKey,
+            databaseType: fields.databaseType,
+            databaseHost: fields.databaseHost,
+            databasePort: fields.databasePort,
+            databaseName: fields.databaseName,
+            databaseUsername: fields.databaseUsername,
+            databasePassword: fields.databasePassword,
             cardNumber: fields.cardNumber,
             cardCvv: fields.cardCvv,
             cardHolder: fields.cardHolder,
@@ -646,7 +740,11 @@ export function ItemDialog({ session, settings, collections, item, availableTags
         }
     }
 
-    const showShare = current !== null && isOwner && current.syncMode !== 'LOCAL_ONLY' && loaded;
+    // Sharing only makes sense for a Shared record. Existing grants keep the
+    // section visible so the owner can still revoke them — the server refuses
+    // to turn a shared item back into a personal one until they are gone.
+    const showShare = current !== null && isOwner && current.syncMode !== 'LOCAL_ONLY' && loaded
+        && (sharedType || permissions.length > 0);
 
     return (
         <>
@@ -705,11 +803,12 @@ export function ItemDialog({ session, settings, collections, item, availableTags
                         );
                     })()}
                     <label>Шаблон секрету
-                        <select id="f-secret-type" disabled={!canEdit} value={fields.secretType}
+                        <select id="f-secret-type" disabled={!canEdit || current !== null} value={fields.secretType}
                                 onChange={(e) => set('secretType', e.target.value as SecretType)}>
                             <option value="LOGIN">Login</option>
                             <option value="API_CREDENTIALS">API credentials</option>
                             <option value="SSH_KEY">SSH key</option>
+                            <option value="DATABASE">Database</option>
                             <option value="CARD">Card</option>
                             <option value="SECURE_NOTE">Secure note</option>
                         </select>
@@ -728,6 +827,39 @@ export function ItemDialog({ session, settings, collections, item, availableTags
                         <textarea id="f-ssh-private-key" rows={7} autoComplete="off" readOnly={!canEdit}
                                   value={fields.sshPrivateKey} onChange={(e) => set('sshPrivateKey', e.target.value)} />
                     </label>}
+                    {fields.secretType === 'SSH_KEY' && <label>Public key
+                        <textarea id="f-ssh-public-key" rows={4} autoComplete="off" readOnly={!canEdit}
+                                  value={fields.sshPublicKey} onChange={(e) => set('sshPublicKey', e.target.value)} />
+                    </label>}
+                    {fields.secretType === 'DATABASE' && <>
+                        <label>Database engine
+                            <input id="f-database-type" placeholder="PostgreSQL" readOnly={!canEdit}
+                                   value={fields.databaseType} onChange={(e) => set('databaseType', e.target.value)} />
+                        </label>
+                        <label>Host
+                            <input id="f-database-host" autoComplete="off" readOnly={!canEdit}
+                                   value={fields.databaseHost} onChange={(e) => set('databaseHost', e.target.value)} />
+                        </label>
+                        <div className="row">
+                            <label>Port
+                                <input id="f-database-port" inputMode="numeric" readOnly={!canEdit}
+                                       value={fields.databasePort} onChange={(e) => set('databasePort', e.target.value)} />
+                            </label>
+                            <label>Database
+                                <input id="f-database-name" autoComplete="off" readOnly={!canEdit}
+                                       value={fields.databaseName} onChange={(e) => set('databaseName', e.target.value)} />
+                            </label>
+                        </div>
+                        <label>Database user
+                            <input id="f-database-username" autoComplete="off" readOnly={!canEdit}
+                                   value={fields.databaseUsername} onChange={(e) => set('databaseUsername', e.target.value)} />
+                        </label>
+                        <label>Password
+                            <input id="f-database-password" type="password" autoComplete="new-password" readOnly={!canEdit}
+                                   value={fields.databasePassword} onChange={(e) => set('databasePassword', e.target.value)} />
+                        </label>
+                    </>}
+                    {current && <p className="hint">Шаблон секрету фіксується під час створення запису.</p>}
                     {fields.secretType === 'CARD' && <>
                         <label>Номер картки
                             <input id="f-card-number" inputMode="numeric" autoComplete="off" readOnly={!canEdit}
@@ -779,7 +911,7 @@ export function ItemDialog({ session, settings, collections, item, availableTags
                         <div className="tag-editor" aria-label={t('tags')}>
                             {tagList.map((tag) => <span className="tag-chip" key={tag.toLocaleLowerCase()}>{tag}{canEdit && <button type="button" aria-label={`${t('delete')} ${tag}`} onClick={() => removeTag(tag)}>×</button>}</span>)}
                             {canEdit && <input id="f-tags" list="tag-suggestions" maxLength={1024} value={tagDraft} placeholder={t('tagsHelp')}
-                                onChange={(e) => setTagDraft(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); addTags(tagDraft); } else if (e.key === 'Backspace' && !tagDraft && tagList.length) removeTag(tagList[tagList.length - 1]); }} onBlur={() => tagDraft && addTags(tagDraft)} />}
+                                onChange={(e) => setTagDraft(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ',' || (e.key === ' ' && tagDraft.trim())) { e.preventDefault(); addTags(tagDraft); } else if (e.key === 'Backspace' && !tagDraft && tagList.length) removeTag(tagList[tagList.length - 1]); }} onBlur={() => tagDraft && addTags(tagDraft)} />}
                         </div>
                         <datalist id="tag-suggestions">{availableTags.filter((tag) => !tagList.some((selected) => selected.toLocaleLowerCase() === tag.toLocaleLowerCase())).map((tag) => <option key={tag} value={tag} />)}</datalist>
                     </label>
@@ -815,6 +947,21 @@ export function ItemDialog({ session, settings, collections, item, availableTags
                             ? 'Shared-записи завжди зберігаються на сервері, інакше sharing не працює.'
                             : 'Вимкнено — запис залишиться тільки в цьому браузері (у зашифрованому вигляді).'}
                     </p>
+                    {fields.sync && canEdit && <section id="attachment-section">
+                        <h4>Вкладення</h4>
+                        <p className="hint">Одне вкладення шифрується AES-GCM у браузері та зберігається як непрозорий файл у Google Drive власника. Ліміт розміру не встановлюється застосунком; діють лише квоти й обмеження Google Drive.</p>
+                        {current?.attachment && !attachmentFile && <div className="row attachment-row">
+                            <span>Зашифроване вкладення · {current.attachment.ciphertextSize.toLocaleString()} B</span>
+                            <button type="button" className="secondary small" onClick={downloadAttachment}>Завантажити</button>
+                            {isOwner && <button type="button" className="secondary small" onClick={deleteAttachment}>{t('delete')}</button>}
+                        </div>}
+                        {isOwner && <label>Замінити вкладення
+                            <input id="f-attachment" type="file" onChange={(event) => setAttachmentFile(event.target.files?.[0] ?? null)} />
+                            {attachmentFile && <span className="hint">Буде зашифровано і завантажено після Save: {attachmentFile.name} ({attachmentFile.size.toLocaleString()} B)</span>}
+                        </label>}
+                        {!isOwner && <p className="hint">Вкладення недоступне для заміни без прав власника.</p>}
+                    </section>}
+                    {!fields.sync && <p className="hint">Local-only записи виключені з вкладень Drive і серверних адміністраторських операцій.</p>}
 
                     {showShare && (
                         <div id="share-section">
@@ -831,23 +978,20 @@ export function ItemDialog({ session, settings, collections, item, availableTags
                                 ))}
                             </ul>
                             <div className="row share-controls">
-                                <input id="share-grantee" placeholder="Користувач або група домену"
-                                       value={shareForm.grantee}
-                                       onChange={(e) => void lookupDirectory(e.target.value)} />
+                                <DirectoryPicker id="share-grantee" types="USER,GROUP"
+                                        placeholder={t('directoryPickerPlaceholder')}
+                                        value={shareForm.grantee}
+                                        onTextChange={(text) => setShareForm((form) => ({ ...form, grantee: text, principal: null }))}
+                                        onSelect={(principal) => setShareForm((form) => ({ ...form, grantee: principal.email, principal }))} />
                                 <select id="share-role" value={shareForm.role}
                                         onChange={(e) => setShareForm({ ...shareForm, role: e.target.value })}>
                                     <option value="VIEWER">Viewer</option>
                                     <option value="EDITOR">Editor</option>
+                                    <option value="AUTOFILL_ONLY">Autofill Only (extension)</option>
+                                    <option value="PASSKEY_ONLY">Passkey Only</option>
                                 </select>
                                 <button type="button" id="share-btn" className="secondary" onClick={share}>{t('share')}</button>
                             </div>
-                            {directoryMatches.length > 0 && <ul className="permission-list" aria-label="Directory results">
-                                {directoryMatches.map((principal) => <li key={`${principal.type}:${principal.id}`}>
-                                    <button type="button" className="linklike" onClick={() => { setShareForm({ ...shareForm, grantee: principal.email, principal }); setDirectoryMatches([]); }}>
-                                        {principal.type === 'GROUP' ? <IconUsers /> : <IconUser />} {principal.displayName} — {principal.email}
-                                    </button>
-                                </li>)}
-                            </ul>}
                         </div>
                     )}
                     {showShare && <section id="external-share-section">
@@ -863,6 +1007,7 @@ export function ItemDialog({ session, settings, collections, item, availableTags
                         </div>
                         {externalLink && <div className="external-link"><input readOnly value={externalLink.url} aria-label="External share link" />
                             <button type="button" className="secondary small" onClick={() => navigator.clipboard.writeText(externalLink.url)}>{t('copy')}</button>
+                            <button type="button" className="secondary small" onClick={extendExternalShare}>+24 год</button>
                             <button type="button" className="secondary small" onClick={revokeExternalShare}>{t('revoke')}</button></div>}
                     </section>}
 

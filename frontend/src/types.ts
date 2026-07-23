@@ -15,9 +15,9 @@ export interface Me {
 }
 
 export type ItemType = 'PERSONAL' | 'SHARED';
-export type SecretType = 'LOGIN' | 'API_CREDENTIALS' | 'SSH_KEY' | 'CARD' | 'SECURE_NOTE';
+export type SecretType = 'LOGIN' | 'API_CREDENTIALS' | 'SSH_KEY' | 'DATABASE' | 'CARD' | 'SECURE_NOTE';
 export type SyncMode = 'SERVER_SYNCED' | 'LOCAL_ONLY';
-export type AccessRole = 'NONE' | 'VIEWER' | 'EDITOR' | 'OWNER';
+export type AccessRole = 'NONE' | 'VIEWER' | 'EDITOR' | 'AUTOFILL_ONLY' | 'PASSKEY_ONLY' | 'OWNER';
 
 export interface PasswordItem {
     id: string;
@@ -39,8 +39,22 @@ export interface PasswordItem {
     collectionWrappedKey: string | null;
     collectionWrappedKeyIv: string | null;
     updatedAt: string;
+    /** Opaque, client-encrypted attachment metadata. Local-only items never have one. */
+    attachment?: AttachmentMetadata | null;
     /** Present only on local-only items (stored in localStorage). */
     kekWrappedKey?: Encrypted;
+}
+
+export interface AttachmentMetadata {
+    id: string;
+    encryptedFilename: string;
+    encryptedFilenameIv: string;
+    mimeType: string;
+    ciphertextSize: number;
+    ciphertextSha256: string;
+    nonce: string;
+    wrappedFileKey: string;
+    wrappedFileKeyIv: string;
 }
 
 export type CollectionRole = 'VIEWER' | 'EDITOR' | 'MANAGER';
@@ -50,7 +64,7 @@ export interface Collection {
     id: string;
     name: string;
     ownerEmail: string;
-    keycloakGroup: string | null;
+    directoryGroup: string | null;
     myRole: CollectionRole;
     /** Collection key wrapped with my public key. */
     myWrappedKey: string;
@@ -73,7 +87,7 @@ export interface Permission {
     id: string;
     granteeType: 'USER' | 'GROUP';
     grantee: string;
-    role: 'VIEWER' | 'EDITOR';
+    role: 'VIEWER' | 'EDITOR' | 'AUTOFILL_ONLY' | 'PASSKEY_ONLY';
     grantedBy: string;
     createdAt: string;
     status?: 'ACTIVE' | 'RELINK_REQUIRED' | 'REVOKED';
@@ -142,4 +156,40 @@ export interface AuditEvent {
     itemName: string | null;
     target: string | null;
     details: string | null;
+}
+
+export interface WorkspaceUser {
+    email: string;
+    directoryId: string;
+    displayName: string;
+    googleAdmin: boolean;
+    roleOverride: 'ADMIN' | 'USER' | null;
+    status: 'ACTIVE' | 'SUSPENDED' | 'REVOKED';
+    syncedAt: string;
+}
+
+export interface WorkspaceGroup {
+    email: string;
+    directoryId: string;
+    displayName: string;
+    visibleToUsers: boolean;
+    syncedAt: string;
+}
+
+/** Deliberately excludes all ciphertext, keys, and attachment data. */
+export interface AdminRecordMetadata {
+    id: string;
+    name: string;
+    ownerEmail: string;
+    type: SecretType;
+    itemType: ItemType;
+    syncMode: SyncMode;
+    createdAt: string;
+    updatedAt: string;
+}
+
+/** Metadata only: this endpoint never exposes any item ciphertext or keys. */
+export interface AdminTagSummary {
+    name: string;
+    usageCount: number;
 }

@@ -143,6 +143,25 @@ class VaultApiIntegrationTest {
     }
 
     @Test
+    void secretTypeIsImmutableAndSupportsDatabaseTemplate() throws Exception {
+        String body = mockMvc.perform(as(post("/api/vault/items"), ALICE)
+                        .content("""
+                                {"name":"Primary DB","encryptedPassword":"Y2lwaGVydGV4dA==","passwordIv":"aXY=",
+                                 "type":"DATABASE","itemType":"PERSONAL","syncMode":"SERVER_SYNCED",
+                                 "wrappedKey":"b3duZXJXcmFwcGVkS2V5"}
+                                """))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.type").value("DATABASE"))
+                .andReturn().getResponse().getContentAsString();
+        String id = objectMapper.readTree(body).get("id").asText();
+
+        mockMvc.perform(as(put("/api/vault/items/" + id), ALICE)
+                        .content(itemJson("Primary DB", "PERSONAL", "SERVER_SYNCED")
+                                .replace("\"syncMode\"", "\"type\":\"LOGIN\", \"syncMode\"")))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
     void createRequiresWrappedKey() throws Exception {
         mockMvc.perform(as(post("/api/vault/items"), ALICE)
                         .content("""
@@ -186,9 +205,10 @@ class VaultApiIntegrationTest {
                         .content(itemJson("Edited by editor", "SHARED", "SERVER_SYNCED")))
                 .andExpect(status().isOk());
 
-        // Only the owner manages access.
+        // Editors may inspect the current grants because they may add shares,
+        // but only the owner may revoke or transfer them.
         mockMvc.perform(as(get("/api/vault/items/" + id + "/permissions"), BOB))
-                .andExpect(status().isForbidden());
+                .andExpect(status().isOk());
 
         mockMvc.perform(as(delete("/api/vault/items/" + id + "/permissions/" + permissionId), ALICE))
                 .andExpect(status().isNoContent());

@@ -49,9 +49,9 @@ public class CollectionsController {
         return collectionService.members(authFacade.current(), id);
     }
 
-    @GetMapping("/{id}/keycloak-suggestions")
-    public List<String> keycloakSuggestions(@PathVariable UUID id, @RequestParam String group) {
-        return collectionService.keycloakSuggestions(authFacade.current(), id, group);
+    @GetMapping("/{id}/directory-suggestions")
+    public List<String> directorySuggestions(@PathVariable UUID id, @RequestParam String group) {
+        return collectionService.directorySuggestions(authFacade.current(), id, group);
     }
 
     @PostMapping("/{id}/sync-group")

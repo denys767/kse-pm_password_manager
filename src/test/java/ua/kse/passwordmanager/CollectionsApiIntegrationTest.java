@@ -24,8 +24,6 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import ua.kse.passwordmanager.directory.WorkspaceDirectoryClient;
 import ua.kse.passwordmanager.directory.DirectoryPrincipal;
-import ua.kse.passwordmanager.collections.AllowedKeycloakGroup;
-import ua.kse.passwordmanager.collections.AllowedKeycloakGroupRepository;
 
 import static org.mockito.Mockito.when;
 import static org.mockito.ArgumentMatchers.any;
@@ -47,9 +45,6 @@ class CollectionsApiIntegrationTest {
 
     @MockBean
     private WorkspaceDirectoryClient directory;
-
-    @Autowired
-    private AllowedKeycloakGroupRepository allowedGroups;
 
     @BeforeEach
     void directoryHasTestGroup() {
@@ -196,11 +191,10 @@ class CollectionsApiIntegrationTest {
     }
 
     @Test
-    void managerGetsOnlyNewKeycloakGroupSuggestions() throws Exception {
-        allowedGroups.save(new AllowedKeycloakGroup("dev-team"));
+    void managerGetsOnlyNewDirectoryGroupSuggestions() throws Exception {
         String collectionId = objectMapper.readTree(mockMvc.perform(as(post("/api/collections"), ALICE)
                         .content("""
-                                {"name":"Suggested","keycloakGroup":"dev-team","wrappedKeyForSelf":"c2VsZg=="}
+                                {"name":"Suggested","directoryGroup":"dev-team","wrappedKeyForSelf":"c2VsZg=="}
                                 """))
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString()).get("id").asText();
         addMember(ALICE, collectionId, BOB, "EDITOR");
@@ -208,20 +202,19 @@ class CollectionsApiIntegrationTest {
                 .thenReturn(java.util.List.of(ALICE, BOB, CAROL));
 
         mockMvc.perform(as(get("/api/collections/" + collectionId
-                        + "/keycloak-suggestions?group=dev-team"), ALICE))
+                        + "/directory-suggestions?group=dev-team"), ALICE))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$[0]").value(CAROL));
         mockMvc.perform(as(get("/api/collections/" + collectionId
-                        + "/keycloak-suggestions?group=dev-team"), BOB))
+                        + "/directory-suggestions?group=dev-team"), BOB))
                 .andExpect(status().isForbidden());
     }
 
     @Test
     void groupSyncKeepsNewMemberPendingThenBlocksRemovedMemberUntilManagerRotates() throws Exception {
-        allowedGroups.save(new AllowedKeycloakGroup("dev-team"));
         String collectionId = objectMapper.readTree(mockMvc.perform(as(post("/api/collections"), ALICE)
                         .content("""
-                                {"name":"Managed by group","keycloakGroup":"dev-team","wrappedKeyForSelf":"c2VsZg=="}
+                                {"name":"Managed by group","directoryGroup":"dev-team","wrappedKeyForSelf":"c2VsZg=="}
                                 """))
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString()).get("id").asText();
         when(directory.memberEmails("dev-team")).thenReturn(java.util.List.of(ALICE, BOB));

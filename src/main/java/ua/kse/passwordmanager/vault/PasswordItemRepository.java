@@ -13,6 +13,10 @@ public interface PasswordItemRepository extends JpaRepository<PasswordItem, UUID
 
     List<PasswordItem> findByOwnerEmail(String ownerEmail);
 
+    /** Admin tag operations deliberately touch only server-synchronised data.
+     * Local-only records never reach this repository. */
+    List<PasswordItem> findBySyncMode(SyncMode syncMode);
+
     List<PasswordItem> findByCollectionIdInOrderByNameAsc(Collection<UUID> collectionIds);
 
     long countByCollectionId(UUID collectionId);

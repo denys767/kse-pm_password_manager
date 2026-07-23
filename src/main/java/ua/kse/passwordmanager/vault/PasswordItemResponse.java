@@ -32,25 +32,33 @@ public record PasswordItemResponse(
 
     public static PasswordItemResponse from(PasswordItem item, AccessRole accessRole,
                                             String wrappedKey) {
+        return from(item, accessRole, wrappedKey, true);
+    }
+
+    /** Metadata remains visible to all readers; encrypted password/notes and
+     * every route to the item key are withheld for restricted roles. */
+    public static PasswordItemResponse from(PasswordItem item, AccessRole accessRole,
+                                            String wrappedKey, boolean extensionClient) {
+        boolean includeMaterial = accessRole.mayReceivePasswordMaterial(extensionClient);
         return new PasswordItemResponse(
                 item.getId(),
                 item.getName(),
                 item.getUrl(),
                 item.getUsername(),
-                item.getEncryptedPassword(),
-                item.getPasswordIv(),
-                item.getEncryptedNotes(),
-                item.getNotesIv(),
+                includeMaterial ? item.getEncryptedPassword() : null,
+                includeMaterial ? item.getPasswordIv() : null,
+                includeMaterial ? item.getEncryptedNotes() : null,
+                includeMaterial ? item.getNotesIv() : null,
                 item.getTags(),
                 item.getOwnerEmail(),
                 item.getType(),
                 item.getItemType(),
                 item.getSyncMode(),
                 accessRole,
-                wrappedKey,
-                item.getCollectionId(),
-                item.getCollectionWrappedKey(),
-                item.getCollectionWrappedKeyIv(),
+                includeMaterial ? wrappedKey : null,
+                includeMaterial ? item.getCollectionId() : null,
+                includeMaterial ? item.getCollectionWrappedKey() : null,
+                includeMaterial ? item.getCollectionWrappedKeyIv() : null,
                 item.getCreatedAt(),
                 item.getUpdatedAt());
     }

@@ -52,7 +52,7 @@ export function UnlockScreen({ devMode, user, hasVault, startRecovery, onUnlock,
     async function beginRecovery() {
         setError(null); setRecovering(true);
         try { setImpact(await api<Impact>('/api/vault/reset-impact')); }
-        catch (e) { setError(`${(e as Error).message}. Після повторного входу спробуйте ще раз.`); }
+        catch (e) { setError(`${(e as Error).message}. ${tr('Після повторного входу спробуйте ще раз.', 'Sign in again and retry.')}`); }
     }
 
     useEffect(() => {
@@ -67,6 +67,13 @@ export function UnlockScreen({ devMode, user, hasVault, startRecovery, onUnlock,
         } else {
             reauthenticateForVaultReset();
         }
+    }
+
+    /** Leaves the reset screen and returns to the normal unlock screen without
+     * touching any encrypted material. */
+    function cancelRecovery() {
+        setRecovering(false); setImpact(null); setError(null);
+        setPassphrase(''); setConfirmation(''); setSuccessors({});
     }
 
     async function transfer(blocker: Impact['blockers'][number]) {
@@ -94,7 +101,8 @@ export function UnlockScreen({ devMode, user, hasVault, startRecovery, onUnlock,
                 {error && <p id="unlock-error" className="error">{error}</p>}
             </form>
             {hasVault && !recovering && <button className="linklike recovery-link" onClick={requestRecovery}>{tr('Забули Vault Passphrase?', 'Forgot your Vault passphrase?')}</button>}
-            {recovering && <div className="recovery-box">{impact?.blockers.length ? <><strong>Спершу передайте командні ресурси</strong><p>Новий власник уже має бути користувачем із доступом до запису або членом колекції.</p>{impact.blockers.map((b) => <div className="transfer-row" key={b.id}><span>{b.name} <small>({b.reason})</small></span><input type="email" placeholder="new.owner@kse.org.ua" value={successors[b.id] || ''} onChange={(e) => setSuccessors((s) => ({ ...s, [b.id]: e.target.value }))} /><button type="button" className="secondary small" disabled={busy} onClick={() => transfer(b)}>Передати</button></div>)}</> : <><strong>Незворотна дія</strong><p>Буде видалено {impact?.ownedItemsToDelete ?? 0} ваших записів і відкликано доступи. Team resources не видаляються.</p></>}</div>}
+            {recovering && <button id="recovery-back" className="linklike recovery-link" onClick={cancelRecovery}>{tr('← Повернутися назад', '← Go back')}</button>}
+            {recovering && <div className="recovery-box">{impact?.blockers.length ? <><strong>{tr('Спершу передайте командні ресурси', 'Transfer team resources first')}</strong><p>{tr('Новий власник уже має бути користувачем із доступом до запису або членом колекції.', 'The new owner must already be a user with access to the item or a member of the collection.')}</p>{impact.blockers.map((b) => <div className="transfer-row" key={b.id}><span>{b.name} <small>({b.reason})</small></span><input type="email" placeholder="new.owner@kse.org.ua" value={successors[b.id] || ''} onChange={(e) => setSuccessors((s) => ({ ...s, [b.id]: e.target.value }))} /><button type="button" className="secondary small" disabled={busy} onClick={() => transfer(b)}>{tr('Передати', 'Transfer')}</button></div>)}</> : <><strong>{tr('Незворотна дія', 'Irreversible action')}</strong><p>{tr(`Буде видалено ${impact?.ownedItemsToDelete ?? 0} ваших записів і відкликано доступи. Team resources не видаляються.`, `${impact?.ownedItemsToDelete ?? 0} of your items will be deleted and their shares revoked. Team resources are not deleted.`)}</p></>}</div>}
         </div>
     </section>;
 }

@@ -6,7 +6,7 @@ import { loadLocalItems } from '../localItems';
 import { estimateStrength, hibpBreachCounts } from '../passwords';
 import type { Session } from '../App';
 import type { Collection, PasswordItem } from '../types';
-import { useI18n } from '../i18n';
+import { useI18n, type Language } from '../i18n';
 
 const OLD_PASSWORD_DAYS = 90;
 
@@ -51,12 +51,12 @@ export function DashboardTab({ session, collections, onOpenItem }: Props) {
             for (const { item, password } of readable) {
                 if (estimateStrength(password).score <= 1) next.weak.push({ item });
                 if (now - new Date(item.updatedAt).getTime() >= OLD_PASSWORD_DAYS * 86_400_000) {
-                    next.old.push({ item, detail: formatAge(item.updatedAt) });
+                    next.old.push({ item, detail: formatAge(item.updatedAt, language) });
                 }
                 passwords.set(password, [...(passwords.get(password) ?? []), item]);
             }
             for (const group of passwords.values()) {
-                if (group.length > 1) group.forEach((item) => next.reused.push({ item, detail: `${group.length} записи` }));
+                if (group.length > 1) group.forEach((item) => next.reused.push({ item, detail: tr(`${group.length} записи`, `${group.length} items`) }));
             }
 
             // Keep the offline findings useful even if the optional public HIBP
@@ -66,7 +66,8 @@ export function DashboardTab({ session, collections, onOpenItem }: Props) {
             try {
                 const breachCounts = await hibpBreachCounts([...passwords.keys()]);
                 for (const [password, count] of breachCounts) {
-                    if (count > 0) passwords.get(password)!.forEach((item) => next.breached.push({ item, detail: `${count.toLocaleString('uk-UA')} витоків` }));
+                    if (count > 0) passwords.get(password)!.forEach((item) => next.breached.push({ item,
+                        detail: tr(`${count.toLocaleString('uk-UA')} витоків`, `${count.toLocaleString('en-US')} breaches`) }));
                 }
             } catch (hibpError) {
                 setError(`HIBP: ${(hibpError as Error).message}`);
@@ -77,7 +78,10 @@ export function DashboardTab({ session, collections, onOpenItem }: Props) {
             setError((e as Error).message);
             setStatus('');
         }
-    }, [collections, session]);
+        // `language` is a dependency because the finding details ("3 items",
+        // "12 days ago") are built here, so a language switch has to rebuild them.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [collections, session, language]);
 
     useEffect(() => { analyse(); }, [analyse]);
     const categories: Array<[keyof Findings, string, string]> = [
@@ -106,7 +110,7 @@ export function DashboardTab({ session, collections, onOpenItem }: Props) {
     </section>;
 }
 
-function formatAge(updatedAt: string): string {
-    const days = Math.floor((Date.now() - new Date(updatedAt).getTime()) / 86_400_000);
-    return `${Math.max(days, 0)} днів тому`;
+function formatAge(updatedAt: string, language: Language): string {
+    const days = Math.max(Math.floor((Date.now() - new Date(updatedAt).getTime()) / 86_400_000), 0);
+    return language === 'uk' ? `${days} днів тому` : `${days} days ago`;
 }

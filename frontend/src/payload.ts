@@ -11,6 +11,13 @@ export interface SecretPayload {
     apiKey: string;
     apiSecret: string;
     sshPrivateKey: string;
+    sshPublicKey: string;
+    databaseType: string;
+    databaseHost: string;
+    databasePort: string;
+    databaseName: string;
+    databaseUsername: string;
+    databasePassword: string;
     cardNumber: string;
     cardCvv: string;
     cardHolder: string;
@@ -19,7 +26,8 @@ export interface SecretPayload {
 }
 
 export const emptyPayload = (): SecretPayload => ({
-    version: 1, notes: '', apiKey: '', apiSecret: '', sshPrivateKey: '',
+    version: 1, notes: '', apiKey: '', apiSecret: '', sshPrivateKey: '', sshPublicKey: '',
+    databaseType: '', databaseHost: '', databasePort: '', databaseName: '', databaseUsername: '', databasePassword: '',
     cardNumber: '', cardCvv: '', cardHolder: '', cardExpiry: '', totpSeed: '',
 });
 
@@ -40,5 +48,6 @@ export function serializePayload(payload: SecretPayload): string {
 
 export function primarySecretLabel(type: SecretType): string {
     return type === 'API_CREDENTIALS' ? 'API token' : type === 'SSH_KEY' ? 'Passphrase ключа'
+        : type === 'DATABASE' ? 'Пароль бази даних'
         : type === 'CARD' ? 'PIN / додатковий секрет' : type === 'SECURE_NOTE' ? 'Додатковий секрет' : 'Пароль';
 }

@@ -74,6 +74,19 @@ public class ExternalShareService {
                 shareId.toString(), null);
     }
 
+    @Transactional
+    public ExternalShareDtos.CreatedResponse extend24Hours(CurrentUser user, UUID itemId, UUID shareId) {
+        ownedItem(user, itemId);
+        ExternalShare share = shares.findByIdAndOwnerEmail(shareId, user.email())
+                .filter(candidate -> candidate.getItem().getId().equals(itemId))
+                .orElseThrow(() -> new NotFoundException("External share not found"));
+        Instant base = share.getExpiresAt().isAfter(Instant.now()) ? share.getExpiresAt() : Instant.now();
+        share.setExpiresAt(base.plusSeconds(86_400));
+        audit.record(user.email(), AuditAction.EXTERNAL_SHARE_EXTENDED, itemId, share.getItem().getName(),
+                shareId.toString(), "expiresAt=" + share.getExpiresAt() + ", oneTime=" + share.isOneTime());
+        return new ExternalShareDtos.CreatedResponse(share.getId(), share.getExpiresAt(), share.isOneTime());
+    }
+
     private PasswordItem ownedItem(CurrentUser user, UUID itemId) {
         PasswordItem item = items.findById(itemId)
                 .orElseThrow(() -> new NotFoundException("Item not found"));

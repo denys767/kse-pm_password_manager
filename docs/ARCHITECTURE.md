@@ -17,7 +17,7 @@ Reverse proxy (nginx / traefik — TLS termination, prod)
 ```
 
 - **Frontend** — статичний shell (`src/main/resources/static`), шифрує секрети в браузері через WebCrypto до відправки на сервер.
-- **Backend** — Spring Boot 3 (Java 21), модулі-пакети: `auth`, `vault`, `sharing`, `collections`, `keycloak`, `audit`, `settings`, `common`. `keycloak.KeycloakAdminClient` має лише service-account read scope і використовується для підказок складу Collections.
+- **Backend** — Spring Boot 3 (Java 21), модулі-пакети: `auth`, `vault`, `sharing`, `collections`, `directory`, `audit`, `settings`, `common`. Підказки складу Collections читаються з Google Workspace Directory API (`directory.WorkspaceDirectoryClient`), read-only; Keycloak Admin API не використовується.
 - **Keycloak** — identity broker для Google Workspace, видає JWT; backend — OAuth2 resource server.
 - **PostgreSQL** — зберігає тільки ciphertext паролів/notes, метадані, permissions та audit events.
 
@@ -40,7 +40,7 @@ Reverse proxy (nginx / traefik — TLS termination, prod)
 - Ротація (пункт 9) захищає лише майбутні зміни й майбутні читання через API — не захист від пристрою, що вже мав ciphertext на момент компрометації (властивість crypto-shredding, не баг).
 - Metadata (назва, URL, username, теги) зберігаються відкрито заради пошуку — за потреби їх теж можна шифрувати.
 - KDF версіонується per-keypair (`PBKDF2`/`ARGON2ID`) — нема глобальної примусової міграції, старі keypair-и лишаються на PBKDF2 назавжди, якщо власник не змінить passphrase (що перевиводить KEK і може оновити алгоритм).
-- Keycloak Admin API лише підказує склад колекції: `keycloak_group` → diff email-ів; MANAGER явно вибирає адреси, а браузер окремо RSA-обгортає collection key для кожної. Тому Keycloak-група сама по собі не дає доступу до ciphertext. **Live-перевірка пройдена** з Keycloak 26 `dev-team`: diff містив лише користувача, якого ще не було в колекції, а доступ з’явився тільки після явного browser-side wrapping.
+- Google Workspace Directory API лише підказує склад колекції: група → diff email-ів; MANAGER явно вибирає адреси, а браузер окремо RSA-обгортає collection key для кожної. Тому членство в групі саме по собі не дає доступу до ciphertext.
 - Keycloak login audit отримується лише через internal shared-secret endpoint, а не через JWT-користувача. **Live endpoint, збереження та brute-force anomaly перевірені** authenticated `curl`-подіями; **автоматична доставка від Keycloak** лишається не верифікованою, бо для Keycloak 26 потрібен окремий HTTP Event Listener provider. Див. [KEYCLOAK.md](KEYCLOAK.md).
 
 ## Модель ролей
@@ -78,7 +78,7 @@ Reverse proxy (nginx / traefik — TLS termination, prod)
 | PUT | `/api/vault/items/{id}/collection` | Додати/зняти запис з колекції (owner) |
 | GET/POST | `/api/collections` | Мої колекції / створення |
 | GET/POST | `/api/collections/{id}/members` | Члени колекції / додати (manager) |
-| GET | `/api/collections/{id}/keycloak-suggestions?group=…` | Diff email-ів Keycloak-групи без автоматичного доступу (manager) |
+| GET | `/api/collections/{id}/directory-suggestions?group=…` | Diff email-ів Google-групи без автоматичного доступу (manager) |
 | PUT/DELETE | `/api/collections/{id}/members/{memberId}` | Змінити роль / revoke (manager) |
 | POST | `/api/collections/{id}/rotate-key` | Ротація collection key (manager, перед видаленням члена) |
 | DELETE | `/api/collections/{id}` | Видалити порожню колекцію (owner) |

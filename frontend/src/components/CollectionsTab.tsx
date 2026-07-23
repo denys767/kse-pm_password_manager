@@ -3,6 +3,7 @@ import { api, ApiError } from '../api';
 import * as pmc from '../crypto';
 import { unwrapCollectionKey } from '../itemKeys';
 import { IconTrash, IconUser } from './Icons';
+import { DirectoryPicker } from './DirectoryPicker';
 import { useI18n } from '../i18n';
 import type { Session } from '../App';
 import type { Collection, CollectionMemberInfo, CollectionRole, PasswordItem } from '../types';
@@ -16,7 +17,7 @@ interface Props {
 export function CollectionsTab({ session, collections, onChanged }: Props) {
     const { t } = useI18n();
     const [name, setName] = useState('');
-    const [keycloakGroup, setKeycloakGroup] = useState('');
+    const [directoryGroup, setDirectoryGroup] = useState('');
     const [availableGroups, setAvailableGroups] = useState<string[]>([]);
     const [error, setError] = useState<string | null>(null);
     const [expanded, setExpanded] = useState<string | null>(null);
@@ -48,10 +49,10 @@ export function CollectionsTab({ session, collections, onChanged }: Props) {
             const wrappedKeyForSelf = await pmc.wrapItemKey(collectionKey, session.keys.publicKey);
             await api('/api/collections', {
                 method: 'POST',
-                    body: JSON.stringify({ name: name.trim(), keycloakGroup: keycloakGroup.trim() || null, wrappedKeyForSelf }),
+                    body: JSON.stringify({ name: name.trim(), directoryGroup: directoryGroup.trim() || null, wrappedKeyForSelf }),
             });
             setName('');
-            setKeycloakGroup('');
+            setDirectoryGroup('');
             await onChanged();
         } catch (e) {
             setError((e as Error).message);
@@ -78,7 +79,7 @@ export function CollectionsTab({ session, collections, onChanged }: Props) {
             recipient = await api(`/api/keys/${encodeURIComponent(email)}`);
         } catch (e) {
             throw (e as ApiError).status === 404
-                ? new Error(`У ${email} ще немає ключів — користувач має увійти у vault хоча б раз.`)
+                ? new Error(t('noKeysForUser', { user: email }))
                 : e;
         }
         // A suggestion never grants access: manager's browser explicitly wraps
@@ -105,7 +106,7 @@ export function CollectionsTab({ session, collections, onChanged }: Props) {
     }
 
     async function syncGroup(collection: Collection) {
-        if (!collection.keycloakGroup) return;
+        if (!collection.directoryGroup) return;
         setError(null);
         try {
             await api(`/api/collections/${collection.id}/sync-group`, { method: 'POST' });
@@ -187,7 +188,7 @@ export function CollectionsTab({ session, collections, onChanged }: Props) {
             <div className="toolbar">
                 <input id="collection-name" placeholder={t('collectionName')}
                        value={name} onChange={(e) => setName(e.target.value)} />
-                <select id="directory-group" value={keycloakGroup} onChange={(e) => setKeycloakGroup(e.target.value)}>
+                <select id="directory-group" value={directoryGroup} onChange={(e) => setDirectoryGroup(e.target.value)}>
                     <option value="">Без доменної групи</option>
                     {availableGroups.map((group) => <option key={group} value={group}>{group}</option>)}
                 </select>
@@ -246,9 +247,11 @@ export function CollectionsTab({ session, collections, onChanged }: Props) {
                                     </ul>
                                     {collection.myRole === 'MANAGER' && (<>
                                         <div className="row">
-                                            <input id="member-email" placeholder="email колеги"
+                                            <DirectoryPicker id="member-email" types="USER"
+                                                   placeholder={t('directoryUserPlaceholder')}
                                                    value={memberForm.email}
-                                                   onChange={(e) => setMemberForm({ ...memberForm, email: e.target.value })} />
+                                                   onTextChange={(text) => setMemberForm((form) => ({ ...form, email: text }))}
+                                                   onSelect={(principal) => setMemberForm((form) => ({ ...form, email: principal.email }))} />
                                             <select id="member-role" value={memberForm.role}
                                                     onChange={(e) => setMemberForm({ ...memberForm, role: e.target.value as CollectionRole })}>
                                                 <option value="VIEWER">Viewer</option>
@@ -257,7 +260,7 @@ export function CollectionsTab({ session, collections, onChanged }: Props) {
                                             </select>
                                             <button type="button" id="add-member-btn" className="secondary"
                                                     onClick={() => addMember(collection)}>Add</button>
-                                            {collection.keycloakGroup && <button type="button" id="sync-group-btn" className="secondary"
+                                            {collection.directoryGroup && <button type="button" id="sync-group-btn" className="secondary"
                                                     onClick={() => syncGroup(collection)}>Sync group</button>}
                                         </div>
                                         {collection.pendingProvisioningCount > 0 && <p className="hint" id="pending-provisioning-banner">New group members have no access until you click “Provision key”.</p>}

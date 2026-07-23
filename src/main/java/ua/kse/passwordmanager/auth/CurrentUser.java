@@ -7,4 +7,8 @@ public record CurrentUser(String email, String displayName, Set<String> roles, S
     public boolean canReadAudit() {
         return roles.contains("ADMIN") || roles.contains("SECURITY");
     }
+
+    public boolean isAdmin() {
+        return roles.contains("ADMIN");
+    }
 }

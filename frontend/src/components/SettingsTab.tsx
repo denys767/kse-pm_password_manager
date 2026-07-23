@@ -105,6 +105,7 @@ export function SettingsTab({ settings, onSaved, config }: Props) {
                 <div className="card narrow" style={{ marginTop: 18 }}>
                     <h3>{t('account')}</h3>
                     <p className="hint">{t('accountDescription')}</p>
+                    <p id="passkey-optional-hint" className="hint">{t('passkeyOptionalHint')}</p>
                     <a id="account-console-btn" href={`${config.keycloakUrl}/realms/${encodeURIComponent(config.realm ?? '')}/account/`}
                        target="_blank" rel="noopener noreferrer">
                         <button type="button">{t('accountConsole')}</button>

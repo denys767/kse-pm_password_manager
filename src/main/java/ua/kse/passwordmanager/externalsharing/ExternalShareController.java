@@ -36,6 +36,13 @@ public class ExternalShareController {
         service.revoke(auth.current(), itemId, shareId);
     }
 
+    /** Extend the existing encrypted package without rotating its id or URL. */
+    @PostMapping("/api/vault/items/{itemId}/external-shares/{shareId}/extend-24-hours")
+    public ExternalShareDtos.CreatedResponse extend24Hours(@PathVariable UUID itemId,
+            @PathVariable UUID shareId) {
+        return service.extend24Hours(auth.current(), itemId, shareId);
+    }
+
     @GetMapping("/api/external-shares/{shareId}")
     public ExternalShareDtos.PublicPackageResponse read(@PathVariable UUID shareId) {
         return service.read(shareId);

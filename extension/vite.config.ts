@@ -12,6 +12,7 @@ export default defineConfig({
                 offscreen: resolve(__dirname, 'src/offscreen.ts'),
                 'crypto-test': resolve(__dirname, 'src/crypto.test.ts'),
                 'origin-test': resolve(__dirname, 'src/origin.test.ts'),
+                'webauthn-test': resolve(__dirname, 'src/webauthn.test.ts'),
             },
             output: {
                 entryFileNames: '[name].js',

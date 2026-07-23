@@ -37,17 +37,22 @@ public class DevSecurityConfig {
     public static final String USER_HEADER = "X-Dev-User";
     public static final String ROLES_HEADER = "X-Dev-Roles";
     public static final String GROUPS_HEADER = "X-Dev-Groups";
+    public static final String OAUTH_CLIENT_HEADER = "X-Dev-OAuth-Client";
+    public static final String OAUTH_AUDIENCE_HEADER = "X-Dev-OAuth-Audience";
 
     @Bean
-    public SecurityFilterChain devFilterChain(HttpSecurity http) throws Exception {
+    public SecurityFilterChain devFilterChain(HttpSecurity http, GovernedAuthenticationFilter governedAuthenticationFilter,
+                                              PasskeyExtensionClientFilter passkeyExtensionClientFilter) throws Exception {
         http
                 .csrf(csrf -> csrf.disable())
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/api/health", "/api/config", "/api/audit/keycloak-events", "/api/external-shares/**", "/actuator/health").permitAll()
-                        .requestMatchers("/api/**").authenticated()
-                        .anyRequest().permitAll())
-                .addFilterBefore(new DevUserFilter(), AnonymousAuthenticationFilter.class);
+                .requestMatchers("/api/**").authenticated()
+                .anyRequest().permitAll())
+                .addFilterBefore(new DevUserFilter(), AnonymousAuthenticationFilter.class)
+                .addFilterAfter(governedAuthenticationFilter, DevUserFilter.class)
+                .addFilterAfter(passkeyExtensionClientFilter, GovernedAuthenticationFilter.class);
         return http.build();
     }
 
@@ -63,10 +68,16 @@ public class DevSecurityConfig {
                         .collect(Collectors.toUnmodifiableSet());
                 Set<String> groups = Set.copyOf(splitHeader(request.getHeader(GROUPS_HEADER), null));
                 CurrentUser user = new CurrentUser(email.toLowerCase(Locale.ROOT), email, roles, groups);
+                // Header roles are a development-only identity seed. A provisioned
+                // Workspace user is replaced by GovernedAuthenticationFilter.
                 List<GrantedAuthority> authorities = roles.stream()
-                        .<GrantedAuthority>map(r -> new SimpleGrantedAuthority("ROLE_" + r))
-                        .toList();
+                        .<GrantedAuthority>map(role -> new SimpleGrantedAuthority("ROLE_" + role)).toList();
                 var authentication = new UsernamePasswordAuthenticationToken(user, null, authorities);
+                boolean extensionClient = "kse-pm-extension".equals(request.getHeader(OAUTH_CLIENT_HEADER))
+                        && request.getHeader(OAUTH_AUDIENCE_HEADER) != null
+                        && Arrays.asList(request.getHeader(OAUTH_AUDIENCE_HEADER).split(","))
+                                .stream().map(String::trim).anyMatch("kse-pm-extension"::equals);
+                authentication.setDetails(new AuthFacade.ClientAccess(extensionClient));
                 SecurityContextHolder.getContext().setAuthentication(authentication);
             }
             filterChain.doFilter(request, response);

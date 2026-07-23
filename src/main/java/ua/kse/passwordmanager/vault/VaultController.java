@@ -4,6 +4,8 @@ import jakarta.validation.Valid;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -11,10 +13,13 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import ua.kse.passwordmanager.auth.AuthFacade;
+import ua.kse.passwordmanager.attachment.AttachmentMetadataResponse;
+import ua.kse.passwordmanager.attachment.AttachmentService;
 
 @RestController
 @RequestMapping("/api/vault/items")
@@ -22,15 +27,17 @@ public class VaultController {
 
     private final VaultService vaultService;
     private final AuthFacade authFacade;
+    private final AttachmentService attachments;
 
-    public VaultController(VaultService vaultService, AuthFacade authFacade) {
+    public VaultController(VaultService vaultService, AuthFacade authFacade, AttachmentService attachments) {
         this.vaultService = vaultService;
         this.authFacade = authFacade;
+        this.attachments = attachments;
     }
 
     @GetMapping
     public List<PasswordItemResponse> list() {
-        return vaultService.list(authFacade.current());
+        return vaultService.list(authFacade.current(), authFacade.isExtensionClient());
     }
 
     @PostMapping
@@ -41,7 +48,7 @@ public class VaultController {
 
     @GetMapping("/{id}")
     public PasswordItemResponse get(@PathVariable UUID id) {
-        return vaultService.get(authFacade.current(), id);
+        return vaultService.get(authFacade.current(), id, authFacade.isExtensionClient());
     }
 
     @PutMapping("/{id}")
@@ -88,4 +95,25 @@ public class VaultController {
                                           @Valid @RequestBody RotateKeyRequest request) {
         return vaultService.rotateKey(authFacade.current(), id, request);
     }
+
+    @PutMapping(value = "/{id}/attachment", consumes = MediaType.APPLICATION_OCTET_STREAM_VALUE)
+    public AttachmentMetadataResponse uploadAttachment(@PathVariable UUID id,
+            @RequestHeader("X-Kse-Attachment-Metadata") String metadata, @RequestBody byte[] ciphertext) {
+        return attachments.upload(authFacade.current(), id, metadata, ciphertext);
+    }
+
+    @GetMapping("/{id}/attachment")
+    public AttachmentMetadataResponse attachmentMetadata(@PathVariable UUID id) {
+        return attachments.metadata(authFacade.current(), id, authFacade.isExtensionClient());
+    }
+
+    @GetMapping(value = "/{id}/attachment/content", produces = MediaType.APPLICATION_OCTET_STREAM_VALUE)
+    public ResponseEntity<byte[]> downloadAttachment(@PathVariable UUID id) {
+        return ResponseEntity.ok().contentType(MediaType.APPLICATION_OCTET_STREAM)
+                .body(attachments.download(authFacade.current(), id, authFacade.isExtensionClient()));
+    }
+
+    @DeleteMapping("/{id}/attachment")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void deleteAttachment(@PathVariable UUID id) { attachments.delete(authFacade.current(), id); }
 }

@@ -13,7 +13,7 @@ public final class CollectionDtos {
 
     public record CreateCollectionRequest(
             @NotBlank @Size(max = 255) String name,
-            @Size(max = 255) String keycloakGroup,
+            @Size(max = 255) String directoryGroup,
             /** Collection key wrapped with the creator's own public key. */
             @NotBlank @Size(max = 4096) String wrappedKeyForSelf) {
     }
@@ -22,7 +22,7 @@ public final class CollectionDtos {
             UUID id,
             String name,
             String ownerEmail,
-            String keycloakGroup,
+            String directoryGroup,
             CollectionRole myRole,
             /** Collection key wrapped for the requesting member. */
             String myWrappedKey,
@@ -34,7 +34,7 @@ public final class CollectionDtos {
         static CollectionResponse from(Collection collection, CollectionMember me, int memberCount,
                                        int pendingProvisioningCount, int pendingRemovalCount) {
             return new CollectionResponse(collection.getId(), collection.getName(),
-                    collection.getOwnerEmail(), collection.getKeycloakGroup(), me.getRole(), me.getWrappedKey(), memberCount,
+                    collection.getOwnerEmail(), collection.getDirectoryGroup(), me.getRole(), me.getWrappedKey(), memberCount,
                     pendingProvisioningCount, pendingRemovalCount,
                     collection.getCreatedAt());
         }

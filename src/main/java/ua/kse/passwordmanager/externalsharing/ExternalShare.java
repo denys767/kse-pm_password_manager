@@ -68,6 +68,7 @@ public class ExternalShare {
     public String getEncryptedPackage() { return encryptedPackage; }
     public String getPackageIv() { return packageIv; }
     public Instant getExpiresAt() { return expiresAt; }
+    public void setExpiresAt(Instant expiresAt) { this.expiresAt = expiresAt; }
     public boolean isOneTime() { return oneTime; }
     public boolean isExpiredAudited() { return expiredAudited; }
     public void setExpiredAudited(boolean expiredAudited) { this.expiredAudited = expiredAudited; }

@@ -79,7 +79,7 @@ async function offerAutofill(): Promise<void> {
         window.addEventListener('scroll', place, true);
         button.addEventListener('click', async (event) => {
             event.preventDefault();
-            const item = matches.length === 1 ? matches[0] : matches[0]; // MVP: first match; open the popup for a picker with several.
+            const item = matches[0]; // MVP: first match; open the popup for a picker with several.
             try { await send({ type: 'autofill', item }); } catch (e) { toast((e as Error).message); }
         });
         document.body.appendChild(button);

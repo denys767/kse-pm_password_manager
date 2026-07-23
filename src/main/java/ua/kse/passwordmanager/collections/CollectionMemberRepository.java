@@ -20,4 +20,6 @@ public interface CollectionMemberRepository extends JpaRepository<CollectionMemb
     void deleteByCollectionId(UUID collectionId);
 
     void deleteByCollectionIdAndMemberEmail(UUID collectionId, String memberEmail);
+
+    void deleteByMemberEmail(String memberEmail);
 }

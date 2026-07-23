@@ -51,6 +51,26 @@ VITE_API_ORIGIN=https://pm.example.com VITE_OIDC_CLIENT_ID=kse-pm-extension npm 
   same way the web app's Add/Edit dialog stores it — the code then shows up in both places.
   Cross-origin images with no CORS headers taint the canvas and are silently skipped (browser
   security, not a bug — screenshot or same-origin-served QR images work).
+- **Vault passkeys (Chrome 115+)** — after unlock, the MV3 service worker
+  attaches `chrome.webAuthenticationProxy` and offers ES256 credentials whose
+  private JWK is AES-GCM encrypted under a distinct per-credential key. That
+  key is RSA-OAEP-wrapped to the vault user, separately from any record key.
+  The provider detaches immediately on lock/logout. If no eligible matching
+  credential exists, it detaches and returns a clear retry message, so Chrome's
+  system authenticator handles the next request instead of an opaque login
+  failure. The proxy refuses an RP/origin/options mismatch and increments the
+  server-side signature counter atomically before returning an assertion.
+
+### Special sharing roles
+
+`AUTOFILL_ONLY` is deliberately released only to a token whose `azp` **and**
+`aud` equal the dedicated extension OAuth client. The regular web vault API
+redacts its encrypted password/notes and every item-key route. This is policy
+enforcement, not a cryptographic guarantee after the extension has filled a
+page: the destination page can read the values it receives. `PASSKEY_ONLY`
+never receives an item/password key; it can use only a separately wrapped
+matching passkey through `/api/passkeys`, which also requires that same OAuth
+client/audience. Configure a Keycloak audience mapper for `kse-pm-extension`.
 
 In Keycloak create (or configure) a separate public OIDC client for the extension. Its valid redirect URI must be the **exact** value Chrome displays for this installed extension:
 

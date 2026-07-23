@@ -7,8 +7,6 @@ import java.util.stream.Collectors;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import ua.kse.passwordmanager.auth.CurrentUser;
-import ua.kse.passwordmanager.common.BadRequestException;
 import ua.kse.passwordmanager.directory.DirectoryPrincipal;
 import ua.kse.passwordmanager.directory.WorkspaceDirectoryClient;
 import ua.kse.passwordmanager.audit.AuditAction;
@@ -35,22 +33,9 @@ public class CollectionGroupService {
         return directory.search("", List.of(DirectoryPrincipal.Type.GROUP), 100).stream().map(DirectoryPrincipal::email).toList();
     }
 
-    /** Kept only for backwards-compatible admin endpoint; there is no local allowlist anymore. */
-    @Transactional(readOnly = true) public List<String> allowlist() { return available(); }
-
-    /** Every group that currently exists in Keycloak, allowlisted or not — lets an admin pick from real groups instead of typing blind. */
-    public List<String> keycloakGroups() { return available(); }
-
-    @Transactional
-    public String allow(CurrentUser user, String rawName) {
-        return normalize(rawName);
-    }
-
-    @Transactional
-    public void disallow(CurrentUser user, String rawName) { /* Google owns groups; no local mutation. */ }
-
+    /** True when the group still exists in Google Workspace. */
     @Transactional(readOnly = true)
-    public boolean isAllowed(String rawName) {
+    public boolean exists(String rawName) {
         return rawName != null && !rawName.isBlank()
                 && directory.find(DirectoryPrincipal.Type.GROUP, rawName.trim()).isPresent();
     }
@@ -58,7 +43,7 @@ public class CollectionGroupService {
     /** Records group changes, but never wraps or exposes a collection key. */
     @Transactional
     public void sync(Collection collection, String actor) {
-        String group = collection.getKeycloakGroup();
+        String group = collection.getDirectoryGroup();
         if (group == null) return;
         Set<String> groupMembers = directory.memberEmails(group).stream()
                 .map(email -> email.trim().toLowerCase(Locale.ROOT))
@@ -93,14 +78,9 @@ public class CollectionGroupService {
 
     @Scheduled(fixedDelayString = "${pm.collection-group-sync-delay-ms:300000}")
     public void syncAllManagedCollections() {
-        for (Collection collection : collections.findByKeycloakGroupIsNotNull()) {
+        for (Collection collection : collections.findByDirectoryGroupIsNotNull()) {
             try { sync(collection, "system:collection-group-sync"); }
             catch (RuntimeException ignored) { /* next scheduled pass retries without changing local membership */ }
         }
-    }
-
-    private static String normalize(String value) {
-        if (value == null || value.isBlank()) throw new BadRequestException("group is required");
-        return value.trim();
     }
 }

@@ -35,6 +35,11 @@ public class ApiExceptionHandler {
         return error(HttpStatus.BAD_GATEWAY, e.getMessage());
     }
 
+    @ExceptionHandler(QuotaExceededException.class)
+    public ResponseEntity<Map<String, String>> quotaExceeded(QuotaExceededException e) {
+        return error(HttpStatus.INSUFFICIENT_STORAGE, e.getMessage());
+    }
+
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<Map<String, String>> validation(MethodArgumentNotValidException e) {
         var fieldError = e.getBindingResult().getFieldErrors().stream().findFirst();
