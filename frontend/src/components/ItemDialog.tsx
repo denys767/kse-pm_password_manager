@@ -1045,7 +1045,10 @@ export function ItemDialog({ session, settings, collections, item, availableTags
                                             ? <IconUsers />
                                             : shareAvatars[p.grantee.toLowerCase()]
                                                 ? <img className="avatar" src={shareAvatars[p.grantee.toLowerCase()]!} alt="" width={20} height={20} />
-                                                : <IconUser />} {p.grantee} — {p.role.toLowerCase()}</span>
+                                                : <IconUser />} {p.grantee} — {p.role.toLowerCase()}
+                                            {p.granteeType === 'GROUP' && p.groupVisibleToUsers === false && <span className="badge hidden-group" title={t('groupHiddenTooltip')}>
+                                                <IconEyeOff /> {t('groupHiddenBadge')}
+                                            </span>}</span>
                                         <span className="row">
                                             {p.granteeType === 'GROUP' && p.status === 'ACTIVE' && <button type="button" className="secondary small" onClick={() => provisionGroup(p)}>{tr('Видати ключі', 'Provision')}</button>}
                                             <button type="button" className="secondary small" onClick={() => revoke(p.id)}>{t('revoke')}</button>

@@ -17,13 +17,16 @@ public record PermissionResponse(
         String directoryDisplayName,
         /** Set for group shares until collections land: members without a
          * provisioned wrapped key cannot decrypt the item. */
-        String warning) {
+        String warning,
+        /** Null for USER grantees. For GROUP grantees, whether workspace
+         * governance currently marks this group visible to non-admin users. */
+        Boolean groupVisibleToUsers) {
 
     public static PermissionResponse from(Permission permission) {
-        return from(permission, null);
+        return from(permission, null, null);
     }
 
-    public static PermissionResponse from(Permission permission, String warning) {
+    public static PermissionResponse from(Permission permission, String warning, Boolean groupVisibleToUsers) {
         return new PermissionResponse(
                 permission.getId(),
                 permission.getGranteeType(),
@@ -34,6 +37,7 @@ public record PermissionResponse(
                 permission.getStatus(),
                 permission.getDirectorySubjectId(),
                 permission.getDirectoryDisplayName(),
-                warning);
+                warning,
+                groupVisibleToUsers);
     }
 }

@@ -49,7 +49,7 @@ class CollectionsApiIntegrationTest {
     @BeforeEach
     void directoryHasTestGroup() {
         when(directory.find(any(), any())).thenAnswer(invocation -> java.util.Optional.of(
-                new DirectoryPrincipal(DirectoryPrincipal.Type.GROUP, invocation.getArgument(1), "dev-team", "Dev team", false, 3L, null)));
+                new DirectoryPrincipal(DirectoryPrincipal.Type.GROUP, invocation.getArgument(1), "dev-team", "Dev team", false, 3L, true, null)));
     }
 
     private MockHttpServletRequestBuilder as(MockHttpServletRequestBuilder request, String email) {

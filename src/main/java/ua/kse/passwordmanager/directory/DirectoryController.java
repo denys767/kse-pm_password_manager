@@ -26,13 +26,25 @@ public class DirectoryController {
                 .filter(s -> !s.isBlank()).map(String::toUpperCase).map(DirectoryPrincipal.Type::valueOf).toList();
         boolean admin = auth.current().isAdmin();
         return directory.search(query, requested, 50).stream()
-                .filter(principal -> principal.type() != DirectoryPrincipal.Type.GROUP || admin
-                        || groups.findById(principal.email().toLowerCase()).map(WorkspaceGroup::isVisibleToUsers).orElse(false))
+                .map(this::withVisibility)
+                // Non-admins never see a hidden group at all; admins see every group,
+                // with visibleToUsers letting the UI mark the hidden ones explicitly.
+                .filter(principal -> principal.type() != DirectoryPrincipal.Type.GROUP || admin || principal.visibleToUsers())
                 // Avatars come from the local snapshot: the picker fires on every
                 // keystroke, and a photo round-trip per suggestion would both be
                 // slow and burn Directory quota.
                 .map(this::withAvatar)
                 .toList();
+    }
+
+    /** Governance state lives locally, not in the Directory response. */
+    private DirectoryPrincipal withVisibility(DirectoryPrincipal principal) {
+        if (principal.type() != DirectoryPrincipal.Type.GROUP) return principal;
+        boolean visible = groups.findById(principal.email().toLowerCase())
+                .map(WorkspaceGroup::isVisibleToUsers).orElse(false);
+        return new DirectoryPrincipal(principal.type(), principal.id(), principal.email(),
+                principal.displayName(), principal.vaultKeyAvailable(), principal.memberCount(),
+                visible, principal.avatarDataUrl());
     }
 
     private DirectoryPrincipal withAvatar(DirectoryPrincipal principal) {

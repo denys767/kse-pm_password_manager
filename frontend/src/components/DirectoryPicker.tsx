@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import { useI18n } from '../i18n';
-import { IconUser, IconUsers } from './Icons';
+import { IconEyeOff, IconUser, IconUsers } from './Icons';
 import type { DirectoryPrincipal } from '../types';
 
 interface Props {
@@ -24,7 +24,7 @@ interface Props {
  * email address can still be typed and shared directly.
  */
 export function DirectoryPicker({ id, types = 'USER,GROUP', value, placeholder, disabled, onTextChange, onSelect }: Props) {
-    const { language } = useI18n();
+    const { language, t } = useI18n();
     const tr = (uk: string, en: string) => (language === 'uk' ? uk : en);
     const [matches, setMatches] = useState<DirectoryPrincipal[]>([]);
     const [hint, setHint] = useState<string | null>(null);
@@ -115,18 +115,24 @@ export function DirectoryPicker({ id, types = 'USER,GROUP', value, placeholder, 
                 {loading && matches.length === 0 && <li className="directory-loading">
                     <span className="spinner" aria-hidden="true" /> {tr('Пошук…', 'Searching…')}
                 </li>}
-                {matches.map((principal, index) => <li key={`${principal.type}:${principal.id}`}>
-                    <button type="button" className={`linklike${index === active ? ' active' : ''}`}
-                            onMouseEnter={() => setActive(index)}
-                            onClick={() => choose(principal)}>
-                        {principal.type === 'GROUP'
-                            ? <IconUsers />
-                            : principal.avatarDataUrl
-                                ? <img className="avatar" src={principal.avatarDataUrl} alt="" width={20} height={20} />
-                                : <IconUser />}
-                        {' '}{principal.displayName} — {principal.email}
-                    </button>
-                </li>)}
+                {matches.map((principal, index) => {
+                    const hidden = principal.type === 'GROUP' && !principal.visibleToUsers;
+                    return <li key={`${principal.type}:${principal.id}`}>
+                        <button type="button" className={`linklike${index === active ? ' active' : ''}`}
+                                onMouseEnter={() => setActive(index)}
+                                onClick={() => choose(principal)}>
+                            {principal.type === 'GROUP'
+                                ? <IconUsers />
+                                : principal.avatarDataUrl
+                                    ? <img className="avatar" src={principal.avatarDataUrl} alt="" width={20} height={20} />
+                                    : <IconUser />}
+                            {' '}{principal.displayName} — {principal.email}
+                            {hidden && <span className="badge hidden-group" title={t('groupHiddenTooltip')}>
+                                <IconEyeOff /> {t('groupHiddenBadge')}
+                            </span>}
+                        </button>
+                    </li>;
+                })}
             </ul>}
         </div>
     );

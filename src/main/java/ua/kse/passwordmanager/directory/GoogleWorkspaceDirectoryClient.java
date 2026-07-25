@@ -254,12 +254,15 @@ public class GoogleWorkspaceDirectoryClient implements WorkspaceDirectoryClient 
         String email = n.path("primaryEmail").asText();
         if (!isInternal(email) || n.path("suspended").asBoolean(false)) return Optional.empty();
         String name = n.path("name").path("fullName").asText(email);
-        return Optional.of(new DirectoryPrincipal(DirectoryPrincipal.Type.USER, n.path("id").asText(), email, name, keys.existsById(email.toLowerCase(Locale.ROOT)), null, null));
+        return Optional.of(new DirectoryPrincipal(DirectoryPrincipal.Type.USER, n.path("id").asText(), email, name, keys.existsById(email.toLowerCase(Locale.ROOT)), null, true, null));
     }
     private Optional<DirectoryPrincipal> group(JsonNode n) {
         String email = n.path("email").asText(); if (!isInternal(email)) return Optional.empty();
         long count; try { count = Long.parseLong(n.path("directMembersCount").asText("0")); } catch (NumberFormatException e) { count = 0; }
-        return Optional.of(new DirectoryPrincipal(DirectoryPrincipal.Type.GROUP, n.path("id").asText(), email, n.path("name").asText(email), false, count, null));
+        // visibleToUsers is governance state, not Directory data; DirectoryController
+        // resolves and overwrites it before this principal reaches a caller. The
+        // avatar is likewise hydrated there from the local Workspace snapshot.
+        return Optional.of(new DirectoryPrincipal(DirectoryPrincipal.Type.GROUP, n.path("id").asText(), email, n.path("name").asText(email), false, count, true, null));
     }
     private JsonNode get(String path) {
         try {

@@ -94,6 +94,9 @@ export interface Permission {
     directorySubjectId?: string | null;
     directoryDisplayName?: string | null;
     warning?: string;
+    /** Only present for GROUP grantees: whether workspace governance currently
+     * marks this group visible to non-admin users. */
+    groupVisibleToUsers?: boolean | null;
 }
 
 export interface DirectoryPrincipal {
@@ -103,6 +106,9 @@ export interface DirectoryPrincipal {
     displayName: string;
     vaultKeyAvailable: boolean;
     memberCount: number | null;
+    /** Meaningless for USER (always true). For GROUP, false means the group
+     * is hidden by workspace governance — only admins receive it at all. */
+    visibleToUsers: boolean;
     /** Google Workspace profile photo as a data: URI; null for groups and for
      *  users without one. */
     avatarDataUrl: string | null;
