@@ -158,6 +158,14 @@ export interface AuditEvent {
     details: string | null;
 }
 
+export interface AuditPage {
+    content: AuditEvent[];
+    page: number;
+    size: number;
+    totalElements: number;
+    totalPages: number;
+}
+
 export interface WorkspaceUser {
     email: string;
     directoryId: string;
