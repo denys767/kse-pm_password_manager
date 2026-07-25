@@ -13,9 +13,11 @@ import ua.kse.passwordmanager.auth.AuthFacade;
 public class DirectoryController {
     private final WorkspaceDirectoryClient directory;
     private final WorkspaceGroupRepository groups;
+    private final WorkspaceUserRepository users;
     private final AuthFacade auth;
-    public DirectoryController(WorkspaceDirectoryClient directory, WorkspaceGroupRepository groups, AuthFacade auth) {
-        this.directory = directory; this.groups = groups; this.auth = auth;
+    public DirectoryController(WorkspaceDirectoryClient directory, WorkspaceGroupRepository groups,
+            WorkspaceUserRepository users, AuthFacade auth) {
+        this.directory = directory; this.groups = groups; this.users = users; this.auth = auth;
     }
     @GetMapping("/principals")
     public List<DirectoryPrincipal> principals(@RequestParam(defaultValue = "") String query,
@@ -26,6 +28,18 @@ public class DirectoryController {
         return directory.search(query, requested, 50).stream()
                 .filter(principal -> principal.type() != DirectoryPrincipal.Type.GROUP || admin
                         || groups.findById(principal.email().toLowerCase()).map(WorkspaceGroup::isVisibleToUsers).orElse(false))
+                // Avatars come from the local snapshot: the picker fires on every
+                // keystroke, and a photo round-trip per suggestion would both be
+                // slow and burn Directory quota.
+                .map(this::withAvatar)
                 .toList();
+    }
+
+    private DirectoryPrincipal withAvatar(DirectoryPrincipal principal) {
+        if (principal.type() != DirectoryPrincipal.Type.USER) return principal;
+        return users.findById(principal.email().toLowerCase())
+                .map(WorkspaceUser::getAvatarDataUrl)
+                .map(principal::withAvatar)
+                .orElse(principal);
     }
 }

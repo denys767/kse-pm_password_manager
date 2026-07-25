@@ -3,6 +3,7 @@ package ua.kse.passwordmanager;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.forwardedUrl;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -87,4 +88,17 @@ class ExternalShareApiIntegrationTest {
         mockMvc.perform(get("/api/external-shares/" + shareId)).andExpect(status().isOk());
         mockMvc.perform(get("/api/external-shares/" + shareId)).andExpect(status().isGone());
     }
+    /**
+     * The share link is a client-side route. Without a history fallback the SPA
+     * was never served for it and every external share URL — one-time links
+     * included — answered 404 in production, where nothing but Spring serves
+     * static content.
+     */
+    @Test
+    void shareLinkServesTheSinglePageClient() throws Exception {
+        mockMvc.perform(get("/share/" + UUID.randomUUID()))
+                .andExpect(status().isOk())
+                .andExpect(forwardedUrl("/index.html"));
+    }
+
 }

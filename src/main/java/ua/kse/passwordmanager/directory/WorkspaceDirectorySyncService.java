@@ -27,7 +27,8 @@ public class WorkspaceDirectorySyncService {
 
     /** Runs every 15 minutes. The unavailable client deliberately does no work
      * in installations that have not mounted Directory credentials yet. */
-    @Scheduled(fixedDelayString = "${pm.google-workspace.sync-interval-ms:900000}")
+    @Scheduled(fixedDelayString = "${pm.google-workspace.sync-interval-ms:900000}",
+            initialDelayString = "${pm.google-workspace.sync-initial-delay-ms:120000}")
     @Transactional
     public void scheduledSync() {
         try {
@@ -55,6 +56,15 @@ public class WorkspaceDirectorySyncService {
         // page/membership request must never make valid principals disappear.
         var sourceUsers = directory.listUsers();
         var sourceGroups = directory.listGroups();
+        // A client that answers with an empty projection instead of throwing
+        // would otherwise mark the entire local Workspace snapshot absent and
+        // drop every materialized membership — the same damage as a wipe, minus
+        // the error. No real Workspace domain has zero users.
+        if (sourceUsers.isEmpty()) {
+            log.warn("Workspace directory returned no users; skipping sync to protect local governance state");
+            return new SyncResult(0, 0, 0);
+        }
+        boolean groupsReadable = !sourceGroups.isEmpty() || groups.count() == 0;
         var membershipsByGroup = new LinkedHashMap<String, Set<String>>();
         for (DirectoryGroup source : sourceGroups) {
             // Normalize case before de-duplicating: Google occasionally returns the
@@ -74,6 +84,7 @@ public class WorkspaceDirectorySyncService {
             WorkspaceUser user = users.findById(source.email().toLowerCase(Locale.ROOT))
                     .orElseGet(() -> new WorkspaceUser(source.email().toLowerCase(Locale.ROOT)));
             user.updateFromGoogle(source);
+            syncAvatar(user, source);
             users.save(user);
         }
         users.findAll().stream().filter(user -> !presentUsers.contains(user.getEmail()))
@@ -93,12 +104,42 @@ public class WorkspaceDirectorySyncService {
                 membershipCount++;
             }
         }
+        // Only retire local groups when the group projection was actually
+        // readable; an empty listGroups() against a populated local snapshot is
+        // a failed read, not a domain that lost all of its groups.
+        if (!groupsReadable) {
+            log.warn("Workspace directory returned no groups while {} are materialized locally; "
+                    + "keeping them and their memberships", groups.count());
+            return new SyncResult(sourceUsers.size(), 0, membershipCount);
+        }
         groups.findAll().stream().filter(group -> !presentGroups.contains(group.getEmail())).forEach(group -> {
             group.setDirectoryPresent(false);
             groups.save(group);
             memberships.deleteByGroupEmail(group.getEmail());
         });
         return new SyncResult(sourceUsers.size(), sourceGroups.size(), membershipCount);
+    }
+
+    /**
+     * Materializes the Google profile photo, but only when its etag moved — one
+     * extra Directory call per changed photo instead of one per user per pass.
+     * A photo download failure must not abort the whole snapshot, so it keeps the
+     * previously stored image.
+     */
+    private void syncAvatar(WorkspaceUser user, DirectoryUser source) {
+        String etag = source.photoEtag();
+        if (etag == null || etag.isBlank()) {
+            if (user.getAvatarDataUrl() != null) user.clearAvatar();
+            return;
+        }
+        if (!user.needsAvatarRefresh(etag)) return;
+        try {
+            directory.userPhotoDataUrl(user.getEmail())
+                    .ifPresentOrElse(dataUrl -> user.setAvatar(dataUrl, etag), user::clearAvatar);
+        } catch (RuntimeException e) {
+            log.warn("Could not fetch the Google profile photo for {}; keeping the stored copy: {}",
+                    user.getEmail(), e.getMessage());
+        }
     }
 
     public record SyncResult(int users, int groups, int memberships) {}

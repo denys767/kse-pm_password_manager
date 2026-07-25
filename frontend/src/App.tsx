@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { api } from './api';
 import { consumeVaultResetIntent, createVault, fetchConfig, initOidc, loadOrCreateKeys, oidcLogout, resetVault, setDevIdentity, VaultKeys } from './auth';
 import { clearLocalItems } from './localItems';
+import { clearVaultSession, loadVaultSession, saveVaultSession } from './vaultSession';
 import { UnlockScreen } from './components/UnlockScreen';
 import { VaultTab } from './components/VaultTab';
 import { CollectionsTab } from './components/CollectionsTab';
@@ -35,6 +36,7 @@ export default function App() {
         defaultSyncMode: 'SERVER_SYNCED',
         clipboardClearSeconds: 20,
         avatarDataUrl: null,
+        effectiveAvatarDataUrl: null,
     });
     const [tab, setTab] = useState<Tab>('vault');
     const [vaultItemToOpen, setVaultItemToOpen] = useState<string | null>(null);
@@ -52,9 +54,25 @@ export default function App() {
                     await initOidc(cfg);
                     const me = await api<Me>('/api/me');
                     setBootstrapUser(me);
-                    setResetRequested(consumeVaultResetIntent());
+                    const resetIntent = consumeVaultResetIntent();
+                    setResetRequested(resetIntent);
+                    let vaultExists = true;
                     try { await api('/api/keys/me'); setHasVault(true); }
-                    catch (e) { if ((e as { status?: number }).status === 404) setHasVault(false); else throw e; }
+                    catch (e) {
+                        if ((e as { status?: number }).status === 404) { vaultExists = false; setHasVault(false); }
+                        else throw e;
+                    }
+                    // Resume an unlock that is still valid instead of asking for
+                    // the passphrase again after the Keycloak redirect. A pending
+                    // reset must not resume: it is about to replace these keys.
+                    if (vaultExists && !resetIntent) {
+                        const resumed = await loadVaultSession(me.email);
+                        if (resumed) {
+                            setSession({ user: me, keys: resumed });
+                            setSettings(await api<Settings>('/api/settings'));
+                            setCollections(await api<Collection[]>('/api/collections'));
+                        }
+                    }
                 }
                 setOidcReady(true);
             })
@@ -71,6 +89,7 @@ export default function App() {
         }
         const user = await api<Me>('/api/me');
         const keys = await loadOrCreateKeys(passphrase);
+        await saveVaultSession(user.email, keys);
         setSession({ user, keys });
         setSettings(await api<Settings>('/api/settings'));
         await refreshCollections();
@@ -79,6 +98,7 @@ export default function App() {
     const create = useCallback(async (passphrase: string) => {
         const user = bootstrapUser ?? await api<Me>('/api/me');
         const keys = await createVault(passphrase);
+        await saveVaultSession(user.email, keys);
         setSession({ user, keys }); setHasVault(true);
         setSettings(await api<Settings>('/api/settings')); await refreshCollections();
     }, [bootstrapUser, refreshCollections]);
@@ -86,11 +106,15 @@ export default function App() {
     const recover = useCallback(async (passphrase: string) => {
         const user = bootstrapUser ?? await api<Me>('/api/me');
         const keys = await resetVault(passphrase);
-        clearLocalItems(user.email); setSession({ user, keys }); setHasVault(true);
+        clearLocalItems(user.email); await saveVaultSession(user.email, keys);
+        setSession({ user, keys }); setHasVault(true);
         setCollections([]); setSettings(await api<Settings>('/api/settings'));
     }, [bootstrapUser]);
 
     const lock = useCallback(() => {
+        // An explicit lock must not be resumable, otherwise the next boot walks
+        // straight back into the vault.
+        void clearVaultSession();
         setSession(null);
         setCollections([]);
         setTab('vault');
@@ -124,15 +148,15 @@ export default function App() {
                         config.authMode === 'oidc' ? (
                             <a id="user-badge" className="topbar-user" href={`${config.keycloakUrl}/realms/${encodeURIComponent(config.realm ?? '')}/account/`}
                                target="_blank" rel="noopener noreferrer" title={tr('Керування профілем і 2FA в Account Console', 'Manage your profile and 2FA in the Account Console')}>
-                                {settings.avatarDataUrl
-                                    ? <img className="avatar" src={settings.avatarDataUrl} alt="" width={28} height={28} />
+                                {settings.effectiveAvatarDataUrl
+                                    ? <img className="avatar" src={settings.effectiveAvatarDataUrl} alt="" width={28} height={28} />
                                     : <span className="avatar">{(session.user.displayName || session.user.email).slice(0, 1).toUpperCase()}</span>}
                                 <span className="topbar-identity"><strong>{session.user.displayName || session.user.email}</strong><small>{session.user.email}</small></span>
                             </a>
                         ) : (
                             <span id="user-badge" className="topbar-user">
-                                {settings.avatarDataUrl
-                                    ? <img className="avatar" src={settings.avatarDataUrl} alt="" width={28} height={28} />
+                                {settings.effectiveAvatarDataUrl
+                                    ? <img className="avatar" src={settings.effectiveAvatarDataUrl} alt="" width={28} height={28} />
                                     : <span className="avatar">{(session.user.displayName || session.user.email).slice(0, 1).toUpperCase()}</span>}
                                 <span className="topbar-identity"><strong>{session.user.displayName || session.user.email}</strong><small>{session.user.email}</small></span>
                             </span>

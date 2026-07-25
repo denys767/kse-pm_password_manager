@@ -76,5 +76,25 @@ services:
       - keycloak
     restart: unless-stopped
 
+  # Applies the account-console browser flow override that realm-export.json
+  # cannot express (Keycloak creates the account-console client itself, so an
+  # export entry for it fails the whole import with "Duplicate resource").
+  # Without this, Account Console -> Signing in -> Set up passkey fails with
+  # "Cannot login, credential setup required", i.e. adding a passkey is broken
+  # on a fresh stack. Runs to completion and exits.
+  keycloak-init:
+    image: alpine:3.20
+    depends_on:
+      - keycloak
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?set KEYCLOAK_ADMIN_PASSWORD}
+    volumes:
+      - ./keycloak:/keycloak:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - apk add --no-cache bash curl python3 >/dev/null && bash /keycloak/bind-account-console-flow.sh http://keycloak:8081 kse-pm
+    restart: on-failure
+
 volumes:
   pgdata:

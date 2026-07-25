@@ -13,4 +13,9 @@ public interface WorkspaceDirectoryClient {
      * directory synchronizer.  Search remains the interactive API. */
     List<DirectoryUser> listUsers();
     List<DirectoryGroup> listGroups();
+
+    /** A user's Google profile photo as a data: URI; empty when the account has
+     * none. Only the synchronizer calls this — interactive paths read the
+     * materialized copy instead. */
+    Optional<String> userPhotoDataUrl(String userKey);
 }

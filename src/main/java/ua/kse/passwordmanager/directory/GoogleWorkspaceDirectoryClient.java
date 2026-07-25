@@ -200,7 +200,8 @@ public class GoogleWorkspaceDirectoryClient implements WorkspaceDirectoryClient 
                 String email = node.path("primaryEmail").asText();
                 if (isInternal(email)) users.add(new DirectoryUser(node.path("id").asText(),
                         email.toLowerCase(Locale.ROOT), node.path("name").path("fullName").asText(email),
-                        node.path("isAdmin").asBoolean(false), node.path("suspended").asBoolean(false)));
+                        node.path("isAdmin").asBoolean(false), node.path("suspended").asBoolean(false),
+                        node.path("thumbnailPhotoEtag").asText(null)));
             }
             page = root.path("nextPageToken").asText(null);
         } while (page != null && !page.isBlank());
@@ -253,12 +254,12 @@ public class GoogleWorkspaceDirectoryClient implements WorkspaceDirectoryClient 
         String email = n.path("primaryEmail").asText();
         if (!isInternal(email) || n.path("suspended").asBoolean(false)) return Optional.empty();
         String name = n.path("name").path("fullName").asText(email);
-        return Optional.of(new DirectoryPrincipal(DirectoryPrincipal.Type.USER, n.path("id").asText(), email, name, keys.existsById(email.toLowerCase(Locale.ROOT)), null));
+        return Optional.of(new DirectoryPrincipal(DirectoryPrincipal.Type.USER, n.path("id").asText(), email, name, keys.existsById(email.toLowerCase(Locale.ROOT)), null, null));
     }
     private Optional<DirectoryPrincipal> group(JsonNode n) {
         String email = n.path("email").asText(); if (!isInternal(email)) return Optional.empty();
         long count; try { count = Long.parseLong(n.path("directMembersCount").asText("0")); } catch (NumberFormatException e) { count = 0; }
-        return Optional.of(new DirectoryPrincipal(DirectoryPrincipal.Type.GROUP, n.path("id").asText(), email, n.path("name").asText(email), false, count));
+        return Optional.of(new DirectoryPrincipal(DirectoryPrincipal.Type.GROUP, n.path("id").asText(), email, n.path("name").asText(email), false, count, null));
     }
     private JsonNode get(String path) {
         try {
@@ -280,6 +281,29 @@ public class GoogleWorkspaceDirectoryClient implements WorkspaceDirectoryClient 
             throw e;
         }
     }
+    /**
+     * Downloads a user's profile photo and returns it as a data: URI.
+     *
+     * users.photos.get answers base64url (RFC 4648 §5) rather than standard
+     * base64, and 404s for an account that never set a photo — an expected
+     * answer, not a gateway failure.
+     */
+    @Override public Optional<String> userPhotoDataUrl(String userKey) {
+        return getIfPresent("users/" + enc(userKey) + "/photos/thumbnail").flatMap(node -> {
+            String data = node.path("photoData").asText(null);
+            if (data == null || data.isBlank()) return Optional.empty();
+            byte[] decoded;
+            try {
+                decoded = java.util.Base64.getUrlDecoder().decode(data);
+            } catch (IllegalArgumentException e) {
+                log.warn("Google Workspace returned an undecodable photo for {}", userKey);
+                return Optional.empty();
+            }
+            String mime = node.path("mimeType").asText("image/jpeg");
+            return Optional.of("data:" + mime + ";base64," + java.util.Base64.getEncoder().encodeToString(decoded));
+        });
+    }
+
     private boolean isInternal(String email) { return email != null && email.toLowerCase(Locale.ROOT).endsWith("@" + domain); }
     private static DefaultUriBuilderFactory directoryUriFactory() {
         DefaultUriBuilderFactory factory = new DefaultUriBuilderFactory("https://admin.googleapis.com/admin/directory/v1/");

@@ -41,6 +41,10 @@ export function SettingsTab({ settings, onSaved, config, user }: Props) {
     const [webauthnStatus, setWebauthnStatus] = useState('');
 
     useEffect(() => { setAvatarDataUrl(settings.avatarDataUrl); }, [settings.avatarDataUrl]);
+    // The server resolved a different image than the manual upload, i.e. it came
+    // from Google Workspace and overrides anything uploaded here.
+    const googleAvatarInUse = settings.effectiveAvatarDataUrl != null
+        && settings.effectiveAvatarDataUrl !== settings.avatarDataUrl;
     useEffect(() => { setWebauthnEnrolledAt(vaultWebAuthnEnrolledAt(user.email)); }, [user.email]);
 
     async function enableWebauthn() {
@@ -109,15 +113,22 @@ export function SettingsTab({ settings, onSaved, config, user }: Props) {
                 </label>
                 <label>{tr('Аватар', 'Avatar')}
                     <div className="row">
-                        {avatarDataUrl
-                            ? <img className="avatar large" src={avatarDataUrl} alt="" />
+                        {settings.effectiveAvatarDataUrl
+                            ? <img className="avatar large" src={settings.effectiveAvatarDataUrl} alt="" />
                             : <span className="avatar large">?</span>}
-                        <input id="setting-avatar" type="file" accept="image/*" onChange={uploadAvatar} />
+                        <input id="setting-avatar" type="file" accept="image/*" onChange={uploadAvatar}
+                               disabled={googleAvatarInUse} />
                         {avatarDataUrl && <button type="button" className="secondary small"
                                                   onClick={() => { setAvatarDataUrl(null); void save({ avatarDataUrl: null }); }}>{t('delete')}</button>}
                     </div>
                 </label>
-                <p className="hint">{tr('Показується в топбарі й учасникам ваших колекцій. Обрізається до квадрата локально в браузері.', 'Shown in the top bar and to members of your collections. Cropped to a square locally in the browser.')}</p>
+                {/* Google Workspace is the source of truth, so the upload only
+                    matters for accounts without a Google photo. */}
+                <p className="hint">{googleAvatarInUse
+                    ? tr('Синхронізовано з профілю Google Workspace. Щоб змінити фото, оновіть його в акаунті Google — воно підтягнеться під час наступної синхронізації каталогу.',
+                        'Synced from your Google Workspace profile. To change it, update the photo in your Google account — it is picked up on the next directory sync.')
+                    : tr('У вашому профілі Google Workspace немає фото, тому використовується завантажене вручну. Показується в топбарі, у підказках і учасникам ваших колекцій; обрізається до квадрата локально в браузері.',
+                        'Your Google Workspace profile has no photo, so the manually uploaded one is used. Shown in the top bar, in suggestions and to members of your collections; cropped to a square locally in the browser.')}</p>
                 <label>{tr('Режим збереження за замовчуванням', 'Default storage mode')}
                     <select id="setting-sync" value={syncMode}
                             onChange={(e) => setSyncMode(e.target.value as SyncMode)}>

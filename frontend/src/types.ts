@@ -103,6 +103,9 @@ export interface DirectoryPrincipal {
     displayName: string;
     vaultKeyAvailable: boolean;
     memberCount: number | null;
+    /** Google Workspace profile photo as a data: URI; null for groups and for
+     *  users without one. */
+    avatarDataUrl: string | null;
 }
 
 export interface PermissionMemberInfo {
@@ -123,7 +126,11 @@ export interface UserKeysDto {
 export interface Settings {
     defaultSyncMode: SyncMode;
     clipboardClearSeconds: number;
+    /** The manually uploaded avatar; only used when Google has no photo. */
     avatarDataUrl: string | null;
+    /** What to render: the Google Workspace photo when present, else the manual
+     *  one. Server-computed and read-only. */
+    effectiveAvatarDataUrl: string | null;
 }
 
 export interface ItemVersion {

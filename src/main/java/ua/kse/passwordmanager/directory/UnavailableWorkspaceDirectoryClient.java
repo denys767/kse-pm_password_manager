@@ -12,4 +12,5 @@ class UnavailableWorkspaceDirectoryClient implements WorkspaceDirectoryClient {
     public List<String> memberEmails(String id) { throw unavailable(); }
     public List<DirectoryUser> listUsers() { throw unavailable(); }
     public List<DirectoryGroup> listGroups() { throw unavailable(); }
+    public Optional<String> userPhotoDataUrl(String userKey) { throw unavailable(); }
 }

@@ -30,6 +30,22 @@ token() {
         python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])'
 }
 
+# Wait for the realm import to finish. This script also runs unattended as the
+# keycloak-init compose service, which starts the moment the Keycloak container
+# does — long before the admin API can mint a token or the realm exists. Without
+# the wait, first boot would leave the binding unapplied and passkey enrolment
+# broken until someone noticed and re-ran this by hand.
+for attempt in $(seq 1 60); do
+    if curl -sf -o /dev/null "${URL}/realms/${REALM}/.well-known/openid-configuration"; then
+        break
+    fi
+    if [ "${attempt}" -eq 60 ]; then
+        echo "Keycloak realm ${REALM} did not become ready at ${URL} within 5 minutes" >&2
+        exit 1
+    fi
+    sleep 5
+done
+
 TOKEN=$(token)
 api() { curl -sf -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" "$@"; }
 

@@ -80,7 +80,7 @@ class SharingDirectoryResolutionTest {
     @Test
     void userShareWithoutDirectorySubjectIdIsResolvedByEmail() {
         when(directory.find(eq(DirectoryPrincipal.Type.USER), eq(RECIPIENT))).thenReturn(Optional.of(
-                new DirectoryPrincipal(DirectoryPrincipal.Type.USER, "1234567890", RECIPIENT, "Bob", true, null)));
+                new DirectoryPrincipal(DirectoryPrincipal.Type.USER, "1234567890", RECIPIENT, "Bob", true, null, null)));
 
         PermissionResponse response = sharing.share(owner(), itemId, shareWithoutSubjectId());
 

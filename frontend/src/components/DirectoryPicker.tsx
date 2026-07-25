@@ -119,7 +119,12 @@ export function DirectoryPicker({ id, types = 'USER,GROUP', value, placeholder, 
                     <button type="button" className={`linklike${index === active ? ' active' : ''}`}
                             onMouseEnter={() => setActive(index)}
                             onClick={() => choose(principal)}>
-                        {principal.type === 'GROUP' ? <IconUsers /> : <IconUser />} {principal.displayName} — {principal.email}
+                        {principal.type === 'GROUP'
+                            ? <IconUsers />
+                            : principal.avatarDataUrl
+                                ? <img className="avatar" src={principal.avatarDataUrl} alt="" width={20} height={20} />
+                                : <IconUser />}
+                        {' '}{principal.displayName} — {principal.email}
                     </button>
                 </li>)}
             </ul>}
