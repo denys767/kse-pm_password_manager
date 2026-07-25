@@ -33,14 +33,14 @@ class KeycloakEventApiIntegrationTest {
                                     .formatted(event[0])))
                     .andExpect(status().isNoContent());
         }
-        mockMvc.perform(get("/api/audit").header("X-Dev-User", "admin@kse.org.ua")
+        mockMvc.perform(get("/api/audit").param("size", "200").header("X-Dev-User", "admin@kse.org.ua")
                         .header("X-Dev-Roles", "admin"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$[?(@.actorEmail == 'audit-user@kse.org.ua')].action",
+                .andExpect(jsonPath("$.content[?(@.actorEmail == 'audit-user@kse.org.ua')].action",
                         hasItem("LOGIN")))
-                .andExpect(jsonPath("$[?(@.actorEmail == 'audit-user@kse.org.ua')].action",
+                .andExpect(jsonPath("$.content[?(@.actorEmail == 'audit-user@kse.org.ua')].action",
                         hasItem("LOGIN_FAILED")))
-                .andExpect(jsonPath("$[?(@.actorEmail == 'audit-user@kse.org.ua')].action",
+                .andExpect(jsonPath("$.content[?(@.actorEmail == 'audit-user@kse.org.ua')].action",
                         hasItem("LOGOUT")));
     }
 

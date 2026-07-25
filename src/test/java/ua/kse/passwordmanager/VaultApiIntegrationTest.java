@@ -277,9 +277,10 @@ class VaultApiIntegrationTest {
 
         mockMvc.perform(as(get("/api/audit"), ADMIN).header("X-Dev-Roles", "admin"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$", hasSize(greaterThan(1))))
-                .andExpect(jsonPath("$[*].action", hasItem("ITEM_CREATED")))
-                .andExpect(jsonPath("$[*].action", hasItem("ITEM_VIEWED")));
+                .andExpect(jsonPath("$.content", hasSize(greaterThan(1))))
+                .andExpect(jsonPath("$.totalElements", org.hamcrest.Matchers.greaterThan(1)))
+                .andExpect(jsonPath("$.content[*].action", hasItem("ITEM_CREATED")))
+                .andExpect(jsonPath("$.content[*].action", hasItem("ITEM_VIEWED")));
 
         mockMvc.perform(as(get("/api/audit"), ADMIN).header("X-Dev-Roles", "security"))
                 .andExpect(status().isOk());
