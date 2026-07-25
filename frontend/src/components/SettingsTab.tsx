@@ -1,10 +1,12 @@
-import { ChangeEvent, useEffect, useState } from 'react';
+import { ChangeEvent, useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import { verifyPassphrase } from '../auth';
 import { isWebAuthnSupported, registerVaultWebAuthn, removeVaultWebAuthn, vaultWebAuthnEnrolledAt } from '../webauthnVault';
 import type { FrontendConfig, Me, Settings, SyncMode } from '../types';
 import { useI18n } from '../i18n';
 import { useTheme } from '../theme';
+import { TOS_SECTIONS } from '../termsOfService';
+import { EULA_SECTIONS } from '../eula';
 
 interface Props {
     settings: Settings;
@@ -39,6 +41,8 @@ export function SettingsTab({ settings, onSaved, config, user }: Props) {
     const [webauthnPass, setWebauthnPass] = useState('');
     const [webauthnBusy, setWebauthnBusy] = useState(false);
     const [webauthnStatus, setWebauthnStatus] = useState('');
+    const tosDialogRef = useRef<HTMLDialogElement>(null);
+    const eulaDialogRef = useRef<HTMLDialogElement>(null);
 
     useEffect(() => { setAvatarDataUrl(settings.avatarDataUrl); }, [settings.avatarDataUrl]);
     useEffect(() => { setWebauthnEnrolledAt(vaultWebAuthnEnrolledAt(user.email)); }, [user.email]);
@@ -168,6 +172,40 @@ export function SettingsTab({ settings, onSaved, config, user }: Props) {
                 </div>
             )}
             {/* Google Workspace is the source of groups; there is no local/Keycloak allowlist. */}
+            <div className="card narrow" style={{ marginTop: 18 }}>
+                <h3>{t('legal')}</h3>
+                <p className="hint">{t('legalDescription')}</p>
+                <div className="row">
+                    <button type="button" className="secondary" onClick={() => tosDialogRef.current?.showModal()}>{t('viewTos')}</button>
+                    <button type="button" className="secondary" onClick={() => eulaDialogRef.current?.showModal()}>{t('viewEula')}</button>
+                </div>
+            </div>
+            <dialog id="settings-tos-dialog" ref={tosDialogRef}>
+                <h3>{t('tosDialogTitle')}</h3>
+                <div className="tos-text">
+                    {TOS_SECTIONS.map((section) => <div key={section.title}>
+                        <h4>{section.title}</h4>
+                        {section.paragraphs.map((p, i) => <p key={i}>{p}</p>)}
+                    </div>)}
+                </div>
+                <div className="dialog-actions">
+                    <span className="spacer" />
+                    <button type="button" onClick={() => tosDialogRef.current?.close()}>{t('tosClose')}</button>
+                </div>
+            </dialog>
+            <dialog id="settings-eula-dialog" ref={eulaDialogRef}>
+                <h3>{t('eulaDialogTitle')}</h3>
+                <div className="tos-text">
+                    {EULA_SECTIONS.map((section) => <div key={section.title.en}>
+                        <h4>{section.title[language]}</h4>
+                        {section.paragraphs.map((p, i) => <p key={i}>{p[language]}</p>)}
+                    </div>)}
+                </div>
+                <div className="dialog-actions">
+                    <span className="spacer" />
+                    <button type="button" onClick={() => eulaDialogRef.current?.close()}>{t('eulaClose')}</button>
+                </div>
+            </dialog>
         </section>
     );
 }
