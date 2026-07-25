@@ -4,6 +4,7 @@ import { assessPassphrase, PassphraseAssessment } from '../passphrase';
 import { reauthenticateForVaultReset } from '../auth';
 import { hasVaultWebAuthn, unlockWithVaultWebAuthn } from '../webauthnVault';
 import { hasAcceptedTos, recordTosAcceptance, TOS_SECTIONS } from '../termsOfService';
+import { hasAcceptedEula, recordEulaAcceptance, EULA_SECTIONS } from '../eula';
 import type { Me } from '../types';
 import { useI18n } from '../i18n';
 
@@ -29,10 +30,11 @@ export function UnlockScreen({ devMode, user, hasVault, startRecovery, onUnlock,
     const [successors, setSuccessors] = useState<Record<string, string>>({});
     const [tosAccepted, setTosAccepted] = useState(false);
     const tosDialogRef = useRef<HTMLDialogElement>(null);
+    const eulaDialogRef = useRef<HTMLDialogElement>(null);
 
     const creating = !hasVault || recovering;
     useEffect(() => {
-        if (creating && user) setTosAccepted(hasAcceptedTos(user.email));
+        if (creating && user) setTosAccepted(hasAcceptedTos(user.email) && hasAcceptedEula(user.email));
     }, [creating, user]);
     // WebAuthn unlock is a per-device convenience enrolled in Settings; only offer
     // it on the plain unlock screen (not while creating/resetting) for this user.
@@ -58,7 +60,7 @@ export function UnlockScreen({ devMode, user, hasVault, startRecovery, onUnlock,
             if (recovering) await onReset(passphrase);
             else if (!hasVault) await onCreate(passphrase);
             else await onUnlock(passphrase, devMode ? { email: email.trim().toLowerCase(), roles, groups } : undefined);
-            if (creating && user) recordTosAcceptance(user.email);
+            if (creating && user) { recordTosAcceptance(user.email); recordEulaAcceptance(user.email); }
         } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
     }
 
@@ -121,7 +123,7 @@ export function UnlockScreen({ devMode, user, hasVault, startRecovery, onUnlock,
                     {assessment && <div className={`passphrase-strength s${assessment.score}`}><div className="strength-track"><div className="strength-bar" style={{ width: `${(assessment.score + 1) * 20}%` }} /></div><strong>{assessment.label}</strong><span>{assessment.message}</span></div>}
                     <label className="checkbox-row tos-row">
                         <input id="tos-checkbox" type="checkbox" checked={tosAccepted} onChange={(e) => setTosAccepted(e.target.checked)} />
-                        <span>{t('tosCheckboxLabel')} — <button type="button" className="linklike" onClick={() => tosDialogRef.current?.showModal()}>{t('tosReview')}</button></span>
+                        <span>{t('tosCheckboxLabel')} — <button type="button" className="linklike" onClick={() => tosDialogRef.current?.showModal()}>{t('tosReview')}</button> · <button type="button" className="linklike" onClick={() => eulaDialogRef.current?.showModal()}>{t('eulaReview')}</button></span>
                     </label></>}
                 <button id="unlock-btn" type="submit" disabled={busy || (creating && !tosAccepted)}>{busy ? tr('Зачекайте…', 'Please wait…') : recovering ? tr('Скинути та створити Vault', 'Reset and create vault') : !hasVault ? tr('Створити Vault', 'Create vault') : tr('Розблокувати Vault', 'Unlock vault')}</button>
                 {error && <p id="unlock-error" className="error">{error}</p>}
@@ -138,6 +140,20 @@ export function UnlockScreen({ devMode, user, hasVault, startRecovery, onUnlock,
                     <span className="spacer" />
                     <button type="button" className="secondary" onClick={() => tosDialogRef.current?.close()}>{t('tosClose')}</button>
                     <button type="button" onClick={() => { setTosAccepted(true); tosDialogRef.current?.close(); }}>{t('tosAccept')}</button>
+                </div>
+            </dialog>}
+            {creating && <dialog id="eula-dialog" ref={eulaDialogRef}>
+                <h3>{t('eulaDialogTitle')}</h3>
+                <div className="tos-text">
+                    {EULA_SECTIONS.map((section) => <div key={section.title.en}>
+                        <h4>{section.title[language]}</h4>
+                        {section.paragraphs.map((p, i) => <p key={i}>{p[language]}</p>)}
+                    </div>)}
+                </div>
+                <div className="dialog-actions">
+                    <span className="spacer" />
+                    <button type="button" className="secondary" onClick={() => eulaDialogRef.current?.close()}>{t('eulaClose')}</button>
+                    <button type="button" onClick={() => { setTosAccepted(true); eulaDialogRef.current?.close(); }}>{t('eulaAccept')}</button>
                 </div>
             </dialog>}
             {webAuthnAvailable && <><div className="unlock-divider"><span>{tr('або', 'or')}</span></div>
