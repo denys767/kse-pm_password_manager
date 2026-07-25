@@ -8,7 +8,8 @@ import { loadLocalItems, saveLocalItems } from '../localItems';
 import { estimateStrength, generatePassword, hibpBreachCount } from '../passwords';
 import { emptyPayload, parsePayload, serializePayload } from '../payload';
 import { encryptShareSnapshot } from '../externalShare';
-import { IconCheck, IconEye, IconEyeOff, IconRefresh, IconUser, IconUsers, IconWarning } from './Icons';
+import { IconCheck, IconEye, IconEyeOff, IconLock, IconPencil, IconRefresh, IconUser, IconUsers, IconWarning } from './Icons';
+import { describeSharedAccess } from '../sharedAccess';
 import { DirectoryPicker } from './DirectoryPicker';
 import { parseTags, serializeTags } from '../tags';
 import { useI18n } from '../i18n';
@@ -98,6 +99,7 @@ export function ItemDialog({ session, settings, collections, item, availableTags
 
     const isOwner = !current || !current.accessRole || current.accessRole === 'OWNER';
     const canEdit = !current || ((isOwner || current.accessRole === 'EDITOR') && itemKey !== null);
+    const shared = current ? describeSharedAccess(current, session.user.email, collections) : null;
     const sharedType = fields.type === 'SHARED';
 
     useEffect(() => {
@@ -836,7 +838,24 @@ export function ItemDialog({ session, settings, collections, item, availableTags
         <>
             <dialog id="item-dialog" ref={dialogRef} onClose={() => onClose(false)}>
                 <form id="item-form" onSubmit={save}>
-                    <h3 id="dialog-title">{current ? current.name : t('addPassword')}</h3>
+                    <h3 id="dialog-title" className={shared ? `shared-with-me${shared.isViewOnly ? ' view-only' : ''}` : ''}>
+                        {current ? current.name : t('addPassword')}
+                        {shared && (
+                            <span className="badge owner-badge"
+                                  title={shared.collectionName
+                                      ? t('sharedViaCollectionTooltip', { collection: shared.collectionName, owner: shared.ownerEmail })
+                                      : t('sharedByTooltip', { owner: shared.ownerEmail })}>
+                                <IconUsers width={11} height={11} /> {t('sharedWithMeBadge')}
+                            </span>
+                        )}
+                        {shared && (shared.isViewOnly
+                            ? <span className="badge view-only-badge" title={t('viewOnlyTooltip')}>
+                                  <IconLock width={11} height={11} /> {t('viewOnlyBadge')}
+                              </span>
+                            : <span className="badge can-edit-badge" title={t('canEditTooltip')}>
+                                  <IconPencil width={11} height={11} /> {t('canEditBadge')}
+                              </span>)}
+                    </h3>
                     <label>{t('name')}*
                         <input id="f-name" required maxLength={255} readOnly={!canEdit}
                                value={fields.name} onChange={(e) => set('name', e.target.value)} />
@@ -1035,22 +1054,6 @@ export function ItemDialog({ session, settings, collections, item, availableTags
                             ? tr('Shared-записи завжди зберігаються на сервері, інакше sharing не працює.', 'Shared items are always stored on the server, otherwise sharing cannot work.')
                             : tr('Вимкнено — запис залишиться тільки в цьому браузері (у зашифрованому вигляді).', 'Off — the item stays in this browser only (encrypted).')}
                     </p>
-                    {fields.sync && canEdit && <section id="attachment-section">
-                        <h4>{tr('Вкладення', 'Attachment')}</h4>
-                        <p className="hint">{tr('Одне вкладення шифрується AES-GCM у браузері та зберігається як непрозорий файл у Google Drive власника. Ліміт розміру не встановлюється застосунком; діють лише квоти й обмеження Google Drive.', 'One attachment is encrypted with AES-GCM in the browser and stored as an opaque file in the owner’s Google Drive. The app sets no size limit; only Google Drive quotas and limits apply.')}</p>
-                        {current?.attachment && !attachmentFile && <div className="row attachment-row">
-                            <span>{tr('Зашифроване вкладення', 'Encrypted attachment')} · {current.attachment.ciphertextSize.toLocaleString()} B</span>
-                            <button type="button" className="secondary small" onClick={downloadAttachment}>{tr('Завантажити', 'Download')}</button>
-                            {isOwner && <button type="button" className="secondary small" onClick={deleteAttachment}>{t('delete')}</button>}
-                        </div>}
-                        {isOwner && <label>{tr('Замінити вкладення', 'Replace attachment')}
-                            <input id="f-attachment" type="file" onChange={(event) => setAttachmentFile(event.target.files?.[0] ?? null)} />
-                            {attachmentFile && <span className="hint">{tr(`Буде зашифровано і завантажено після Save: ${attachmentFile.name} (${attachmentFile.size.toLocaleString()} B)`, `Will be encrypted and uploaded after Save: ${attachmentFile.name} (${attachmentFile.size.toLocaleString()} B)`)}</span>}
-                        </label>}
-                        {!isOwner && <p className="hint">{tr('Вкладення недоступне для заміни без прав власника.', 'The attachment cannot be replaced without owner rights.')}</p>}
-                    </section>}
-                    {!fields.sync && <p className="hint">{tr('Local-only записи виключені з вкладень Drive і серверних адміністраторських операцій.', 'Local-only items are excluded from Drive attachments and server-side admin operations.')}</p>}
-
                     {showShare && (
                         <div id="share-section">
                             <h4>{t('sharedAccess')}</h4>
@@ -1061,7 +1064,10 @@ export function ItemDialog({ session, settings, collections, item, availableTags
                                             ? <IconUsers />
                                             : shareAvatars[p.grantee.toLowerCase()]
                                                 ? <img className="avatar" src={shareAvatars[p.grantee.toLowerCase()]!} alt="" width={20} height={20} />
-                                                : <IconUser />} {p.grantee} — {p.role.toLowerCase()}</span>
+                                                : <IconUser />} {p.grantee} — {p.role.toLowerCase()}
+                                            {p.granteeType === 'GROUP' && p.groupVisibleToUsers === false && <span className="badge hidden-group" title={t('groupHiddenTooltip')}>
+                                                <IconEyeOff /> {t('groupHiddenBadge')}
+                                            </span>}</span>
                                         <span className="row">
                                             {p.granteeType === 'GROUP' && p.status === 'ACTIVE' && <button type="button" className="secondary small" onClick={() => provisionGroup(p)}>{tr('Видати ключі', 'Provision')}</button>}
                                             <button type="button" className="secondary small" onClick={() => revoke(p.id)}>{t('revoke')}</button>
@@ -1102,6 +1108,22 @@ export function ItemDialog({ session, settings, collections, item, availableTags
                             <button type="button" className="secondary small" onClick={extendExternalShare}>{tr('+24 год', '+24 h')}</button>
                             <button type="button" className="secondary small" onClick={revokeExternalShare}>{t('revoke')}</button></div>}
                     </section>}
+
+                    {fields.sync && canEdit && <section id="attachment-section">
+                        <h4>{tr('Вкладення', 'Attachment')}</h4>
+                        <p className="hint">{tr('Одне вкладення шифрується AES-GCM у браузері та зберігається як непрозорий файл у Google Drive власника. Ліміт розміру не встановлюється застосунком; діють лише квоти й обмеження Google Drive.', 'One attachment is encrypted with AES-GCM in the browser and stored as an opaque file in the owner’s Google Drive. The app sets no size limit; only Google Drive quotas and limits apply.')}</p>
+                        {current?.attachment && !attachmentFile && <div className="row attachment-row">
+                            <span>{tr('Зашифроване вкладення', 'Encrypted attachment')} · {current.attachment.ciphertextSize.toLocaleString()} B</span>
+                            <button type="button" className="secondary small" onClick={downloadAttachment}>{tr('Завантажити', 'Download')}</button>
+                            {isOwner && <button type="button" className="secondary small" onClick={deleteAttachment}>{t('delete')}</button>}
+                        </div>}
+                        {isOwner && <label>{tr('Замінити вкладення', 'Replace attachment')}
+                            <input id="f-attachment" type="file" onChange={(event) => setAttachmentFile(event.target.files?.[0] ?? null)} />
+                            {attachmentFile && <span className="hint">{tr(`Буде зашифровано і завантажено після Save: ${attachmentFile.name} (${attachmentFile.size.toLocaleString()} B)`, `Will be encrypted and uploaded after Save: ${attachmentFile.name} (${attachmentFile.size.toLocaleString()} B)`)}</span>}
+                        </label>}
+                        {!isOwner && <p className="hint">{tr('Вкладення недоступне для заміни без прав власника.', 'The attachment cannot be replaced without owner rights.')}</p>}
+                    </section>}
+                    {!fields.sync && <p className="hint">{tr('Local-only записи виключені з вкладень Drive і серверних адміністраторських операцій.', 'Local-only items are excluded from Drive attachments and server-side admin operations.')}</p>}
 
                     {current && current.syncMode !== 'LOCAL_ONLY' && itemKey && (
                         <div id="history-section">

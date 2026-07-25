@@ -45,6 +45,9 @@ export function IconFolder(props: SVGProps<SVGSVGElement>) {
 export function IconTag(props: SVGProps<SVGSVGElement>) {
     return <Svg {...props}><path d="M20 13 12.5 20.5a2.1 2.1 0 0 1-3 0L3.5 14.5a2.1 2.1 0 0 1 0-3L11 4h7a2 2 0 0 1 2 2Z" /><circle cx="15.5" cy="8.5" r="1" /></Svg>;
 }
+export function IconPencil(props: SVGProps<SVGSVGElement>) {
+    return <Svg {...props}><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" /></Svg>;
+}
 export function IconTrash(props: SVGProps<SVGSVGElement>) {
     return <Svg {...props}><path d="M3 6h18" /><path d="M8 6V4h8v2" /><path d="M19 6l-1 15H6L5 6" /><path d="M10 11v5M14 11v5" /></Svg>;
 }

@@ -83,7 +83,7 @@ export function AdminTab() {
                     <option value="ACTIVE">ACTIVE</option><option value="SUSPENDED">SUSPENDED</option><option value="REVOKED">REVOKED</option></select></td></tr>)}
         </tbody></table>
         <h3>{tr('Видимість груп', 'Group visibility')}</h3>
-        <p className="hint">{tr('Нові групи за замовчуванням доступні лише адміністраторам, доки їх явно не оприлюднено.', 'New groups are visible to administrators only by default until they are explicitly published.')}</p>
+        <p className="hint">{tr('Нові синхронізовані групи за замовчуванням видимі всім користувачам; зніміть позначку, щоб приховати конкретну групу.', 'New synced groups are visible to all users by default; uncheck a group to hide it.')}</p>
         <table className="audit-table"><thead><tr><th>{tr('Група', 'Group')}</th><th>Workspace ID</th><th>{tr('Видима користувачам', 'Visible to users')}</th></tr></thead><tbody>
             {groups.map((group) => <tr key={group.email}><td>{group.displayName}<br /><small>{group.email}</small></td><td><small>{group.directoryId}</small></td>
                 <td><input type="checkbox" checked={group.visibleToUsers} onChange={(e) => void updateGroup(group, e.target.checked)} /></td></tr>)}

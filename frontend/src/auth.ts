@@ -98,6 +98,20 @@ export async function createVault(passphrase: string): Promise<VaultKeys> {
     return createKeys(passphrase);
 }
 
+/**
+ * The KDF salt of the current keypair, or null when this account has no vault
+ * yet. It changes with every new keypair, which makes it the identity a passkey
+ * enrolment is bound to (see webauthnVault.ts).
+ */
+export async function fetchVaultSalt(): Promise<string | null> {
+    try {
+        return (await api<UserKeysDto>('/api/keys/me')).kdfSalt;
+    } catch (e) {
+        if ((e as { status?: number }).status === 404) return null;
+        throw e;
+    }
+}
+
 export async function resetVault(passphrase: string): Promise<VaultKeys> {
     const salt = pmc.generateSalt();
     const kek = await pmc.deriveKek(passphrase, salt, 'ARGON2ID');
@@ -126,6 +140,10 @@ export async function verifyPassphrase(passphrase: string): Promise<boolean> {
     }
 }
 
+/** The stored private key did not decrypt: distinguishable from transport errors
+ *  so callers can tell "wrong passphrase" from "the server is unreachable". */
+export class WrongPassphraseError extends Error {}
+
 /**
  * First unlock generates the keypair and uploads it (private key encrypted
  * with the KEK); later unlocks download and decrypt it — a wrong passphrase
@@ -151,7 +169,7 @@ export async function loadOrCreateKeys(passphrase: string): Promise<VaultKeys> {
     try {
         privateKey = await pmc.importEncryptedPrivateKey(stored.encryptedPrivateKey, stored.privateKeyIv, kek);
     } catch {
-        throw new Error(tr('Невірний passphrase для цього vault.', 'Wrong passphrase for this vault.'));
+        throw new WrongPassphraseError(tr('Невірний passphrase для цього vault.', 'Wrong passphrase for this vault.'));
     }
     return { kek, privateKey, publicKey: await pmc.importPublicKey(stored.publicKey) };
 }

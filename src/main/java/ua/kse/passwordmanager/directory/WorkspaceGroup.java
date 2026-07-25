@@ -9,7 +9,7 @@ public class WorkspaceGroup {
     @Id private String email;
     @Column(name = "directory_id") private String directoryId;
     @Column(nullable = false) private String displayName;
-    @Column(nullable = false) private boolean visibleToUsers;
+    @Column(nullable = false) private boolean visibleToUsers = true;
     @Column(name = "directory_present", nullable = false) private boolean directoryPresent = true;
     @Column(nullable = false) private Instant syncedAt = Instant.now();
     protected WorkspaceGroup() {}

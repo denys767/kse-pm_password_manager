@@ -52,6 +52,11 @@ public class CollectionService {
         if (group != null && !groupService.exists(group)) {
             throw new BadRequestException("Group does not exist in Google Workspace");
         }
+        // The picker already omits hidden groups, but the API must enforce the
+        // administrator's visibility decision on its own.
+        if (group != null && !user.isAdmin() && !groupService.isVisibleToUsers(group)) {
+            throw new ForbiddenException("This Google Workspace group is not available for collections");
+        }
         Collection collection = collectionRepository.save(
                 new Collection(request.name().trim(), user.email(), group));
         CollectionMember self = memberRepository.save(new CollectionMember(

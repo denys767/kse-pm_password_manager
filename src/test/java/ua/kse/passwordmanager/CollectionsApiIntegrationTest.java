@@ -24,6 +24,8 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import ua.kse.passwordmanager.directory.WorkspaceDirectoryClient;
 import ua.kse.passwordmanager.directory.DirectoryPrincipal;
+import ua.kse.passwordmanager.directory.WorkspaceGroup;
+import ua.kse.passwordmanager.directory.WorkspaceGroupRepository;
 
 import static org.mockito.Mockito.when;
 import static org.mockito.ArgumentMatchers.any;
@@ -46,10 +48,16 @@ class CollectionsApiIntegrationTest {
     @MockBean
     private WorkspaceDirectoryClient directory;
 
+    @Autowired
+    private WorkspaceGroupRepository workspaceGroups;
+
     @BeforeEach
     void directoryHasTestGroup() {
         when(directory.find(any(), any())).thenAnswer(invocation -> java.util.Optional.of(
-                new DirectoryPrincipal(DirectoryPrincipal.Type.GROUP, invocation.getArgument(1), "dev-team", "Dev team", false, 3L)));
+                new DirectoryPrincipal(DirectoryPrincipal.Type.GROUP, invocation.getArgument(1), "dev-team", "Dev team", false, 3L, true, null)));
+        // Attaching a group requires the local governance row that marks it visible;
+        // without it the group counts as hidden, exactly as for an unsynced group.
+        workspaceGroups.save(new WorkspaceGroup("dev-team", true));
     }
 
     private MockHttpServletRequestBuilder as(MockHttpServletRequestBuilder request, String email) {
@@ -188,6 +196,16 @@ class CollectionsApiIntegrationTest {
                 .get(0).get("id").asText();
         mockMvc.perform(as(delete("/api/collections/" + collectionId + "/members/" + ownerMemberId), ALICE))
                 .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void groupHiddenByAdminCannotBeAttachedToACollection() throws Exception {
+        workspaceGroups.save(new WorkspaceGroup("dev-team", false));
+        mockMvc.perform(as(post("/api/collections"), ALICE)
+                        .content("""
+                                {"name":"Hidden group","directoryGroup":"dev-team","wrappedKeyForSelf":"c2VsZg=="}
+                                """))
+                .andExpect(status().isForbidden());
     }
 
     @Test

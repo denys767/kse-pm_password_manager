@@ -190,14 +190,20 @@ public class SharingService {
         auditService.record(user.email(), AuditAction.ITEM_SHARED, item.getId(), item.getName(),
                 grantee, request.granteeType() + " granted role " + request.role());
         return PermissionResponse.from(permission,
-                request.granteeType() == GranteeType.GROUP ? GROUP_SHARE_WARNING : null);
+                request.granteeType() == GranteeType.GROUP ? GROUP_SHARE_WARNING : null,
+                request.granteeType() == GranteeType.GROUP ? groupVisibleToUsers(resolvedGrantee) : null);
     }
 
     public List<PermissionResponse> listPermissions(CurrentUser user, UUID itemId) {
         shareableItem(user, itemId);
         return permissionRepository.findByItemId(itemId).stream()
-                .map(PermissionResponse::from)
+                .map(permission -> PermissionResponse.from(permission, null,
+                        permission.getGranteeType() == GranteeType.GROUP ? groupVisibleToUsers(permission.getGrantee()) : null))
                 .toList();
+    }
+
+    private boolean groupVisibleToUsers(String groupEmail) {
+        return workspaceGroups.findById(groupEmail).map(WorkspaceGroup::isVisibleToUsers).orElse(false);
     }
 
     public List<PermissionMemberResponse> listMembers(CurrentUser user, UUID itemId, UUID permissionId) {

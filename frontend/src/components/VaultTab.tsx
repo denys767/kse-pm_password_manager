@@ -6,9 +6,10 @@ import { emptyPayload, parsePayload, serializePayload } from '../payload';
 import { unwrapItemKeyFor } from '../itemKeys';
 import { loadLocalItems } from '../localItems';
 import { ItemDialog } from './ItemDialog';
-import { IconFolder } from './Icons';
+import { IconFolder, IconLock, IconPencil, IconUsers } from './Icons';
 import { parseTags, collectTags } from '../tags';
 import { useI18n } from '../i18n';
+import { describeSharedAccess } from '../sharedAccess';
 import type { Session } from '../App';
 import type { Collection, PasswordItem, Settings } from '../types';
 
@@ -224,27 +225,45 @@ export function VaultTab({ session, settings, collections, openItemId, onItemOpe
                 <button type="button" className="secondary" disabled={busy !== null} onClick={() => setCsvPreview(null)}>{t('cancel')}</button>
             </section>}
             <ul id="item-list" className="item-list">
-                {items.map((item) => (
-                    <li key={item.id} onClick={() => setDialog({ mode: 'edit', item })}>
+                {items.map((item) => {
+                    const shared = describeSharedAccess(item, session.user.email, collections);
+                    return (
+                    <li key={item.id} className={shared ? `shared-with-me${shared.isViewOnly ? ' view-only' : ''}` : ''}
+                        onClick={() => setDialog({ mode: 'edit', item })}>
                         <div>
                             <strong>{item.name}</strong>
                             <span className="badge">{(item.type ?? 'LOGIN').toLowerCase().replace('_', ' ')}</span>
-                            {item.itemType === 'SHARED' && <span className="badge shared">shared</span>}
+                            {/* Shared-with-me rows carry the owner badge below; the raw tag would duplicate it. */}
+                            {item.itemType === 'SHARED' && !shared && <span className="badge shared">shared</span>}
                             {item.syncMode === 'LOCAL_ONLY' && <span className="badge local">local-only</span>}
                             {item.collectionId && (
                                 <span className="badge shared">
                                     <IconFolder width={11} height={11} /> {collections.find((c) => c.id === item.collectionId)?.name ?? 'collection'}
                                 </span>
                             )}
-                            {item.accessRole && item.accessRole !== 'OWNER'
-                                && <span className="badge">{item.accessRole.toLowerCase()}</span>}
+                            {shared && (
+                                <span className="badge owner-badge"
+                                      title={shared.collectionName
+                                          ? t('sharedViaCollectionTooltip', { collection: shared.collectionName, owner: shared.ownerEmail })
+                                          : t('sharedByTooltip', { owner: shared.ownerEmail })}>
+                                    <IconUsers width={11} height={11} /> {t('sharedWithMeBadge')}
+                                </span>
+                            )}
+                            {shared && (shared.isViewOnly
+                                ? <span className="badge view-only-badge" title={t('viewOnlyTooltip')}>
+                                      <IconLock width={11} height={11} /> {t('viewOnlyBadge')}
+                                  </span>
+                                : <span className="badge can-edit-badge" title={t('canEditTooltip')}>
+                                      <IconPencil width={11} height={11} /> {t('canEditBadge')}
+                                  </span>)}
                             <div className="item-meta">
                                 {[item.username, item.url].filter(Boolean).join(' · ')}
                             </div>
                         </div>
                         <button className="secondary small">{t('open')}</button>
                     </li>
-                ))}
+                    );
+                })}
             </ul>
             {items.length === 0 && (
                 <p id="empty-state" className="hint">{t('emptyVault')}</p>
