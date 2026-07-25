@@ -1035,22 +1035,6 @@ export function ItemDialog({ session, settings, collections, item, availableTags
                             ? tr('Shared-записи завжди зберігаються на сервері, інакше sharing не працює.', 'Shared items are always stored on the server, otherwise sharing cannot work.')
                             : tr('Вимкнено — запис залишиться тільки в цьому браузері (у зашифрованому вигляді).', 'Off — the item stays in this browser only (encrypted).')}
                     </p>
-                    {fields.sync && canEdit && <section id="attachment-section">
-                        <h4>{tr('Вкладення', 'Attachment')}</h4>
-                        <p className="hint">{tr('Одне вкладення шифрується AES-GCM у браузері та зберігається як непрозорий файл у Google Drive власника. Ліміт розміру не встановлюється застосунком; діють лише квоти й обмеження Google Drive.', 'One attachment is encrypted with AES-GCM in the browser and stored as an opaque file in the owner’s Google Drive. The app sets no size limit; only Google Drive quotas and limits apply.')}</p>
-                        {current?.attachment && !attachmentFile && <div className="row attachment-row">
-                            <span>{tr('Зашифроване вкладення', 'Encrypted attachment')} · {current.attachment.ciphertextSize.toLocaleString()} B</span>
-                            <button type="button" className="secondary small" onClick={downloadAttachment}>{tr('Завантажити', 'Download')}</button>
-                            {isOwner && <button type="button" className="secondary small" onClick={deleteAttachment}>{t('delete')}</button>}
-                        </div>}
-                        {isOwner && <label>{tr('Замінити вкладення', 'Replace attachment')}
-                            <input id="f-attachment" type="file" onChange={(event) => setAttachmentFile(event.target.files?.[0] ?? null)} />
-                            {attachmentFile && <span className="hint">{tr(`Буде зашифровано і завантажено після Save: ${attachmentFile.name} (${attachmentFile.size.toLocaleString()} B)`, `Will be encrypted and uploaded after Save: ${attachmentFile.name} (${attachmentFile.size.toLocaleString()} B)`)}</span>}
-                        </label>}
-                        {!isOwner && <p className="hint">{tr('Вкладення недоступне для заміни без прав власника.', 'The attachment cannot be replaced without owner rights.')}</p>}
-                    </section>}
-                    {!fields.sync && <p className="hint">{tr('Local-only записи виключені з вкладень Drive і серверних адміністраторських операцій.', 'Local-only items are excluded from Drive attachments and server-side admin operations.')}</p>}
-
                     {showShare && (
                         <div id="share-section">
                             <h4>{t('sharedAccess')}</h4>
@@ -1102,6 +1086,22 @@ export function ItemDialog({ session, settings, collections, item, availableTags
                             <button type="button" className="secondary small" onClick={extendExternalShare}>{tr('+24 год', '+24 h')}</button>
                             <button type="button" className="secondary small" onClick={revokeExternalShare}>{t('revoke')}</button></div>}
                     </section>}
+
+                    {fields.sync && canEdit && <section id="attachment-section">
+                        <h4>{tr('Вкладення', 'Attachment')}</h4>
+                        <p className="hint">{tr('Одне вкладення шифрується AES-GCM у браузері та зберігається як непрозорий файл у Google Drive власника. Ліміт розміру не встановлюється застосунком; діють лише квоти й обмеження Google Drive.', 'One attachment is encrypted with AES-GCM in the browser and stored as an opaque file in the owner’s Google Drive. The app sets no size limit; only Google Drive quotas and limits apply.')}</p>
+                        {current?.attachment && !attachmentFile && <div className="row attachment-row">
+                            <span>{tr('Зашифроване вкладення', 'Encrypted attachment')} · {current.attachment.ciphertextSize.toLocaleString()} B</span>
+                            <button type="button" className="secondary small" onClick={downloadAttachment}>{tr('Завантажити', 'Download')}</button>
+                            {isOwner && <button type="button" className="secondary small" onClick={deleteAttachment}>{t('delete')}</button>}
+                        </div>}
+                        {isOwner && <label>{tr('Замінити вкладення', 'Replace attachment')}
+                            <input id="f-attachment" type="file" onChange={(event) => setAttachmentFile(event.target.files?.[0] ?? null)} />
+                            {attachmentFile && <span className="hint">{tr(`Буде зашифровано і завантажено після Save: ${attachmentFile.name} (${attachmentFile.size.toLocaleString()} B)`, `Will be encrypted and uploaded after Save: ${attachmentFile.name} (${attachmentFile.size.toLocaleString()} B)`)}</span>}
+                        </label>}
+                        {!isOwner && <p className="hint">{tr('Вкладення недоступне для заміни без прав власника.', 'The attachment cannot be replaced without owner rights.')}</p>}
+                    </section>}
+                    {!fields.sync && <p className="hint">{tr('Local-only записи виключені з вкладень Drive і серверних адміністраторських операцій.', 'Local-only items are excluded from Drive attachments and server-side admin operations.')}</p>}
 
                     {current && current.syncMode !== 'LOCAL_ONLY' && itemKey && (
                         <div id="history-section">
