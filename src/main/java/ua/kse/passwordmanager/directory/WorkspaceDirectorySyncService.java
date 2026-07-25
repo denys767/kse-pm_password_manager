@@ -81,9 +81,9 @@ public class WorkspaceDirectorySyncService {
         int membershipCount = 0;
         for (DirectoryGroup source : sourceGroups) {
             String groupEmail = source.email().toLowerCase(Locale.ROOT);
-            // New groups deliberately start hidden. V12 seeds referenced legacy
-            // groups as visible, and sync never changes that administrator choice.
-            WorkspaceGroup group = groups.findById(groupEmail).orElseGet(() -> new WorkspaceGroup(groupEmail, false));
+            // New groups start visible by default; sync never overwrites an
+            // administrator's existing visibility choice for a known group.
+            WorkspaceGroup group = groups.findById(groupEmail).orElseGet(() -> new WorkspaceGroup(groupEmail, true));
             group.updateFromGoogle(source);
             groups.save(group);
             Set<String> current = membershipsByGroup.get(groupEmail);

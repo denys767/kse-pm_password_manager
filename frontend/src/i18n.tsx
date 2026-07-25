@@ -52,6 +52,8 @@ const messages = {
     noCollection: { uk: '— без колекції —', en: '— no collection —' },
     showPassword: { uk: 'Показати пароль', en: 'Show password' }, hidePassword: { uk: 'Приховати пароль', en: 'Hide password' }, generatePassword: { uk: 'Згенерувати пароль', en: 'Generate password' },
     addPassword: { uk: 'Додати пароль', en: 'Add password' },
+    groupHiddenBadge: { uk: 'приховано', en: 'hidden' },
+    groupHiddenTooltip: { uk: 'Приховано адміністратором Workspace: користувачі поза адмінами не бачать цю групу', en: 'Hidden by workspace admin: non-admin users cannot see this group' },
 } as const;
 
 type Key = keyof typeof messages;
