@@ -27,6 +27,7 @@ dialog { border:1px solid var(--border); border-radius:6px; padding:24px; width:
 .tag-editor:focus-within { border-color:#003964; box-shadow:0 0 0 3px #fff2b8; }
 .strength-bar { background:linear-gradient(90deg,#ffd100,#003964); }
 #item-dialog h3 { text-align:center; margin-top:0; }
+#dialog-title { display:flex; align-items:center; justify-content:center; flex-wrap:wrap; gap:4px; }
 /* Destructive Delete sits on the left; Cancel/Save stay grouped on the right. */
 .dialog-actions { justify-content:flex-end; flex-wrap:wrap; }
 .dialog-actions #delete-btn,.dialog-actions #warning-cancel { margin-right:auto; }

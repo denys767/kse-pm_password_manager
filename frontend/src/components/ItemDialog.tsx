@@ -8,7 +8,8 @@ import { loadLocalItems, saveLocalItems } from '../localItems';
 import { estimateStrength, generatePassword, hibpBreachCount } from '../passwords';
 import { emptyPayload, parsePayload, serializePayload } from '../payload';
 import { encryptShareSnapshot } from '../externalShare';
-import { IconCheck, IconEye, IconEyeOff, IconRefresh, IconUser, IconUsers, IconWarning } from './Icons';
+import { IconCheck, IconEye, IconEyeOff, IconLock, IconPencil, IconRefresh, IconUser, IconUsers, IconWarning } from './Icons';
+import { describeSharedAccess } from '../sharedAccess';
 import { DirectoryPicker } from './DirectoryPicker';
 import { parseTags, serializeTags } from '../tags';
 import { useI18n } from '../i18n';
@@ -98,6 +99,7 @@ export function ItemDialog({ session, settings, collections, item, availableTags
 
     const isOwner = !current || !current.accessRole || current.accessRole === 'OWNER';
     const canEdit = !current || ((isOwner || current.accessRole === 'EDITOR') && itemKey !== null);
+    const shared = current ? describeSharedAccess(current, session.user.email, collections) : null;
     const sharedType = fields.type === 'SHARED';
 
     useEffect(() => {
@@ -836,7 +838,24 @@ export function ItemDialog({ session, settings, collections, item, availableTags
         <>
             <dialog id="item-dialog" ref={dialogRef} onClose={() => onClose(false)}>
                 <form id="item-form" onSubmit={save}>
-                    <h3 id="dialog-title">{current ? current.name : t('addPassword')}</h3>
+                    <h3 id="dialog-title" className={shared ? `shared-with-me${shared.isViewOnly ? ' view-only' : ''}` : ''}>
+                        {current ? current.name : t('addPassword')}
+                        {shared && (
+                            <span className="badge owner-badge"
+                                  title={shared.collectionName
+                                      ? t('sharedViaCollectionTooltip', { collection: shared.collectionName, owner: shared.ownerEmail })
+                                      : t('sharedByTooltip', { owner: shared.ownerEmail })}>
+                                <IconUsers width={11} height={11} /> {t('sharedWithMeBadge')}
+                            </span>
+                        )}
+                        {shared && (shared.isViewOnly
+                            ? <span className="badge view-only-badge" title={t('viewOnlyTooltip')}>
+                                  <IconLock width={11} height={11} /> {t('viewOnlyBadge')}
+                              </span>
+                            : <span className="badge can-edit-badge" title={t('canEditTooltip')}>
+                                  <IconPencil width={11} height={11} /> {t('canEditBadge')}
+                              </span>)}
+                    </h3>
                     <label>{t('name')}*
                         <input id="f-name" required maxLength={255} readOnly={!canEdit}
                                value={fields.name} onChange={(e) => set('name', e.target.value)} />
