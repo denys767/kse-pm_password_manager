@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from './api';
-import { consumeVaultResetIntent, createVault, fetchConfig, initOidc, loadOrCreateKeys, oidcLogout, resetVault, setDevIdentity, VaultKeys } from './auth';
+import { consumeVaultResetIntent, createVault, fetchConfig, fetchVaultSalt, initOidc, loadOrCreateKeys, oidcLogout, resetVault, setDevIdentity, VaultKeys } from './auth';
 import { clearLocalItems } from './localItems';
+import { pruneStaleVaultWebAuthn, removeVaultWebAuthn } from './webauthnVault';
 import { clearVaultSession, loadVaultSession, saveVaultSession } from './vaultSession';
 import { UnlockScreen } from './components/UnlockScreen';
 import { VaultTab } from './components/VaultTab';
@@ -36,7 +37,6 @@ export default function App() {
         defaultSyncMode: 'SERVER_SYNCED',
         clipboardClearSeconds: 20,
         avatarDataUrl: null,
-        effectiveAvatarDataUrl: null,
     });
     const [tab, setTab] = useState<Tab>('vault');
     const [vaultItemToOpen, setVaultItemToOpen] = useState<string | null>(null);
@@ -45,6 +45,9 @@ export default function App() {
     const [bootstrapUser, setBootstrapUser] = useState<Me | null>(null);
     const [hasVault, setHasVault] = useState(true);
     const [resetRequested, setResetRequested] = useState(false);
+    // Identifies the current keypair; a passkey enrolment made for a different
+    // one wraps a passphrase this vault no longer accepts.
+    const [vaultSalt, setVaultSalt] = useState<string | null>(null);
 
     useEffect(() => {
         fetchConfig()
@@ -56,12 +59,13 @@ export default function App() {
                     setBootstrapUser(me);
                     const resetIntent = consumeVaultResetIntent();
                     setResetRequested(resetIntent);
-                    let vaultExists = true;
-                    try { await api('/api/keys/me'); setHasVault(true); }
-                    catch (e) {
-                        if ((e as { status?: number }).status === 404) { vaultExists = false; setHasVault(false); }
-                        else throw e;
-                    }
+                    const salt = await fetchVaultSalt();
+                    const vaultExists = salt !== null;
+                    setHasVault(vaultExists);
+                    setVaultSalt(salt);
+                    // A vault reset or re-creation may well have happened in
+                    // another browser; this is where such an orphan is noticed.
+                    pruneStaleVaultWebAuthn(me.email, salt);
                     // Resume an unlock that is still valid instead of asking for
                     // the passphrase again after the Keycloak redirect. A pending
                     // reset must not resume: it is about to replace these keys.
@@ -91,6 +95,7 @@ export default function App() {
         const keys = await loadOrCreateKeys(passphrase);
         await saveVaultSession(user.email, keys);
         setSession({ user, keys });
+        setVaultSalt(await fetchVaultSalt());
         setSettings(await api<Settings>('/api/settings'));
         await refreshCollections();
     }, [refreshCollections]);
@@ -98,16 +103,26 @@ export default function App() {
     const create = useCallback(async (passphrase: string) => {
         const user = bootstrapUser ?? await api<Me>('/api/me');
         const keys = await createVault(passphrase);
+        // A vault created from scratch still gets a brand-new keypair, so an
+        // enrolment surviving from an earlier vault is just as stale as after a
+        // reset.
+        removeVaultWebAuthn(user.email);
         await saveVaultSession(user.email, keys);
         setSession({ user, keys }); setHasVault(true);
+        setVaultSalt(await fetchVaultSalt());
         setSettings(await api<Settings>('/api/settings')); await refreshCollections();
     }, [bootstrapUser, refreshCollections]);
 
     const recover = useCallback(async (passphrase: string) => {
         const user = bootstrapUser ?? await api<Me>('/api/me');
         const keys = await resetVault(passphrase);
+        // The passkey blob wraps the *old* passphrase, so it can only ever hand
+        // back a passphrase the new keys reject. Drop the enrolment on reset;
+        // the user re-enables it in Settings under the new passphrase.
+        removeVaultWebAuthn(user.email);
         clearLocalItems(user.email); await saveVaultSession(user.email, keys);
         setSession({ user, keys }); setHasVault(true);
+        setVaultSalt(await fetchVaultSalt());
         setCollections([]); setSettings(await api<Settings>('/api/settings'));
     }, [bootstrapUser]);
 
@@ -148,15 +163,15 @@ export default function App() {
                         config.authMode === 'oidc' ? (
                             <a id="user-badge" className="topbar-user" href={`${config.keycloakUrl}/realms/${encodeURIComponent(config.realm ?? '')}/account/`}
                                target="_blank" rel="noopener noreferrer" title={tr('Керування профілем і 2FA в Account Console', 'Manage your profile and 2FA in the Account Console')}>
-                                {settings.effectiveAvatarDataUrl
-                                    ? <img className="avatar" src={settings.effectiveAvatarDataUrl} alt="" width={28} height={28} />
+                                {settings.avatarDataUrl
+                                    ? <img className="avatar" src={settings.avatarDataUrl} alt="" width={28} height={28} />
                                     : <span className="avatar">{(session.user.displayName || session.user.email).slice(0, 1).toUpperCase()}</span>}
                                 <span className="topbar-identity"><strong>{session.user.displayName || session.user.email}</strong><small>{session.user.email}</small></span>
                             </a>
                         ) : (
                             <span id="user-badge" className="topbar-user">
-                                {settings.effectiveAvatarDataUrl
-                                    ? <img className="avatar" src={settings.effectiveAvatarDataUrl} alt="" width={28} height={28} />
+                                {settings.avatarDataUrl
+                                    ? <img className="avatar" src={settings.avatarDataUrl} alt="" width={28} height={28} />
                                     : <span className="avatar">{(session.user.displayName || session.user.email).slice(0, 1).toUpperCase()}</span>}
                                 <span className="topbar-identity"><strong>{session.user.displayName || session.user.email}</strong><small>{session.user.email}</small></span>
                             </span>
@@ -169,7 +184,8 @@ export default function App() {
             </header>
 
             {!session && <UnlockScreen devMode={config.authMode === 'dev-headers'} user={bootstrapUser}
-                                      hasVault={hasVault} startRecovery={resetRequested} onUnlock={unlock} onCreate={create} onReset={recover} />}
+                                      hasVault={hasVault} vaultSalt={vaultSalt} startRecovery={resetRequested}
+                                      onUnlock={unlock} onCreate={create} onReset={recover} />}
 
             {session && <div className="workspace-shell">
                 <aside className="sidebar">
@@ -199,7 +215,7 @@ export default function App() {
                     {tab === 'tags' && <TagsTab session={session} onSelect={(tag) => { setVaultTagFilter(tag); setTab('vault'); }} />}
                     {tab === 'audit' && <AuditTab />}
                     {tab === 'admin' && <AdminTab />}
-                    {tab === 'settings' && <SettingsTab settings={settings} onSaved={setSettings} isAdmin={session.user.roles.includes('ADMIN')} config={config} user={session.user} />}
+                    {tab === 'settings' && <SettingsTab settings={settings} onSaved={setSettings} isAdmin={session.user.roles.includes('ADMIN')} config={config} user={session.user} vaultSalt={vaultSalt} />}
                 </main>
             </div>}
         </div>

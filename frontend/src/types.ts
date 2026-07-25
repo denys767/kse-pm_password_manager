@@ -132,11 +132,9 @@ export interface UserKeysDto {
 export interface Settings {
     defaultSyncMode: SyncMode;
     clipboardClearSeconds: number;
-    /** The manually uploaded avatar; only used when Google has no photo. */
+    /** The Google Workspace profile photo, synced by the directory job.
+     *  Read-only: there is no manual upload. */
     avatarDataUrl: string | null;
-    /** What to render: the Google Workspace photo when present, else the manual
-     *  one. Server-computed and read-only. */
-    effectiveAvatarDataUrl: string | null;
 }
 
 export interface ItemVersion {

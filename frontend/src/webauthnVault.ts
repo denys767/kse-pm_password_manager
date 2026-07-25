@@ -32,6 +32,12 @@ interface StoredCredential {
     prfSalt: string;      // base64 — fixed per enrolment, replayed on every unlock
     wrap: Wrapped;        // passphrase wrapped with the PRF-derived AES key
     createdAt: string;    // ISO 8601
+    /** The KDF salt of the vault whose passphrase is wrapped here. Every new
+     *  keypair (reset, or a vault created from scratch) gets a fresh salt, so a
+     *  mismatch means this enrolment holds a passphrase that no longer opens the
+     *  vault — wherever the change was made. Absent on pre-binding enrolments,
+     *  which are therefore treated as stale. */
+    vaultSalt?: string;
 }
 
 // The DOM lib in TypeScript 5.6 does not yet model the PRF extension, so the
@@ -68,18 +74,30 @@ export function isWebAuthnSupported(): boolean {
         && typeof navigator.credentials?.create === 'function';
 }
 
-export function hasVaultWebAuthn(email: string): boolean {
-    return localStorage.getItem(storageKey(email)) !== null;
+/** Whether this browser can unlock the vault identified by {@code vaultSalt}.
+ *  Pure — safe to call while rendering; drop stale blobs with
+ *  {@link pruneStaleVaultWebAuthn}. */
+export function hasVaultWebAuthn(email: string, vaultSalt: string | null): boolean {
+    return vaultWebAuthnEnrolledAt(email, vaultSalt) !== null;
 }
 
-/** ISO timestamp of the stored enrolment, or null when none exists. */
-export function vaultWebAuthnEnrolledAt(email: string): string | null {
+/** ISO timestamp of the enrolment for this vault, or null when there is none
+ *  (or the stored one belongs to a superseded vault). */
+export function vaultWebAuthnEnrolledAt(email: string, vaultSalt: string | null): string | null {
     const stored = readStored(email);
-    return stored?.createdAt ?? null;
+    if (!stored || vaultSalt === null || stored.vaultSalt !== vaultSalt) return null;
+    return stored.createdAt;
 }
 
 export function removeVaultWebAuthn(email: string): void {
     localStorage.removeItem(storageKey(email));
+}
+
+/** Deletes an enrolment left behind by a superseded vault, so it cannot be
+ *  offered again and Settings shows an honest "not enrolled". */
+export function pruneStaleVaultWebAuthn(email: string, vaultSalt: string | null): void {
+    const stored = readStored(email);
+    if (stored && stored.vaultSalt !== vaultSalt) removeVaultWebAuthn(email);
 }
 
 function readStored(email: string): StoredCredential | null {
@@ -129,7 +147,7 @@ async function evaluatePrf(credentialId: BufferSource, prfSalt: BufferSource): P
  * authenticator cannot do PRF, so the caller can surface a clear message.
  */
 export async function registerVaultWebAuthn(
-    user: { email: string; displayName: string }, passphrase: string): Promise<void> {
+    user: { email: string; displayName: string }, passphrase: string, vaultSalt: string): Promise<void> {
     if (!isWebAuthnSupported()) {
         throw new Error(tr('Passkey не підтримується у цьому браузері.', 'Passkeys are not supported in this browser.'));
     }
@@ -167,6 +185,7 @@ export async function registerVaultWebAuthn(
         prfSalt: b64(prfSalt),
         wrap: await wrapPassphrase(new Uint8Array(secret), passphrase),
         createdAt: new Date().toISOString(),
+        vaultSalt,
     };
     localStorage.setItem(storageKey(user.email), JSON.stringify(stored));
 }

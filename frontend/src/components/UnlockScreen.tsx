@@ -1,8 +1,8 @@
 import { FormEvent, useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import { assessPassphrase, PassphraseAssessment } from '../passphrase';
-import { reauthenticateForVaultReset } from '../auth';
-import { hasVaultWebAuthn, unlockWithVaultWebAuthn } from '../webauthnVault';
+import { reauthenticateForVaultReset, WrongPassphraseError } from '../auth';
+import { hasVaultWebAuthn, removeVaultWebAuthn, unlockWithVaultWebAuthn } from '../webauthnVault';
 import { hasAcceptedTos, recordTosAcceptance, TOS_SECTIONS } from '../termsOfService';
 import { hasAcceptedEula, recordEulaAcceptance, EULA_SECTIONS } from '../eula';
 import type { Me } from '../types';
@@ -12,6 +12,9 @@ interface Props {
     devMode: boolean;
     user: Me | null;
     hasVault: boolean;
+    /** KDF salt of the current keypair; identifies which vault a passkey
+     *  enrolment belongs to. */
+    vaultSalt: string | null;
     startRecovery: boolean;
     onUnlock: (passphrase: string, dev?: { email: string; roles: string; groups: string }) => Promise<void>;
     onCreate: (passphrase: string) => Promise<void>;
@@ -20,7 +23,7 @@ interface Props {
 
 type Impact = { allowed: boolean; ownedItemsToDelete: number; incomingSharesToRemove: number; membershipsToRemove: number; blockers: { kind: string; id: string; name: string; reason: string }[] };
 
-export function UnlockScreen({ devMode, user, hasVault, startRecovery, onUnlock, onCreate, onReset }: Props) {
+export function UnlockScreen({ devMode, user, hasVault, vaultSalt, startRecovery, onUnlock, onCreate, onReset }: Props) {
     const { language, t } = useI18n(); const tr = (uk: string, en: string) => language === 'uk' ? uk : en;
     const [email, setEmail] = useState(''); const [roles, setRoles] = useState(''); const [groups, setGroups] = useState('');
     const [passphrase, setPassphrase] = useState(''); const [confirmation, setConfirmation] = useState('');
@@ -29,16 +32,27 @@ export function UnlockScreen({ devMode, user, hasVault, startRecovery, onUnlock,
     const [recovering, setRecovering] = useState(false); const [impact, setImpact] = useState<Impact | null>(null);
     const [successors, setSuccessors] = useState<Record<string, string>>({});
     const [tosAccepted, setTosAccepted] = useState(false);
+    // The Google Workspace photo: the identity card should show the same face as
+    // the rest of the app, and the avatar lookup needs no unlocked vault.
+    const [avatarDataUrl, setAvatarDataUrl] = useState<string | null>(null);
     const tosDialogRef = useRef<HTMLDialogElement>(null);
     const eulaDialogRef = useRef<HTMLDialogElement>(null);
 
     const creating = !hasVault || recovering;
     useEffect(() => {
+        if (!user) { setAvatarDataUrl(null); return; }
+        api<{ avatarDataUrl: string | null }>(`/api/settings/${encodeURIComponent(user.email)}/avatar`)
+            .then((r) => setAvatarDataUrl(r.avatarDataUrl))
+            .catch(() => setAvatarDataUrl(null));
+    }, [user]);
+    useEffect(() => {
         if (creating && user) setTosAccepted(hasAcceptedTos(user.email) && hasAcceptedEula(user.email));
     }, [creating, user]);
     // WebAuthn unlock is a per-device convenience enrolled in Settings; only offer
-    // it on the plain unlock screen (not while creating/resetting) for this user.
-    const webAuthnAvailable = !devMode && hasVault && !recovering && !!user && hasVaultWebAuthn(user.email);
+    // it on the plain unlock screen (not while creating/resetting) for this user,
+    // and only when the enrolment belongs to the vault that is actually there.
+    const webAuthnAvailable = !devMode && hasVault && !recovering && !!user
+        && hasVaultWebAuthn(user.email, vaultSalt);
     useEffect(() => {
         if (!creating || !user || !passphrase) { setAssessment(null); return; }
         let active = true;
@@ -70,7 +84,18 @@ export function UnlockScreen({ devMode, user, hasVault, startRecovery, onUnlock,
         try {
             const recovered = await unlockWithVaultWebAuthn(user.email);
             await onUnlock(recovered);
-        } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
+        } catch (e) {
+            // The blob still decrypts but the passphrase inside no longer opens the
+            // vault: it was reset on another device. The enrolment is dead weight —
+            // drop it so this screen stops offering an unlock that cannot work.
+            if (e instanceof WrongPassphraseError) {
+                removeVaultWebAuthn(user.email);
+                setError(tr('Vault було скинуто, тому збережене Passkey-розблокування більше не дійсне. Введіть нову Vault Passphrase.',
+                    'The vault was reset, so the saved passkey unlock is no longer valid. Enter your new vault passphrase.'));
+            } else {
+                setError((e as Error).message);
+            }
+        } finally { setBusy(false); }
     }
 
     async function beginRecovery() {
@@ -114,7 +139,9 @@ export function UnlockScreen({ devMode, user, hasVault, startRecovery, onUnlock,
         <div className="card narrow unlock-card">
             {creating && <p className="eyebrow">{tr('ЗАХИЩЕНИЙ VAULT', 'SECURE VAULT')}</p>}
             <h1>{recovering ? tr('Створіть новий Vault', 'Create a new vault') : !hasVault ? tr('Створіть Vault Passphrase', 'Create a Vault passphrase') : tr('Розблокуйте Vault', 'Unlock vault')}</h1>
-            {user && <div className="identity-card"><span className="avatar">{user.displayName.slice(0, 1).toUpperCase()}</span><div><strong>{user.displayName}</strong><small>{user.email}</small></div></div>}
+            {user && <div className="identity-card">{avatarDataUrl
+                ? <img className="avatar" src={avatarDataUrl} alt="" width={28} height={28} />
+                : <span className="avatar">{user.displayName.slice(0, 1).toUpperCase()}</span>}<div><strong>{user.displayName}</strong><small>{user.email}</small></div></div>}
             <p className="hint">{creating ? tr('Ця фраза шифрує ваш приватний ключ лише у браузері. Ми не можемо її відновити.', 'This passphrase encrypts your private key only in the browser. We cannot recover it.') : tr('Ваша Vault Passphrase ніколи не надсилається на сервер.', 'Your Vault passphrase is never sent to the server.')}</p>
             <form onSubmit={submit}>
                 {devMode && <><label>{tr('Email (режим розробки)', 'Email (development mode)')}<input id="dev-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} /></label><label>{tr('Ролі', 'Roles')}<input id="dev-roles" value={roles} onChange={(e) => setRoles(e.target.value)} /></label><label>{tr('Групи', 'Groups')}<input id="dev-groups" value={groups} onChange={(e) => setGroups(e.target.value)} /></label></>}

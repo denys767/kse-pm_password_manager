@@ -10,8 +10,11 @@ import org.springframework.context.annotation.Lazy;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import ua.kse.passwordmanager.auth.AuthFacade;
 import ua.kse.passwordmanager.directory.DirectoryPrincipal;
 import ua.kse.passwordmanager.directory.WorkspaceDirectoryClient;
+import ua.kse.passwordmanager.directory.WorkspaceGroup;
+import ua.kse.passwordmanager.directory.WorkspaceGroupRepository;
 import ua.kse.passwordmanager.audit.AuditAction;
 import ua.kse.passwordmanager.audit.AuditService;
 
@@ -23,6 +26,8 @@ public class CollectionGroupService {
     private final CollectionRepository collections;
     private final CollectionMemberRepository members;
     private final AuditService audit;
+    private final WorkspaceGroupRepository workspaceGroups;
+    private final AuthFacade auth;
     /** The proxy, so the scheduled loop below actually gets sync()'s transaction:
      * a plain this.sync(...) self-invocation bypasses the @Transactional advice
      * and lets each repository write commit on its own. A failure halfway
@@ -33,17 +38,36 @@ public class CollectionGroupService {
 
     public CollectionGroupService(WorkspaceDirectoryClient directory,
                                   CollectionRepository collections, CollectionMemberRepository members,
-                                  AuditService audit, @Lazy CollectionGroupService self) {
+                                  AuditService audit, WorkspaceGroupRepository workspaceGroups,
+                                  AuthFacade auth, @Lazy CollectionGroupService self) {
         this.directory = directory;
         this.collections = collections;
         this.members = members;
         this.audit = audit;
+        this.workspaceGroups = workspaceGroups;
+        this.auth = auth;
         this.self = self;
     }
 
+    /** Google owns the group list, but an administrator can hide a group from
+     * regular users; a hidden group must not be attachable to a collection
+     * either, so the same governance filter as the directory picker applies. */
     @Transactional(readOnly = true)
     public List<String> available() {
-        return directory.search("", List.of(DirectoryPrincipal.Type.GROUP), 100).stream().map(DirectoryPrincipal::email).toList();
+        boolean admin = auth.current().isAdmin();
+        return directory.search("", List.of(DirectoryPrincipal.Type.GROUP), 100).stream()
+                .map(DirectoryPrincipal::email)
+                .filter(email -> admin || isVisibleToUsers(email))
+                .toList();
+    }
+
+    /** False for a group an administrator has hidden or that is no longer in the Directory. */
+    @Transactional(readOnly = true)
+    public boolean isVisibleToUsers(String email) {
+        return workspaceGroups.findById(email.trim().toLowerCase(Locale.ROOT))
+                .filter(WorkspaceGroup::isDirectoryPresent)
+                .map(WorkspaceGroup::isVisibleToUsers)
+                .orElse(false);
     }
 
     /** True when the group still exists in Google Workspace. */

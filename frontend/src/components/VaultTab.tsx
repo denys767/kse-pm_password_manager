@@ -233,7 +233,8 @@ export function VaultTab({ session, settings, collections, openItemId, onItemOpe
                         <div>
                             <strong>{item.name}</strong>
                             <span className="badge">{(item.type ?? 'LOGIN').toLowerCase().replace('_', ' ')}</span>
-                            {item.itemType === 'SHARED' && <span className="badge shared">shared</span>}
+                            {/* Shared-with-me rows carry the owner badge below; the raw tag would duplicate it. */}
+                            {item.itemType === 'SHARED' && !shared && <span className="badge shared">shared</span>}
                             {item.syncMode === 'LOCAL_ONLY' && <span className="badge local">local-only</span>}
                             {item.collectionId && (
                                 <span className="badge shared">

@@ -29,20 +29,21 @@ public class SettingsController {
     }
 
     /**
-     * Google Workspace is the source of truth for profile photos: whoever has one
-     * there sees it everywhere in the app, and the manually uploaded avatar only
-     * covers accounts without a Google photo.
+     * Google Workspace is the only source of profile photos: they are materialized
+     * by the directory sync, so an account without a Google photo simply falls back
+     * to initials in the UI. Manual uploads were removed — the stale
+     * {@code user_settings.avatar_data_url} column is no longer read or written.
      */
-    private String resolveAvatar(String email, String manualAvatarDataUrl) {
+    private String googleAvatar(String email) {
         String fromGoogle = directoryUsers.findById(email).map(WorkspaceUser::getAvatarDataUrl).orElse(null);
-        return fromGoogle != null && !fromGoogle.isBlank() ? fromGoogle : manualAvatarDataUrl;
+        return fromGoogle != null && !fromGoogle.isBlank() ? fromGoogle : null;
     }
 
     @GetMapping
     public SettingsDto get() {
         String email = authFacade.current().email();
         UserSettings settings = repository.findById(email).orElseGet(() -> new UserSettings(email));
-        return SettingsDto.from(settings, resolveAvatar(email, settings.getAvatarDataUrl()));
+        return SettingsDto.from(settings, googleAvatar(email));
     }
 
     @PutMapping
@@ -52,17 +53,14 @@ public class SettingsController {
         UserSettings settings = repository.findById(email).orElseGet(() -> new UserSettings(email));
         settings.setDefaultSyncMode(dto.defaultSyncMode());
         settings.setClipboardClearSeconds(dto.clipboardClearSeconds());
-        settings.setAvatarDataUrl(dto.avatarDataUrl());
         UserSettings saved = repository.save(settings);
-        return SettingsDto.from(saved, resolveAvatar(email, saved.getAvatarDataUrl()));
+        return SettingsDto.from(saved, googleAvatar(email));
     }
 
     /** Any authenticated user can look up another user's avatar — same visibility as their public key. */
     @GetMapping("/{email}/avatar")
     public AvatarDto avatar(@PathVariable String email) {
-        String normalized = email.trim().toLowerCase(Locale.ROOT);
-        String manual = repository.findById(normalized).map(UserSettings::getAvatarDataUrl).orElse(null);
-        return new AvatarDto(resolveAvatar(normalized, manual));
+        return new AvatarDto(googleAvatar(email.trim().toLowerCase(Locale.ROOT)));
     }
 
     public record AvatarDto(String avatarDataUrl) { }
