@@ -20,18 +20,30 @@ services:
       GOOGLE_WORKSPACE_ADMIN_EMAIL: ${GOOGLE_WORKSPACE_ADMIN_EMAIL:?set GOOGLE_WORKSPACE_ADMIN_EMAIL}
       GOOGLE_WORKSPACE_CUSTOMER_ID: ${GOOGLE_WORKSPACE_CUSTOMER_ID:-my_customer}
       GOOGLE_WORKSPACE_DOMAIN: ${GOOGLE_WORKSPACE_DOMAIN:?set GOOGLE_WORKSPACE_DOMAIN}
-    # No key file: the caller identity (Application Default Credentials)
-    # impersonates GOOGLE_WORKSPACE_SERVICE_ACCOUNT_EMAIL via IAM Credentials
-    # API signJwt. On a GCE/GKE host with an attached service account holding
-    # roles/iam.serviceAccountTokenCreator on the target SA, ADC resolves
-    # automatically through the metadata server — nothing else to set here.
-    # Off GCP, uncomment both lines below to mount a
-    # `gcloud auth application-default login` file instead; never mount a
-    # static service-account key.
-    # environment:
-    #   GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/adc.json
-    # volumes:
-    #   - ${GOOGLE_ADC_FILE}:/run/secrets/adc.json:ro
+      # Off GCP, prefer workload identity federation: the app authenticates to
+      # this stack's own Keycloak as a confidential client and exchanges that
+      # token at Google STS, so nothing here can expire without a human. Set
+      # these four and leave GOOGLE_WORKSPACE_CREDENTIALS_PATH empty:
+      WORKSPACE_FEDERATION_TOKEN_URL: ${WORKSPACE_FEDERATION_TOKEN_URL:-}
+      WORKSPACE_FEDERATION_CLIENT_ID: ${WORKSPACE_FEDERATION_CLIENT_ID:-}
+      WORKSPACE_FEDERATION_CLIENT_SECRET: ${WORKSPACE_FEDERATION_CLIENT_SECRET:-}
+      WORKSPACE_FEDERATION_AUDIENCE: ${WORKSPACE_FEDERATION_AUDIENCE:-}
+      # On GCE/GKE, leave federation and this empty instead: an attached
+      # service account holding roles/iam.serviceAccountTokenCreator on the
+      # target SA resolves through the metadata server and renews itself.
+      # Last resort only (most Workspace admins will not authorize a
+      # downloaded key) — mount a domain-wide-delegated service-account key
+      # and point this at it, see the volume below. Do NOT run a production
+      # deployment on a `gcloud auth application-default login` credential:
+      # Google's reauth policy expires it within hours and directory access
+      # dies with it.
+      GOOGLE_WORKSPACE_CREDENTIALS_PATH: ${GOOGLE_WORKSPACE_CREDENTIALS_PATH:-}
+    volumes:
+      # Only needed for the service-account-key fallback: mount the key
+      # read-only when GOOGLE_WORKSPACE_CREDENTIALS_PATH is set to
+      # /run/secrets/workspace-sa.json. Keep the file out of the image and out
+      # of git; rotate it by replacing the file (no restart needed).
+      - ${GOOGLE_WORKSPACE_KEY_FILE:-/dev/null}:/run/secrets/workspace-sa.json:ro
     depends_on:
       - postgres
       - keycloak
@@ -58,6 +70,12 @@ services:
       KC_DB_USERNAME: pm
       KC_DB_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:?set GOOGLE_CLIENT_SECRET}
+      # Optional: only needed when the backend uses workload identity
+      # federation instead of a service-account key or attached identity.
+      # The audience is substituted into the kse-pm-federation client's
+      # audience mapper, so Google STS accepts the token's aud claim.
+      WORKSPACE_FEDERATION_CLIENT_SECRET: ${WORKSPACE_FEDERATION_CLIENT_SECRET:-}
+      WORKSPACE_FEDERATION_AUDIENCE: ${WORKSPACE_FEDERATION_AUDIENCE:-}
     volumes:
       - ./keycloak:/opt/keycloak/data/import
       - ./keycloak/themes:/opt/keycloak/themes:ro

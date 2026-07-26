@@ -2,6 +2,7 @@
   "manifest_version": 3,
   "name": "KSE Password Manager",
   "version": "0.2.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArs1bG9lkCaECHHZK5VTwCEIwhxgK58jFmItKCNm40JkoIiCHRGlRZEe1iOQ+kPIhkwjcsMuYlWulrAeurKKMipvAgfUrfVPBqOZtRxloPYwFagAgvM+6o4UgQxDoXvSZbyni7wTvsnY+YGATnxXyqufGMFg1Ihi6r7Tv27alfzYblTiBsvd+nQzymWLR0nCqsc9VrUSB9FVtXz3VzjFJNzJ4T7+VAQvifUds1lYDdhiZ6w1uW4bpeYB7BhXJ3RBAJukVf5h7wKDZyQlydsYtfur139D+Xe9NMRGO/fZQRnSIIyCrzwug0tJ0akFGgG7ZGuVMyWBOEKeFP0njOUsXJQIDAQAB",
   "minimum_chrome_version": "115",
   "description": "KSE Password Manager autofill MVP",
   "action": { "default_popup": "popup.html", "default_title": "KSE Password Manager" },

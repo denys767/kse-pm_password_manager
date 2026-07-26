@@ -1,5 +1,6 @@
 package ua.kse.passwordmanager.directory;
 
+import java.time.Instant;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Locale;
@@ -9,7 +10,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import ua.kse.passwordmanager.common.BadGatewayException;
 
 /** Materializes Google Workspace, keeping local governance decisions intact. */
 @Service
@@ -19,6 +19,10 @@ public class WorkspaceDirectorySyncService {
     private final WorkspaceUserRepository users;
     private final WorkspaceGroupRepository groups;
     private final WorkspaceMembershipRepository memberships;
+    private volatile Instant lastSuccessAt;
+    private volatile Instant lastAttemptAt;
+    private volatile String lastError;
+    private volatile int consecutiveFailures;
 
     public WorkspaceDirectorySyncService(WorkspaceDirectoryClient directory, WorkspaceUserRepository users,
             WorkspaceGroupRepository groups, WorkspaceMembershipRepository memberships) {
@@ -29,19 +33,51 @@ public class WorkspaceDirectorySyncService {
      * in installations that have not mounted Directory credentials yet. */
     @Scheduled(fixedDelayString = "${pm.google-workspace.sync-interval-ms:900000}",
             initialDelayString = "${pm.google-workspace.sync-initial-delay-ms:120000}")
-    @Transactional
     public void scheduledSync() {
+        syncQuietly();
+    }
+
+    /**
+     * Until the very first snapshot lands, retries every minute instead of
+     * every fifteen. A Directory outage (or expired caller credentials) during
+     * startup used to leave the whole deployment with an empty snapshot — and
+     * therefore every request denied — for a quarter of an hour after the
+     * problem was fixed.
+     */
+    @Scheduled(fixedDelayString = "${pm.google-workspace.bootstrap-retry-ms:60000}",
+            initialDelayString = "${pm.google-workspace.bootstrap-initial-delay-ms:5000}")
+    public void bootstrapSync() {
+        if (lastSuccessAt != null || users.count() > 0) return;
+        log.info("Workspace snapshot is empty; attempting an initial directory sync");
+        syncQuietly();
+    }
+
+    /** Never lets a Directory problem escape into the scheduler: local
+     * governance state is left exactly as it was, and the failure is recorded
+     * for {@link #status()} so an administrator can see why data is stale. */
+    private void syncQuietly() {
+        lastAttemptAt = Instant.now();
         try {
             SyncResult result = sync();
+            lastSuccessAt = Instant.now();
+            lastError = null;
+            consecutiveFailures = 0;
             log.info("Workspace directory sync: {} users, {} groups, {} memberships",
                     result.users(), result.groups(), result.memberships());
-        } catch (BadGatewayException e) {
+        } catch (RuntimeException e) {
             // Swallowed so a Directory outage never wipes local governance state,
             // but never silently: without this line a misconfigured deployment
             // just looks like "users are not provisioned" with no trace at all.
-            log.warn("Workspace directory sync failed; local governance state left unchanged: {}",
-                    rootCauseMessage(e), e);
+            consecutiveFailures++;
+            lastError = rootCauseMessage(e);
+            log.warn("Workspace directory sync failed ({} in a row); local governance state left unchanged: {}",
+                    consecutiveFailures, lastError, e);
         }
+    }
+
+    /** Freshness of the local Workspace snapshot, for the admin screen. */
+    public DirectoryStatus status() {
+        return new DirectoryStatus(lastSuccessAt, lastAttemptAt, lastError, consecutiveFailures, users.count());
     }
 
     private static String rootCauseMessage(Throwable failure) {
@@ -143,4 +179,9 @@ public class WorkspaceDirectorySyncService {
     }
 
     public record SyncResult(int users, int groups, int memberships) {}
+
+    /** Null timestamps mean "never": a snapshot that has never been fetched is
+     * the state that used to lock every user out of the application. */
+    public record DirectoryStatus(Instant lastSuccessAt, Instant lastAttemptAt, String lastError,
+                                  int consecutiveFailures, long knownUsers) {}
 }

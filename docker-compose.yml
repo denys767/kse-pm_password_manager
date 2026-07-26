@@ -17,6 +17,12 @@ services:
       KEYCLOAK_ADMIN: admin
       KEYCLOAK_ADMIN_PASSWORD: admin
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:?set GOOGLE_CLIENT_SECRET}
+      # Optional: only needed when the backend uses workload identity
+      # federation instead of a service-account key or attached identity.
+      # The audience is substituted into the kse-pm-federation client's
+      # audience mapper, so Google STS accepts the token's aud claim.
+      WORKSPACE_FEDERATION_CLIENT_SECRET: ${WORKSPACE_FEDERATION_CLIENT_SECRET:-}
+      WORKSPACE_FEDERATION_AUDIENCE: ${WORKSPACE_FEDERATION_AUDIENCE:-}
     ports:
       - "8081:8081"
     volumes:

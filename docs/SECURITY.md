@@ -5,50 +5,58 @@ matter once this app leaves a developer's laptop. It complements
 `docs/DEPLOYMENT.md` (setup steps) and `docs/OPERATIONS.md` (runbooks) —
 those describe *how* to deploy; this describes *what could go wrong* and why.
 
-## 1. Google Workspace directory access — keyless impersonation, fixed 2026-07-23
+## 1. Google Workspace directory credentials — key vs. impersonation
 
-`GoogleWorkspaceDirectoryClient` used to authenticate with a static
-downloaded JSON key (`ServiceAccountCredentials.fromStream(credentialsPath)`)
-delegated to a Workspace admin for domain-wide delegation (DWD) — the
-weakest link in the whole design: no expiry, domain-wide blast radius on
-leak (`admin.directory.*.readonly` for every user in the domain), and
-exactly the pattern newer Google orgs block by default via the managed org
-policy `iam.managed.disableServiceAccountKeyCreation`.
+`GoogleWorkspaceDirectoryClient` originally authenticated with a static
+downloaded JSON key delegated to a Workspace admin. That was replaced in
+2026-07 with keyless impersonation: load the caller's Application Default
+Credentials, call IAM Credentials `signJwt` as that caller to sign a
+domain-wide-delegation assertion, exchange it for a short-lived Directory
+token. On GCP, where ADC is an attached service account, that remains the
+best option — nothing is on disk, the caller credential is scoped to
+`iam.serviceAccounts.signJwt` on one service account, and it is revocable by
+removing an IAM binding.
 
-**Fix applied:** `GoogleWorkspaceDirectoryClient` (`src/main/java/.../directory/GoogleWorkspaceDirectoryClient.java`)
-no longer loads any key file. It now:
-1. Loads the *caller's* Application Default Credentials (ADC) — on GCP
-   compute this is the attached service account via the metadata server; for
-   local testing it's `gcloud auth application-default login`.
-2. Calls the IAM Credentials API (`iamcredentials.googleapis.com:signJwt`)
-   as that caller to sign a DWD JWT assertion (`iss`=target service account,
-   `sub`=`GOOGLE_WORKSPACE_ADMIN_EMAIL`, the three Directory scopes), which
-   only requires the caller to hold `roles/iam.serviceAccountTokenCreator`
-   on the target service account — no key material ever leaves Google's
-   servers.
-3. Exchanges the signed JWT at `oauth2.googleapis.com/token`
-   (`urn:ietf:params:oauth:grant-type:jwt-bearer`) for a normal delegated
-   access token, cached in memory until near-expiry (`directoryToken()`).
+Off GCP that design has no safe form on its own. The only ADC available there
+is a `gcloud auth application-default login` user credential, and Google's
+reauth policy expires it within hours (`invalid_grant / invalid_rapt`) —
+directory suggestions, group sync and new shares stop working until a human
+logs in again. A password manager cannot be built on a credential that needs a
+human overnight. 2026-07 added workload identity federation to close that gap
+without a downloaded key: the app authenticates to this stack's own Keycloak
+with a `client_credentials` machine grant (no human, nothing a reauth policy
+can touch) and exchanges that OIDC token at Google STS for the caller identity
+that signs the delegation assertion.
 
-This changes the property of a leak: what can now leak is, at most, a
-caller credential scoped to `iam.serviceAccounts.signJwt` on one specific
-service account — revocable by removing an IAM binding or (for the local
-`gcloud` case) revoking the user's OAuth grant — rather than a standing,
-unexpiring, domain-wide-readable bearer secret. Domain-wide delegation
-authorization in the Workspace Admin Console (client ID → the three
-`admin.directory.*.readonly` scopes) is unchanged; only how the app proves
-it's allowed to ask for that delegation changed.
+So three modes are supported and the deployment picks (see
+`docs/DEPLOYMENT.md`):
+- **Mode B, attached service account** — preferred wherever it exists; keyless.
+- **Mode A, workload identity federation** — the recommended choice off GCP;
+  keyless, self-renewing, and needs no Workspace-admin-authorized private key.
+  Its own secret is a Keycloak client secret (`WORKSPACE_FEDERATION_CLIENT_SECRET`),
+  which is local infrastructure we mint and rotate ourselves — not a Google
+  credential — and grants nothing on its own without the matching GCP IAM
+  binding on the workload identity pool.
+- **Mode C, service-account key** (`GOOGLE_WORKSPACE_CREDENTIALS_PATH`) — last
+  resort, with the original risk back: a standing, unexpiring,
+  domain-wide-readable secret. Mitigate it — mount read-only from a secret
+  store, never bake it into an image or git, restrict to the three
+  `admin.directory.*.readonly` scopes plus `drive.appdata`, rotate by
+  replacing the file (picked up without a restart), and watch for the managed
+  org policy `iam.managed.disableServiceAccountKeyCreation`, which blocks key
+  creation in newer Google orgs.
 
-Still true and worth keeping:
-- Restrict DWD scopes to exactly the three Directory read-only scopes
-  (plus `drive.appdata` for recovery); never grant write/admin scopes.
-- If ADC/impersonation is missing or the target lacks
-  `roles/iam.serviceAccountTokenCreator`, the app fails closed —
-  `mintDelegatedToken()` throws `BadGatewayException` (502), and if
-  `GOOGLE_WORKSPACE_SERVICE_ACCOUNT_EMAIL` isn't set at all,
-  `UnavailableWorkspaceDirectoryClient` takes over and throws 502 rather
-  than silently skipping governance. Keep that fail-closed behavior in any
-  further refactor.
+What must not change:
+- Restrict DWD scopes to exactly the three Directory read-only scopes plus
+  `drive.appdata`; never grant write/admin scopes.
+- Credential problems fail closed *for Directory data*: `DelegatedTokenMinter.mint()`
+  throws 502 and, with no service account configured at all,
+  `UnavailableWorkspaceDirectoryClient` takes over. Interactive lookups then
+  degrade to the local Workspace snapshot (§5) rather than inventing data, and
+  the synchronizer never treats that snapshot as a fresh Directory read.
+- The application reports its credential mode at startup and on the Admin tab
+  (`credentialUnattended`); a deployment running on a user credential is
+  visibly misconfigured rather than quietly doomed.
 
 ## 2. Rate limiting trusted a spoofable client IP — fixed 2026-07-23
 
@@ -91,20 +99,21 @@ real MFA gate should know it currently is not, and should track the
 "custom Keycloak SPI/authenticator" direction noted in `KEYCLOAK.md` before
 claiming MFA coverage in a compliance/audit context.
 
-## 4. Recovery escrow breaks zero-knowledge, by design
+## 4. No server-side recovery of vault key material
 
-Documented in `docs/DEPLOYMENT.md` ("Recovery escrow and KMS runbook") —
-repeating here because it's a security *property change*, not just an ops
-step: any item/collection/passkey enrolled in recovery wrapping can be
-decrypted server-side by an authorized administrator via Cloud KMS. This
-is an intentional trade-off (lost-key recovery), but it means the
-deployment is **not** zero-knowledge for recovery-wrapped records. Anyone
-evaluating this app's threat model (e.g. for a security review) needs that
-called out explicitly, not discovered by reading KMS IAM bindings later.
-Controls that make this acceptable — step-up SSO for recovery operators,
-mandatory case/ticket reason, audit trail, never logging plaintext/wrapped
-keys — are load-bearing; removing any of them changes the trust model
-further.
+The KMS recovery escrow that used to wrap every item, collection and passkey
+key for a service identity was removed: no component of the deployment can
+decrypt a user's records without that user's vault passphrase. A user who
+forgets the passphrase resets the vault (`POST /api/vault/reset`), which
+destroys their owned records after ownership of anything shared has been
+transferred to a successor who already holds an encrypted copy of the key.
+Two consequences to keep in mind:
+- There is no administrator "break glass" path to a departed employee's
+  personal records. Anything that must survive an offboarding has to be
+  shared with a collection or a second user *before* it is needed.
+- Reintroducing escrow would change the trust model back — it is a
+  security-property change, not an ops feature, and belongs in this document
+  rather than only in a deployment runbook.
 
 ## 5. `hostedDomain` is a UI/login-flow hint, not the real authorization boundary
 
@@ -127,15 +136,33 @@ account is not provisioned"). Two consequences to keep in mind:
   set to different values — they must match, or the two layers disagree
   about who's "internal."
 
+There is one deliberate exception to "the snapshot is the boundary". While
+the local Workspace snapshot is **empty** — it has never been fetched, because
+the database is new, the caller's credentials expired, or Directory is down —
+`GovernedAuthenticationFilter` admits an in-domain, SSO-authenticated account
+as an ordinary `USER` instead of denying every request. Without it, one
+expired credential locks every user out of their own vault. What this costs
+and why it is bounded:
+- It applies only when there are **zero** `WorkspaceUser` rows. One successful
+  sync ends it permanently for that database; an unknown or revoked account is
+  refused again as soon as there is any data to judge it by.
+- It never grants `ADMIN`, so admin screens and workspace governance stay shut.
+- Google is still the live authority during login (a suspended Google account
+  cannot complete SSO at all), and Keycloak still enforces `hostedDomain`.
+- It is logged (`WARN`, at most once a minute) and visible on the Admin tab
+  through `GET /api/admin/workspace/directory-status`.
+- `WORKSPACE_PROVISIONAL_ACCESS=false` turns it off for deployments that
+  prefer a hard outage to a degraded boundary.
+
 ## 6. Secrets inventory — all of these must leave `.env`/git before production
 
 | Secret | Used for | Notes |
 |---|---|---|
 | `GOOGLE_CLIENT_SECRET` | Keycloak Google IdP token exchange | Rejects login silently as a generic Keycloak error page if wrong/missing — easy to misdiagnose |
-| `GOOGLE_WORKSPACE_CREDENTIALS_PATH` (JSON key) | Directory API DWD | See §1 |
+| `WORKSPACE_FEDERATION_CLIENT_SECRET` | Keycloak `client_credentials` grant for workload identity federation | Local secret, not a Google credential; grants nothing without the matching GCP IAM binding. The recommended way to run unattended off GCP without a downloaded key (see `DEPLOYMENT.md`) |
+| `GOOGLE_WORKSPACE_CREDENTIALS_PATH` (JSON key) | Directory API + Drive attachments, domain-wide delegation | Last-resort credential when federation and an attached service account are both unavailable (see `DEPLOYMENT.md`). Mount read-only, never bake into an image, rotate by replacing the file |
 | `KEYCLOAK_EVENTS_SECRET` | Shared secret for `/api/audit/keycloak-events` | `nginx/nginx.conf:29` explicitly 404s this path on the public edge — keep that rule if the proxy config is ever regenerated |
 | `DB_PASSWORD`, `KEYCLOAK_ADMIN_PASSWORD` | Postgres / Keycloak bootstrap admin | Standard, but note `KEYCLOAK_ADMIN_PASSWORD` is a full Keycloak realm admin — treat as tier-0 |
-| KMS key material | Recovery escrow (§4) | Never exported; only `roles/cloudkms.cryptoKeyEncrypterDecrypter` on the specific key version for the runtime SA |
 
 None of these should be baked into a container image or committed; `.env`
 is gitignored but still lives in plaintext on disk — a secret manager

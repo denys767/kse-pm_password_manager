@@ -18,4 +18,10 @@ public interface WorkspaceDirectoryClient {
      * none. Only the synchronizer calls this — interactive paths read the
      * materialized copy instead. */
     Optional<String> userPhotoDataUrl(String userKey);
+
+    /** What this deployment authenticates with, and whether that credential can
+     * keep working unattended. Surfaced on the admin screen. */
+    default DirectoryCredentialSummary credentials() {
+        return DirectoryCredentialSummary.notConfigured();
+    }
 }

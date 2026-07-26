@@ -3,16 +3,12 @@ package ua.kse.passwordmanager.attachment;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.auth.oauth2.AccessToken;
-import com.google.auth.oauth2.ServiceAccountCredentials;
-import java.io.FileInputStream;
-import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
@@ -20,25 +16,30 @@ import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
 import ua.kse.passwordmanager.common.BadGatewayException;
 import ua.kse.passwordmanager.common.QuotaExceededException;
+import ua.kse.passwordmanager.google.DelegatedTokenMinter;
 
 /** Google Drive appDataFolder transport using domain-wide delegation to the
  * record owner. Resumable upload is used for every opaque ciphertext, avoiding
- * a second application-level size policy. */
+ * a second application-level size policy. Tokens are minted by the shared
+ * {@link DelegatedTokenMinter} — a service-account key, workload identity
+ * federation, or Application Default Credentials, depending on deployment. */
 @Component
-@ConditionalOnProperty(name = "pm.google-workspace.credentials-path")
+// Not @ConditionalOnProperty: that matches a declared-but-empty value, so a
+// deployment that maps the credentials-path or federation settings through
+// without setting them would construct this bean and fail startup instead of
+// falling back to UnavailableDriveAttachmentStore.
+@ConditionalOnExpression("'${pm.google-workspace.credentials-path:}'.trim() != '' "
+        + "or '${pm.google-workspace.service-account-email:}'.trim() != ''")
 public class GoogleDriveAttachmentStore implements DriveAttachmentStore {
     private static final List<String> SCOPES = List.of("https://www.googleapis.com/auth/drive.appdata");
     private final RestClient drive = RestClient.create("https://www.googleapis.com/drive/v3/");
     private final RestClient upload = RestClient.create("https://www.googleapis.com/upload/drive/v3/");
     private final ObjectMapper json;
-    private final ServiceAccountCredentials service;
+    private final DelegatedTokenMinter minter;
 
-    public GoogleDriveAttachmentStore(ObjectMapper json,
-            @Value("${pm.google-workspace.credentials-path}") String credentialsPath) {
+    public GoogleDriveAttachmentStore(ObjectMapper json, DelegatedTokenMinter minter) {
         this.json = json;
-        try (FileInputStream in = new FileInputStream(credentialsPath)) {
-            service = ServiceAccountCredentials.fromStream(in);
-        } catch (IOException e) { throw new IllegalStateException("Cannot load Google Drive service account", e); }
+        this.minter = minter;
     }
 
     @Override public String upload(String ownerEmail, byte[] ciphertext, long expectedSize, String ciphertextSha256) {
@@ -85,8 +86,8 @@ public class GoogleDriveAttachmentStore implements DriveAttachmentStore {
         } catch (Exception e) { throw new BadGatewayException("Google Drive deletion failed", e); }
     }
 
-    private String token(String ownerEmail) throws IOException {
-        AccessToken token = service.createScoped(SCOPES).createDelegated(ownerEmail).refreshAccessToken();
+    private String token(String ownerEmail) {
+        AccessToken token = minter.mint(ownerEmail, SCOPES);
         return token.getTokenValue();
     }
     private static String sha256(byte[] value) {

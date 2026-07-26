@@ -212,3 +212,22 @@ export interface AdminTagSummary {
     name: string;
     usageCount: number;
 }
+
+/** Freshness of the local Google Workspace snapshot (admin only). Null
+ * timestamps mean the directory has never been read successfully. */
+export interface DirectoryStatus {
+    lastSuccessAt: string | null;
+    lastAttemptAt: string | null;
+    lastError: string | null;
+    consecutiveFailures: number;
+    knownUsers: number;
+    /** Credential source, and whether it can keep working without a human
+     * re-authenticating (a gcloud user credential cannot). */
+    credentialMode: string;
+    credentialUnattended: boolean;
+    credentialDetail: string;
+    credentialError: string | null;
+    /** Set while directory lookups are being answered from the local snapshot
+     * because Google is unreachable. */
+    servingFromSnapshotSince: string | null;
+}

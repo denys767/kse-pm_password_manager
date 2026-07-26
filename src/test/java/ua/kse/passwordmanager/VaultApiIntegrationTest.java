@@ -217,6 +217,59 @@ class VaultApiIntegrationTest {
     }
 
     @Test
+    void permissionRoleCanBeChangedWithoutRevoking() throws Exception {
+        String id = createItem(ALICE, "Adjustable grant", "PERSONAL");
+        String permissionId = shareWithUser(ALICE, id, BOB, "VIEWER");
+        String url = "/api/vault/items/" + id + "/permissions/" + permissionId;
+
+        // A role that keeps password access re-uses (or replaces) the item key.
+        mockMvc.perform(as(patch(url), ALICE)
+                        .content("""
+                                {"role": "EDITOR", "wrappedKey": "cmV3cmFwcGVkS2V5"}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.role").value("EDITOR"));
+        mockMvc.perform(as(get("/api/vault/items/" + id), BOB))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.accessRole").value("EDITOR"))
+                .andExpect(jsonPath("$.wrappedKey").value("cmV3cmFwcGVkS2V5"));
+
+        // PASSKEY_ONLY must take the password key away.
+        mockMvc.perform(as(patch(url), ALICE).content("""
+                        {"role": "PASSKEY_ONLY"}
+                        """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.role").value("PASSKEY_ONLY"));
+        mockMvc.perform(as(get("/api/vault/items/" + id), BOB))
+                .andExpect(status().isNotFound());
+
+        // Coming back needs a freshly wrapped key: the server has none to reuse.
+        mockMvc.perform(as(patch(url), ALICE).content("""
+                        {"role": "VIEWER"}
+                        """))
+                .andExpect(status().isBadRequest());
+        mockMvc.perform(as(patch(url), ALICE).content("""
+                        {"role": "VIEWER", "wrappedKey": "YmFja0FnYWlu"}
+                        """))
+                .andExpect(status().isOk());
+        mockMvc.perform(as(get("/api/vault/items/" + id), BOB))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.wrappedKey").value("YmFja0FnYWlu"));
+    }
+
+    @Test
+    void onlyTheOwnerCanChangeAPermissionRole() throws Exception {
+        String id = createItem(ALICE, "Owner only", "PERSONAL");
+        String permissionId = shareWithUser(ALICE, id, BOB, "EDITOR");
+
+        mockMvc.perform(as(patch("/api/vault/items/" + id + "/permissions/" + permissionId), BOB)
+                        .content("""
+                                {"role": "VIEWER", "wrappedKey": "bm90QWxsb3dlZA=="}
+                                """))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
     void userShareRequiresWrappedKey() throws Exception {
         String id = createItem(ALICE, "Needs key", "PERSONAL");
         mockMvc.perform(as(post("/api/vault/items/" + id + "/permissions"), ALICE)

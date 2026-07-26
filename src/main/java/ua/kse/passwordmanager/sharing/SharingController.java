@@ -6,6 +6,7 @@ import java.util.UUID;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -54,6 +55,12 @@ public class SharingController {
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void sync(@PathVariable UUID itemId, @PathVariable UUID permissionId) {
         sharingService.syncGroup(authFacade.current(), itemId, permissionId);
+    }
+
+    @PatchMapping("/{permissionId}")
+    public PermissionResponse updateRole(@PathVariable UUID itemId, @PathVariable UUID permissionId,
+                                         @Valid @RequestBody UpdatePermissionRoleRequest request) {
+        return sharingService.updateRole(authFacade.current(), itemId, permissionId, request);
     }
 
     @DeleteMapping("/{permissionId}")

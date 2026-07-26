@@ -70,8 +70,8 @@
       "publicClient": true,
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": false,
-      "redirectUris": ["https://*.chromiumapp.org/*", "chrome-extension://*/*"],
-      "webOrigins": ["chrome-extension://*"],
+      "redirectUris": ["https://aafmkmcilcgfipkinadcibpgehoiifeg.chromiumapp.org/*"],
+      "webOrigins": ["chrome-extension://aafmkmcilcgfipkinadcibpgehoiifegh"],
       "attributes": { "pkce.code.challenge.method": "S256" },
       "protocolMappers": [{
         "name": "extension-audience",
@@ -79,6 +79,29 @@
         "protocolMapper": "oidc-audience-mapper",
         "consentRequired": false,
         "config": { "included.client.audience": "kse-pm-extension", "id.token.claim": "false", "access.token.claim": "true" }
+      }]
+    },
+    {
+      "clientId": "kse-pm-federation",
+      "name": "KSE Password Manager Google Workspace federation",
+      "description": "Machine-to-machine client_credentials grant only. The backend exchanges this token at Google STS (workload identity federation) so Directory/Drive delegation never needs a downloaded service-account key or a gcloud user credential. See docs/DEPLOYMENT.md.",
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "${WORKSPACE_FEDERATION_CLIENT_SECRET}",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "protocolMappers": [{
+        "name": "google-sts-audience",
+        "protocol": "openid-connect",
+        "protocolMapper": "oidc-audience-mapper",
+        "consentRequired": false,
+        "config": {
+          "included.custom.audience": "${WORKSPACE_FEDERATION_AUDIENCE}",
+          "id.token.claim": "false",
+          "access.token.claim": "true"
+        }
       }]
     }
   ],

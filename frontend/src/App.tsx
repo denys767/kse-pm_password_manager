@@ -49,7 +49,8 @@ export default function App() {
     // one wraps a passphrase this vault no longer accepts.
     const [vaultSalt, setVaultSalt] = useState<string | null>(null);
 
-    useEffect(() => {
+    const bootstrap = useCallback(() => {
+        setFatal(null);
         fetchConfig()
             .then(async (cfg) => {
                 setConfig(cfg);
@@ -81,7 +82,12 @@ export default function App() {
                 setOidcReady(true);
             })
             .catch((e) => setFatal(tr(`Не вдалося завантажити конфігурацію: ${e.message}`, `Could not load configuration: ${e.message}`)));
+        // tr() is derived from the language state; re-creating bootstrap on a
+        // language switch would re-run the whole sign-in dance.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
+
+    useEffect(() => { bootstrap(); }, [bootstrap]);
 
     const refreshCollections = useCallback(async () => {
         setCollections(await api<Collection[]>('/api/collections'));
@@ -144,7 +150,13 @@ export default function App() {
     }, [config, lock]);
 
     if (fatal) {
-        return <p className="error" style={{ padding: 24 }}>{fatal}</p>;
+        // A backend that has not synchronized Google Workspace yet answers 403
+        // for a few seconds after a cold start; that is worth one more attempt
+        // rather than a dead page.
+        return <div style={{ padding: 24 }}>
+            <p className="error">{fatal}</p>
+            <button type="button" className="secondary" onClick={bootstrap}>{tr('Спробувати ще раз', 'Try again')}</button>
+        </div>;
     }
     if (!config || !oidcReady) {
         return <p className="hint" style={{ padding: 24 }}>{tr('Завантаження…', 'Loading…')}</p>;

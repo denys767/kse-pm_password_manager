@@ -35,6 +35,9 @@ public enum AuditAction {
     ATTACHMENT_DELETED,
     VAULT_RESET,
     OWNERSHIP_TRANSFERRED,
+    PERMISSION_ROLE_CHANGED,
+    // KMS recovery escrow was removed; these values are never written again and
+    // exist only so audit rows recorded before the removal still deserialize.
     RECOVERY_ENVELOPE_UPLOADED,
     RECOVERY_OPERATION_CREATED,
     RECOVERY_OPERATION_COMPLETED,

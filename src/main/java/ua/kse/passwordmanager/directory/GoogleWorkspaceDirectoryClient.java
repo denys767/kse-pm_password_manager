@@ -2,17 +2,12 @@ package ua.kse.passwordmanager.directory;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.google.auth.oauth2.AccessToken;
-import com.google.auth.oauth2.GoogleCredentials;
-import java.io.IOException;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
-import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
@@ -22,16 +17,14 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.util.DefaultUriBuilderFactory;
 import ua.kse.passwordmanager.common.BadGatewayException;
+import ua.kse.passwordmanager.google.DelegatedTokenMinter;
 import ua.kse.passwordmanager.keys.UserKeysRepository;
 
 /**
- * Google Directory REST client. No service-account key ever exists on disk:
- * tokens for the delegated Workspace admin are minted by (1) calling the IAM
- * Credentials API's signJwt as the caller's own Application Default
- * Credentials (which only needs roles/iam.serviceAccountTokenCreator on the
- * target service account) and (2) exchanging the signed JWT assertion at
- * Google's OAuth token endpoint for a domain-wide-delegated access token.
- * This is the keyless equivalent of ServiceAccountCredentials.createDelegated.
+ * Google Directory REST client. Delegated Directory access tokens are minted
+ * by the shared {@link DelegatedTokenMinter} — a service-account key, workload
+ * identity federation, or Application Default Credentials, depending on
+ * deployment; see {@link ua.kse.passwordmanager.google.GoogleCredentialsConfiguration}.
  */
 @Component
 // Not @ConditionalOnProperty: that matches an empty value too, so an
@@ -49,77 +42,71 @@ public class GoogleWorkspaceDirectoryClient implements WorkspaceDirectoryClient 
     // time (which turned "%40"/"%3A" into "%2540"/"%253A" and made every email
     // lookup 404 and every search query 400).
     private final RestClient http = RestClient.builder().uriBuilderFactory(directoryUriFactory()).build();
-    private final RestClient iamCredentials = RestClient.create("https://iamcredentials.googleapis.com/v1/");
-    private final RestClient oauth = RestClient.create("https://oauth2.googleapis.com/");
     private final ObjectMapper json;
     private final UserKeysRepository keys;
+    private final DelegatedTokenMinter minter;
     private final String customer;
     private final String domain;
-    private final String serviceAccountEmail;
     private final String adminEmail;
-    private final GoogleCredentials callerCredentials;
-    private volatile AccessToken delegatedToken;
 
-    public GoogleWorkspaceDirectoryClient(ObjectMapper json, UserKeysRepository keys,
-            @Value("${pm.google-workspace.service-account-email}") String serviceAccountEmail,
+    public GoogleWorkspaceDirectoryClient(ObjectMapper json, UserKeysRepository keys, DelegatedTokenMinter minter,
             @Value("${pm.google-workspace.admin-email}") String adminEmail,
             @Value("${pm.google-workspace.customer-id:my_customer}") String customer,
             @Value("${pm.google-workspace.domain}") String domain) {
-        this.json = json; this.keys = keys; this.customer = customer; this.domain = domain.toLowerCase(Locale.ROOT);
-        this.serviceAccountEmail = serviceAccountEmail; this.adminEmail = adminEmail;
-        try {
-            this.callerCredentials = GoogleCredentials.getApplicationDefault()
-                    .createScoped("https://www.googleapis.com/auth/iam");
-        } catch (IOException e) {
-            throw new IllegalStateException("Cannot load Application Default Credentials to impersonate "
-                    + serviceAccountEmail + " (run `gcloud auth application-default login` or attach the "
-                    + "caller identity to the compute resource)", e);
-        }
+        this.json = json; this.keys = keys; this.minter = minter; this.customer = customer;
+        this.domain = domain.toLowerCase(Locale.ROOT); this.adminEmail = adminEmail;
     }
 
-    /** Mints (and caches until near-expiry) a domain-wide-delegated access
-     * token for {@code adminEmail} without ever touching a private key. */
-    private synchronized AccessToken directoryToken() {
-        AccessToken cached = delegatedToken;
-        if (cached != null && cached.getExpirationTime() != null
-                && cached.getExpirationTime().toInstant().isAfter(Instant.now().plusSeconds(60))) {
-            return cached;
-        }
-        AccessToken minted = mintDelegatedToken();
-        delegatedToken = minted;
-        return minted;
+    /**
+     * How this deployment authenticates to Google, and whether that credential
+     * can keep working unattended.
+     *
+     * <p>A credential minted by {@code gcloud auth application-default login} is
+     * a <em>user</em> credential: Google's reauth policy expires it after hours
+     * ({@code invalid_grant / invalid_rapt}), and no amount of retrying fixes
+     * that — a human has to log in again. A service-account key, workload
+     * identity federation, or an identity attached to the host renews itself
+     * indefinitely.
+     */
+    @Override public DirectoryCredentialSummary credentials() {
+        return minter.describe();
     }
 
-    private AccessToken mintDelegatedToken() {
-        try {
-            AccessToken caller = callerCredentials.refreshAccessToken();
-            long now = Instant.now().getEpochSecond();
-            ObjectNode claims = json.createObjectNode()
-                    .put("iss", serviceAccountEmail)
-                    .put("sub", adminEmail)
-                    .put("scope", String.join(" ", SCOPES))
-                    .put("aud", "https://oauth2.googleapis.com/token")
-                    .put("iat", now)
-                    .put("exp", now + 3600);
-            String signJwtBody = json.createObjectNode().put("payload", claims.toString()).toString();
-            String signResponse = iamCredentials.post()
-                    .uri("projects/-/serviceAccounts/{email}:signJwt", serviceAccountEmail)
-                    .header("Authorization", "Bearer " + caller.getTokenValue())
-                    .header("Content-Type", "application/json")
-                    .body(signJwtBody).retrieve().body(String.class);
-            String signedJwt = json.readTree(signResponse).path("signedJwt").asText();
+    /**
+     * Reports the credential mode once the application is up, and proves the
+     * credential actually works. Without this, a deployment whose credentials
+     * cannot survive the night looks healthy until the first user tries to
+     * share something.
+     */
+    @org.springframework.context.event.EventListener(org.springframework.boot.context.event.ApplicationReadyEvent.class)
+    public void reportCredentialMode() {
+        DirectoryCredentialSummary summary = credentials();
+        if (summary.unattended()) {
+            log.info("Google Workspace credentials: {} ({})", summary.mode(), summary.detail());
+        } else {
+            log.warn("Google Workspace credentials are NOT usable unattended: {}. Directory sync, sharing "
+                    + "suggestions and group provisioning will stop working when the credential expires. "
+                    + "Configure workload identity federation (GOOGLE_WORKSPACE federation.* settings), run "
+                    + "under an attached service account, or mount a service-account key "
+                    + "(GOOGLE_WORKSPACE_CREDENTIALS_PATH).", summary.detail());
+        }
+        // Probing Google is a network call: never let it hold up startup.
+        java.util.concurrent.CompletableFuture.runAsync(this::warmToken);
+    }
 
-            String form = "grant_type=" + enc("urn:ietf:params:oauth:grant-type:jwt-bearer")
-                    + "&assertion=" + enc(signedJwt);
-            String tokenResponse = oauth.post().uri("token")
-                    .header("Content-Type", "application/x-www-form-urlencoded")
-                    .body(form).retrieve().body(String.class);
-            JsonNode tokenNode = json.readTree(tokenResponse);
-            String accessToken = tokenNode.path("access_token").asText();
-            long expiresIn = tokenNode.path("expires_in").asLong(3600);
-            return new AccessToken(accessToken, Date.from(Instant.now().plusSeconds(expiresIn)));
-        } catch (Exception e) {
-            throw new BadGatewayException("Cannot mint delegated Google Workspace access token", e);
+    /**
+     * Keeps a valid delegated token in hand and turns a credential problem into
+     * a log line and an admin-visible status well before a user runs into it.
+     */
+    @org.springframework.scheduling.annotation.Scheduled(
+            fixedDelayString = "${pm.google-workspace.token-refresh-ms:600000}",
+            initialDelayString = "${pm.google-workspace.token-refresh-ms:600000}")
+    public void warmToken() {
+        try {
+            minter.mint(adminEmail, SCOPES);
+        } catch (RuntimeException e) {
+            // Already logged and recorded by the minter; nothing further to do
+            // here besides not letting the scheduled task die.
         }
     }
 
@@ -239,15 +226,26 @@ public class GoogleWorkspaceDirectoryClient implements WorkspaceDirectoryClient 
         if (!query.isBlank()) path += "&query=" + enc(query);
         return searchLeg(path, "groups").map(this::group).flatMap(Optional::stream).toList();
     }
-    /** One field's worth of an autocomplete. A leg the Directory rejects (or a
-     * domain with no groups at all) must degrade to "no suggestions from this
-     * field", never to a 502 that blanks the whole picker. */
+    /**
+     * One field's worth of an autocomplete. A query expression this Directory
+     * rejects (or a domain with no groups at all) means "no suggestions from
+     * this field" and must not blank the whole picker.
+     *
+     * <p>Anything else — an expired credential, a 403, a network failure — is a
+     * real outage and is deliberately allowed out: swallowing it turned every
+     * credential problem into a picker that silently showed nobody, and hid the
+     * failure from the caller that can still answer from the local snapshot.
+     */
     private java.util.stream.Stream<JsonNode> searchLeg(String path, String collection) {
         try {
             return stream(get(path).path(collection));
-        } catch (RuntimeException e) {
-            log.warn("Google Workspace Directory search leg failed ({}): {}", path, e.getMessage());
-            return java.util.stream.Stream.empty();
+        } catch (BadGatewayException e) {
+            if (e.getCause() instanceof org.springframework.web.client.HttpClientErrorException rejected
+                    && rejected.getStatusCode() == org.springframework.http.HttpStatus.BAD_REQUEST) {
+                log.warn("Google Workspace Directory rejected a search leg ({}): {}", path, rejected.getMessage());
+                return java.util.stream.Stream.empty();
+            }
+            throw e;
         }
     }
     private Optional<DirectoryPrincipal> user(JsonNode n) {
@@ -266,7 +264,7 @@ public class GoogleWorkspaceDirectoryClient implements WorkspaceDirectoryClient 
     }
     private JsonNode get(String path) {
         try {
-            AccessToken token = directoryToken();
+            AccessToken token = minter.mint(adminEmail, SCOPES);
             String body = http.get().uri(path).header("Authorization", "Bearer " + token.getTokenValue()).retrieve().body(String.class);
             return json.readTree(body);
         } catch (BadGatewayException e) { throw e; }

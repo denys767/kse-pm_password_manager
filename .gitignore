@@ -8,3 +8,7 @@ target/
 node_modules/
 frontend/dist/
 .env
+# Filled-in workload-identity configs carry the Keycloak federation client
+# secret; only the *.example templates belong in git.
+scripts/wif-*.env
+.secrets
