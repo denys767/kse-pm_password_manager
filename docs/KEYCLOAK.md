@@ -166,6 +166,45 @@ Keycloak завершує SSO-сесію та повертає на застос
 > "Set up passkey" падає з "Cannot login, credential setup required" (див. вище).
 > Скрипт ідемпотентний.
 
+> **Account Console: користувач не редагує свою ідентичність.** Той самий скрипт
+> патчить declarative user profile — і саме патчить, а не замінює: у наявній
+> конфігурації realm лише полям `email`, `username`, `firstName`, `lastName`
+> виставляється `edit: ["admin"]`, решта (валідатори, кастомні атрибути цієї
+> версії Keycloak) лишається як є. Після цього Account Console → Personal info
+> показує поля лише для читання, а Account REST API відповідає
+> `400 error-user-attribute-read-only`. Це критично: авторизація застосунку
+> прив'язана до email, тож самостійна зміна відв'язала б обліковий запис від
+> vault-записів. Passkey (Account security → Signing in) не зачіпається.
+>
+> Другий шлях до зміни email — форма "Update Account Information" при першому
+> вході через Google. Скрипт вимикає її (`update.profile.on.first.login=off` у
+> "review profile config" flow `first broker login`); профіль береться з Google
+> як є. Поле `updateProfileFirstLoginMode` у самому IdP тут не допоможе:
+> realm-import його не зберігає (перевірено на Keycloak 26.4.6).
+>
+> Наприкінці скрипт перевіряє, що на сторінці входу лишився хоча б один
+> увімкнений і не прихований identity provider, і падає з явною помилкою, якщо
+> ні — інакше симптом виглядав би як "на логіні лишився тільки passkey".
+> `realm-export.json` навмисно не містить user profile: свіжий realm налаштовує
+> `keycloak-init` за кілька секунд після імпорту, і експорт лишається мінімальним.
+
+> **Account Console: користувач не редагує свою ідентичність.** Той самий скрипт
+> застосовує declarative user profile, у якому `email`, `username`, `firstName`,
+> `lastName` мають `edit: ["admin"]`. Тому в Account Console → Personal info поля
+> лише читаються, а Account REST API відповідає `400 error-user-attribute-read-only`
+> на спробу змінити email. Це критично: авторизація застосунку прив'язана до
+> email-адреси, тож самостійна зміна відв'язала б обліковий запис від vault-записів.
+> Керування passkey (Account security → Signing in) працює як раніше.
+>
+> Другий шлях до редагування email — форма "Update Account Information" під час
+> першого входу через Google. Скрипт вимикає її
+> (`update.profile.on.first.login=off` у "review profile config" flow
+> `first broker login`); профіль береться з Google як є.
+>
+> Той самий declarative user profile лежить і в `realm-export.json`
+> (`components → org.keycloak.userprofile.UserProfileProvider`), тому свіжий
+> імпорт захищений ще до запуску `keycloak-init`.
+
 У Keycloak Admin Console, realm `kse-pm`:
 
 1. **Authentication → Flows** → скопіюйте `browser` flow → у копії після

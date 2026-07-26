@@ -8,6 +8,7 @@ import java.io.IOException;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.env.Environment;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
@@ -16,6 +17,7 @@ import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
+import ua.kse.passwordmanager.directory.WorkspaceRoleOverride;
 import ua.kse.passwordmanager.directory.WorkspaceUser;
 import ua.kse.passwordmanager.directory.WorkspaceUserRepository;
 
@@ -23,12 +25,26 @@ import ua.kse.passwordmanager.directory.WorkspaceUserRepository;
  * snapshot, replacing raw Keycloak/dev roles with governed authorities. */
 @Component
 public class GovernedAuthenticationFilter extends OncePerRequestFilter {
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(GovernedAuthenticationFilter.class);
+    /** One line per minute is enough to see the deployment is degraded without
+     * turning every request into a log entry. */
+    private static final long DEGRADED_LOG_INTERVAL_MS = 60_000;
+
     private final WorkspaceUserRepository users;
     private final boolean development;
+    private final String domain;
+    private final boolean provisionalAccessWhenUnsynced;
+    private final java.util.concurrent.atomic.AtomicLong lastDegradedLogAt =
+            new java.util.concurrent.atomic.AtomicLong();
 
-    public GovernedAuthenticationFilter(WorkspaceUserRepository users, Environment environment) {
+    public GovernedAuthenticationFilter(WorkspaceUserRepository users, Environment environment,
+            @Value("${pm.google-workspace.domain:}") String domain,
+            @Value("${pm.google-workspace.provisional-access-when-unsynced:true}") boolean provisionalAccessWhenUnsynced) {
         this.users = users;
         this.development = List.of(environment.getActiveProfiles()).contains("dev");
+        this.domain = domain == null ? "" : domain.trim().toLowerCase(Locale.ROOT);
+        this.provisionalAccessWhenUnsynced = provisionalAccessWhenUnsynced;
     }
 
     @Override protected boolean shouldNotFilter(HttpServletRequest request) {
@@ -49,23 +65,63 @@ public class GovernedAuthenticationFilter extends OncePerRequestFilter {
         }
         WorkspaceUser local = users.findById(identity.email()).orElse(null);
         if (local == null) {
-            if (!development) {
-                deny(response, "Workspace account is not provisioned");
+            if (development) {
+                // Development tests intentionally remain usable without a
+                // Directory fixture. Production is governed below.
+                chain.doFilter(request, response);
                 return;
             }
-            // Development tests intentionally remain usable without a Directory
-            // fixture. Production is fail-closed above.
-            chain.doFilter(request, response);
+            if (!degradedAccessAllowed(identity.email())) {
+                deny(response, users.count() == 0
+                        // A snapshot that was never fetched is an operational
+                        // failure, not a decision about this account. Saying
+                        // "not provisioned" sent operators looking at the wrong
+                        // thing entirely.
+                        ? "Google Workspace directory has not been synchronized yet; try again shortly"
+                        : "Workspace account is not provisioned");
+                return;
+            }
+            grant(request, response, chain, authentication, identity, WorkspaceRoleOverride.USER);
             return;
         }
         if (!local.hasEffectiveAccess()) {
             deny(response, "Account access has been suspended, revoked, or removed from Workspace");
             return;
         }
+        grant(request, response, chain, authentication, identity, local.effectiveRole());
+    }
+
+    /**
+     * Degraded mode: the local Workspace snapshot is empty, so the directory
+     * has never been read (fresh database, expired caller credentials, Google
+     * outage) and every single request would otherwise be denied. In that state
+     * an in-domain account that already passed SSO is admitted as an ordinary
+     * user — never as an administrator, and never once the snapshot exists, so
+     * a genuinely unknown or revoked account is still refused as soon as there
+     * is data to judge it by. Set
+     * pm.google-workspace.provisional-access-when-unsynced=false to fail closed
+     * instead.
+     */
+    private boolean degradedAccessAllowed(String email) {
+        if (!provisionalAccessWhenUnsynced || domain.isEmpty()) return false;
+        if (!email.endsWith("@" + domain)) return false;
+        if (users.count() > 0) return false;
+        long now = System.currentTimeMillis();
+        long last = lastDegradedLogAt.get();
+        if (now - last > DEGRADED_LOG_INTERVAL_MS && lastDegradedLogAt.compareAndSet(last, now)) {
+            log.warn("Google Workspace snapshot is empty; admitting in-domain accounts as USER until the "
+                    + "directory sync succeeds. Roles and revocations are NOT enforced in this state.");
+        }
+        return true;
+    }
+
+    private void grant(HttpServletRequest request, HttpServletResponse response, FilterChain chain,
+                       Authentication authentication, Identity identity, WorkspaceRoleOverride role)
+            throws ServletException, IOException {
         CurrentUser governed = new CurrentUser(identity.email(), identity.displayName(),
-                Set.of(local.effectiveRole().name()), Set.of());
+                Set.of(role.name()), Set.of());
         var replacement = new GovernedAuthenticationToken(governed, identity.jwt(),
-                List.of(new SimpleGrantedAuthority("ROLE_" + local.effectiveRole().name())));
+                List.of(new SimpleGrantedAuthority("ROLE_" + role.name())));
         replacement.setDetails(authentication.getDetails());
         SecurityContextHolder.getContext().setAuthentication(replacement);
         chain.doFilter(request, response);

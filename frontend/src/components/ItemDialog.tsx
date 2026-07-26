@@ -631,6 +631,29 @@ export function ItemDialog({ session, settings, collections, item, availableTags
     }
 
 
+    /**
+     * Changes an existing grant's role without revoking it. A role that carries
+     * password access needs the item key wrapped for the recipient again — the
+     * server never sees the key, so the re-wrap happens here.
+     */
+    async function changeRole(permission: Permission, role: Permission['role']) {
+        if (!current || role === permission.role) return;
+        setError(null);
+        try {
+            const body: Record<string, unknown> = { role };
+            if (permission.granteeType === 'USER' && role !== 'PASSKEY_ONLY') {
+                if (!itemKey) throw new Error(tr('Ключ запису недоступний — відкрийте запис ще раз.', 'The item key is unavailable — reopen the item.'));
+                const recipient = await api<{ publicKey: string }>(`/api/keys/${encodeURIComponent(permission.grantee)}`);
+                body.wrappedKey = await pmc.wrapItemKey(itemKey, await pmc.importPublicKey(recipient.publicKey));
+            }
+            const updated = await api<Permission>(`/api/vault/items/${current.id}/permissions/${permission.id}`, {
+                method: 'PATCH', body: JSON.stringify(body),
+            });
+            if (updated.warning) setError(updated.warning);
+            setPermissions(await api<Permission[]>(`/api/vault/items/${current.id}/permissions`));
+        } catch (e) { setError((e as Error).message); }
+    }
+
     async function provisionGroup(permission: Permission) {
         if (!current || !itemKey) return;
         try {
@@ -1064,11 +1087,18 @@ export function ItemDialog({ session, settings, collections, item, availableTags
                                             ? <IconUsers />
                                             : shareAvatars[p.grantee.toLowerCase()]
                                                 ? <img className="avatar" src={shareAvatars[p.grantee.toLowerCase()]!} alt="" width={20} height={20} />
-                                                : <IconUser />} {p.grantee} — {p.role.toLowerCase()}
+                                                : <IconUser />} {p.grantee}
                                             {p.granteeType === 'GROUP' && p.groupVisibleToUsers === false && <span className="badge hidden-group" title={t('groupHiddenTooltip')}>
                                                 <IconEyeOff /> {t('groupHiddenBadge')}
                                             </span>}</span>
                                         <span className="row">
+                                            <select className="small" aria-label={tr(`Роль для ${p.grantee}`, `Role for ${p.grantee}`)}
+                                                    value={p.role} onChange={(e) => changeRole(p, e.target.value as Permission['role'])}>
+                                                <option value="VIEWER">Viewer</option>
+                                                <option value="EDITOR">Editor</option>
+                                                <option value="AUTOFILL_ONLY">Autofill Only (extension)</option>
+                                                <option value="PASSKEY_ONLY">Passkey Only</option>
+                                            </select>
                                             {p.granteeType === 'GROUP' && p.status === 'ACTIVE' && <button type="button" className="secondary small" onClick={() => provisionGroup(p)}>{tr('Видати ключі', 'Provision')}</button>}
                                             <button type="button" className="secondary small" onClick={() => revoke(p.id)}>{t('revoke')}</button>
                                         </span>

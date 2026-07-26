@@ -27,6 +27,10 @@ export async function fetchConfig(): Promise<FrontendConfig> {
  * session, then serves fresh bearer tokens to the api() wrapper.
  */
 export async function initOidc(config: FrontendConfig): Promise<void> {
+    // Bootstrapping can be retried (e.g. the backend was still waiting for its
+    // Workspace directory sync); keycloak-js must only be initialized once, and
+    // a second init() of a live instance throws.
+    if (keycloak) return;
     keycloak = new Keycloak({
         url: config.keycloakUrl!,
         realm: config.realm!,

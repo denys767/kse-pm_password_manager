@@ -256,6 +256,59 @@ public class SharingService {
         }
     }
 
+    /**
+     * Changes the role of an existing grant in place. Re-posting the share
+     * would do this too, but for a group it also re-reads the directory and
+     * resets every member to PENDING_PROVISIONING — losing access the owner
+     * never meant to touch. Key material follows the new role: a role without
+     * password access loses its wrapped key, and regaining one requires a
+     * freshly wrapped key (users) or a re-provision (groups).
+     */
+    @Transactional
+    public PermissionResponse updateRole(CurrentUser user, UUID itemId, UUID permissionId,
+                                         UpdatePermissionRoleRequest request) {
+        PasswordItem item = ownedItem(user, itemId);
+        Permission permission = permissionRepository.findByIdAndItemId(permissionId, itemId)
+                .orElseThrow(() -> new NotFoundException("Permission not found"));
+        PermissionRole previous = permission.getRole();
+        PermissionRole role = request.role();
+        boolean wrappedKeyProvided = request.wrappedKey() != null && !request.wrappedKey().isBlank();
+        if (permission.getGranteeType() == GranteeType.USER) {
+            String grantee = permission.getGrantee();
+            if (!role.requiresItemKey()) {
+                itemKeyRepository.deleteByItemIdAndUserEmail(itemId, grantee);
+            } else if (wrappedKeyProvided) {
+                itemKeyRepository.findByItemIdAndUserEmail(itemId, grantee)
+                        .ifPresentOrElse(existing -> { existing.setWrappedKey(request.wrappedKey()); itemKeyRepository.save(existing); },
+                                () -> itemKeyRepository.save(new ItemKey(item, grantee, request.wrappedKey())));
+            } else if (itemKeyRepository.findByItemIdAndUserEmail(itemId, grantee).isEmpty()) {
+                throw new BadRequestException(
+                        "wrappedKey is required: wrap the item key with the recipient's public key");
+            }
+        } else if (!role.requiresItemKey()) {
+            for (PermissionMember member : permissionMemberRepository.findByPermissionId(permissionId)) {
+                itemKeyRepository.deleteByItemIdAndUserEmail(itemId, member.getMemberEmail());
+            }
+        } else if (!previous.requiresItemKey()) {
+            // The downgrade above dropped the members' keys, so the group needs
+            // a new Provision pass before anyone can decrypt again.
+            for (PermissionMember member : permissionMemberRepository.findByPermissionId(permissionId)) {
+                if (member.getStatus() == PermissionMemberStatus.ACTIVE) {
+                    member.setStatus(PermissionMemberStatus.PENDING_PROVISIONING);
+                    permissionMemberRepository.save(member);
+                }
+            }
+        }
+        permission.setRole(role);
+        permission = permissionRepository.save(permission);
+        auditService.record(user.email(), AuditAction.PERMISSION_ROLE_CHANGED, item.getId(), item.getName(),
+                permission.getGrantee(), permission.getGranteeType() + " role " + previous + " -> " + role);
+        boolean group = permission.getGranteeType() == GranteeType.GROUP;
+        return PermissionResponse.from(permission,
+                group && !previous.requiresItemKey() && role.requiresItemKey() ? GROUP_SHARE_WARNING : null,
+                group ? groupVisibleToUsers(permission.getGrantee()) : null);
+    }
+
     @Transactional
     public void revoke(CurrentUser user, UUID itemId, UUID permissionId) {
         PasswordItem item = ownedItem(user, itemId);

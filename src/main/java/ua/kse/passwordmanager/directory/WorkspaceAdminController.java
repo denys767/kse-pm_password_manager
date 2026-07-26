@@ -2,6 +2,7 @@ package ua.kse.passwordmanager.directory;
 
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotNull;
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.data.domain.PageRequest;
@@ -23,17 +24,42 @@ import org.springframework.transaction.annotation.Transactional;
 public class WorkspaceAdminController {
     private final AuthFacade auth;
     private final WorkspaceDirectorySyncService sync;
+    private final WorkspaceDirectoryClient directory;
     private final WorkspaceUserRepository users;
     private final WorkspaceGroupRepository groups;
     private final PasswordItemRepository items;
     private final AuditService audit;
 
     public WorkspaceAdminController(AuthFacade auth, WorkspaceDirectorySyncService sync,
-            WorkspaceUserRepository users, WorkspaceGroupRepository groups, PasswordItemRepository items, AuditService audit) {
-        this.auth = auth; this.sync = sync; this.users = users; this.groups = groups; this.items = items; this.audit = audit;
+            WorkspaceDirectoryClient directory, WorkspaceUserRepository users, WorkspaceGroupRepository groups,
+            PasswordItemRepository items, AuditService audit) {
+        this.auth = auth; this.sync = sync; this.directory = directory;
+        this.users = users; this.groups = groups; this.items = items; this.audit = audit;
     }
     @PostMapping("/refresh")
     public WorkspaceDirectorySyncService.SyncResult refresh() { requireAdmin(); return sync.sync(); }
+
+    /** Freshness of the Workspace snapshot and the credential behind it. Stale
+     * or never-fetched data is the difference between "this account is not
+     * allowed" and "Google could not be reached", so an administrator has to be
+     * able to tell them apart — including whether the credential in use can
+     * work unattended at all. */
+    @GetMapping("/directory-status")
+    public DirectoryStatusResponse directoryStatus() {
+        requireAdmin();
+        WorkspaceDirectorySyncService.DirectoryStatus status = sync.status();
+        DirectoryCredentialSummary credential = directory.credentials();
+        Instant snapshotSince = directory instanceof ResilientWorkspaceDirectoryClient resilient
+                ? resilient.servingFromSnapshotSince() : null;
+        return new DirectoryStatusResponse(status.lastSuccessAt(), status.lastAttemptAt(), status.lastError(),
+                status.consecutiveFailures(), status.knownUsers(), credential.mode(), credential.unattended(),
+                credential.detail(), credential.lastError(), snapshotSince);
+    }
+
+    public record DirectoryStatusResponse(Instant lastSuccessAt, Instant lastAttemptAt, String lastError,
+                                          int consecutiveFailures, long knownUsers, String credentialMode,
+                                          boolean credentialUnattended, String credentialDetail,
+                                          String credentialError, Instant servingFromSnapshotSince) {}
 
     @GetMapping("/users")
     public List<UserResponse> users(@RequestParam(defaultValue = "") String query,

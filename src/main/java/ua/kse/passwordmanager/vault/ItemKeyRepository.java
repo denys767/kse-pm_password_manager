@@ -9,6 +9,8 @@ public interface ItemKeyRepository extends JpaRepository<ItemKey, UUID> {
 
     Optional<ItemKey> findByItemIdAndUserEmail(UUID itemId, String userEmail);
 
+    List<ItemKey> findByItemId(UUID itemId);
+
     List<ItemKey> findByUserEmail(String userEmail);
 
     void deleteByItemId(UUID itemId);

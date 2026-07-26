@@ -72,4 +72,3 @@ Frontend збирається автоматично під час `mvn package`
 - [Архітектура: компоненти, E2E-модель шифрування, ролі, threat model](docs/ARCHITECTURE.md)
 - [Keycloak: Google Workspace SSO та WebAuthn/passkey](docs/KEYCLOAK.md)
 - [Operations: бекапи, відновлення, моніторинг, чекліст запуску](docs/OPERATIONS.md)
-- [Handoff: живий Keycloak-контур — що лишилось верифікувати/побудувати з робочим Docker](docs/HANDOFF_LIVE_KEYCLOAK.md)

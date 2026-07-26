@@ -25,37 +25,127 @@ for the application and `https://auth.pm.example.com` for Keycloak. Do not retai
 
 ## Google Workspace Directory and Drive
 
-Create a dedicated service account — **do not download a JSON key for it**.
-The backend authenticates keyless via impersonation:
+Create a dedicated service account and enable domain-wide delegation for it: in
+the Workspace Admin Console, authorize its OAuth **Client ID** for the scopes
+below. That step is the same whichever credential mode you pick.
 
-1. Give the caller identity that will run the app (a GCE/GKE-attached service
-   account in production, or your own `gcloud` login for local testing) the
-   role `roles/iam.serviceAccountTokenCreator` on the target service account:
-   ```
-   gcloud iam service-accounts add-iam-policy-binding <target-sa-email> \
-     --member="<caller-principal>" --role="roles/iam.serviceAccountTokenCreator"
-   ```
-2. Enable domain-wide delegation for the target service account and, in the
-   Workspace Admin Console, authorize its OAuth **Client ID** (not the caller's)
-   for the scopes below — this step is unchanged from the key-based setup;
-   delegation is granted per client ID regardless of how the app authenticates
-   as the caller.
-3. Configure `GOOGLE_WORKSPACE_SERVICE_ACCOUNT_EMAIL`, `GOOGLE_WORKSPACE_ADMIN_EMAIL`,
-   `GOOGLE_WORKSPACE_DOMAIN`, and (when needed) `GOOGLE_WORKSPACE_CUSTOMER_ID`.
-   On GCP compute this is all that's needed — Application Default Credentials
-   (ADC) resolve through the instance metadata server automatically. Off GCP,
-   set `GOOGLE_APPLICATION_CREDENTIALS` to a mounted `gcloud auth
-   application-default login` file instead (`docker-compose.prod.yml` has the
-   commented block for this) — that file is a revocable, expiring user
-   credential scoped only to `iam.serviceAccounts.signJwt`, not a standing
-   Directory-API-capable key.
+Then pick the credential the backend authenticates *with*. It has to renew
+itself forever — this is a 24/7 service, and there is nobody to press a button
+at 3 a.m.:
 
-At request time, `GoogleWorkspaceDirectoryClient` calls the IAM Credentials
-API (`signJwt`) as the caller identity to sign a domain-wide-delegation JWT
-assertion for `GOOGLE_WORKSPACE_ADMIN_EMAIL`, then exchanges it at Google's
-OAuth token endpoint for a short-lived Directory API access token (cached
-until near-expiry). No private key material ever exists on disk. See
-`docs/SECURITY.md` §1 for the reasoning.
+**Mode A — workload identity federation (recommended off GCP; keyless).** No
+service-account key ever exists: the app authenticates to *this stack's own
+Keycloak* as a confidential client using `client_credentials` (a machine grant —
+no human involved, so no reauth policy can expire it), then exchanges that OIDC
+token at Google's Security Token Service for a federated access token that
+signs the delegation assertion. This is the mode to reach for when Workspace
+admins won't authorize a downloaded key, which is the common case.
+
+One-time GCP setup (needs only IAM permissions on the project — no Workspace
+Admin Console access beyond the DWD authorization above):
+
+```
+gcloud iam workload-identity-pools create kse-pm --location=global
+
+gcloud iam workload-identity-pools providers create-oidc keycloak \
+  --workload-identity-pool=kse-pm --location=global \
+  --issuer-uri=https://auth.pm.example.com/realms/kse-pm \
+  --attribute-mapping=google.subject=assertion.sub
+```
+
+No `--allowed-audiences` is needed: the `kse-pm-federation` client carries an
+audience mapper that stamps `WORKSPACE_FEDERATION_AUDIENCE` (the provider
+resource name) into the token's `aud`, which is exactly what Google STS expects
+by default.
+
+The IAM binding identifies the Keycloak service account by the `sub` claim of
+its token, which is a Keycloak user UUID. Read it from a real token rather than
+guessing:
+
+```
+SUB=$(curl -s -X POST \
+  https://auth.pm.example.com/realms/kse-pm/protocol/openid-connect/token \
+  -d grant_type=client_credentials \
+  -d client_id=kse-pm-federation \
+  -d client_secret="$WORKSPACE_FEDERATION_CLIENT_SECRET" \
+  | python3 -c 'import sys,json,base64;t=json.load(sys.stdin)["access_token"].split(".")[1];print(json.loads(base64.urlsafe_b64decode(t+"=="))["sub"])')
+
+gcloud iam service-accounts add-iam-policy-binding <target-sa-email> \
+  --role="roles/iam.serviceAccountTokenCreator" \
+  --member="principal://iam.googleapis.com/projects/<project-number>/locations/global/workloadIdentityPools/kse-pm/subject/${SUB}"
+```
+
+That `sub` is stable for the life of the Keycloak client. Recreating the realm
+or the client mints a new one, so the binding has to be redone if you ever do.
+
+Google validates Keycloak's tokens against `issuer-uri`'s
+`/.well-known/openid-configuration` and JWKS, so that URL must be reachable
+over HTTPS with a publicly trusted certificate. If it is not (an internal-only
+Keycloak), pass `--jwk-json-path=<realm JWKS>` at provider-creation time
+instead of `--issuer-uri`, and re-upload it whenever the realm's signing keys
+rotate.
+
+`realm-export.json` already defines the Keycloak side: a confidential client
+`kse-pm-federation` with `serviceAccountsEnabled: true` and no interactive
+flows. Set its secret and the app's federation settings:
+
+```
+WORKSPACE_FEDERATION_TOKEN_URL=https://auth.pm.example.com/realms/kse-pm/protocol/openid-connect/token
+WORKSPACE_FEDERATION_CLIENT_ID=kse-pm-federation
+WORKSPACE_FEDERATION_CLIENT_SECRET=<matches the Keycloak client secret>
+WORKSPACE_FEDERATION_AUDIENCE=//iam.googleapis.com/projects/<project-number>/locations/global/workloadIdentityPools/kse-pm/providers/keycloak
+```
+
+`GOOGLE_WORKSPACE_CREDENTIALS_PATH` must stay empty for this mode to take effect.
+
+**Mode B — attached service account (GCE/GKE only).** Leave both
+`GOOGLE_WORKSPACE_CREDENTIALS_PATH` and the federation settings empty.
+Application Default Credentials resolve through the metadata server and the app
+impersonates the target service account, which needs:
+
+```
+gcloud iam service-accounts add-iam-policy-binding <target-sa-email> \
+  --member="serviceAccount:<attached-sa-email>" \
+  --role="roles/iam.serviceAccountTokenCreator"
+```
+
+**Mode C — service-account key (last resort).** Only when neither of the above
+is available — it needs a downloaded private key, which most Workspace admins
+will not authorize. The key signs the delegation assertion locally: no second
+identity, no IAM Credentials call, nothing that expires.
+
+```
+gcloud iam service-accounts keys create workspace-sa.json \
+  --iam-account=<target-sa-email>
+```
+
+Mount it read-only and point the app at it:
+
+```
+GOOGLE_WORKSPACE_CREDENTIALS_PATH=/run/secrets/workspace-sa.json
+```
+
+The same key also backs encrypted Drive attachments. Treat it as a tier-0
+secret: keep it out of the image and out of git, restrict file permissions, and
+rotate by replacing the file — the app re-reads it on the next token renewal,
+no restart needed.
+
+**Not a mode: `gcloud auth application-default login`.** That is a *user*
+credential. Google's reauth policy expires it within hours
+(`invalid_grant / invalid_rapt`), taking directory suggestions, group sync and
+new shares with it. It is fine for a laptop; it can never run a deployment. The
+application detects it, logs a warning at startup, and shows it on the Admin
+tab — `GET /api/admin/workspace/directory-status` reports
+`credentialUnattended: false`.
+
+Whichever mode you pick, configure `GOOGLE_WORKSPACE_SERVICE_ACCOUNT_EMAIL`,
+`GOOGLE_WORKSPACE_ADMIN_EMAIL`, `GOOGLE_WORKSPACE_DOMAIN` and (when needed)
+`GOOGLE_WORKSPACE_CUSTOMER_ID`. In Mode C the key mints the domain-wide-delegated
+token for `GOOGLE_WORKSPACE_ADMIN_EMAIL` directly; in Modes A and B the app
+calls the IAM Credentials API (`signJwt`) as the federated or attached identity
+to sign the delegation assertion and exchanges it at Google's OAuth token
+endpoint. Either way the resulting Directory/Drive access token is short-lived
+and cached until near-expiry — see `DelegatedTokenMinter`.
 
 Delegate only these scopes to the service-account client ID:
 
@@ -74,24 +164,43 @@ owner impersonation and each record owner's `appDataFolder`. Do not set an
 application attachment-size cap: Drive/Workspace quotas and protocol limits are
 the authoritative limits.
 
-## Recovery escrow and KMS runbook
+### What happens when Google is unreachable anyway
 
-Recovery wrapping changes the trust model: a recovery-wrapped item, collection,
-or passkey key lets an authorized backend administrator recover that ciphertext
-through Cloud KMS. This is therefore **not** a zero-knowledge deployment.
+Credentials get revoked, networks break, Google has incidents. None of that may
+take the vault down:
 
-Use a versioned Cloud KMS asymmetric RSA key configured for
-`RSA_DECRYPT_OAEP_2048_SHA256` (or the approved RSA-OAEP-SHA256 variant), expose
-only its public key to clients, and grant the runtime service account the minimum
-KMS encrypt/decrypt permissions for that key version. Do not give application
-operators broad KMS administration. Recovery operators must use step-up SSO,
-provide a case/ticket reason, and retain the resulting audit event and owner
-notification. Never place wrapped keys, decrypted keys, or plaintext in logs.
+- Startup never requires a working credential; the app boots and reports the
+  problem.
+- A delegated token already in hand keeps being used until it truly expires,
+  and is renewed proactively every ten minutes
+  (`pm.google-workspace.token-refresh-ms`) so failures show up in the logs and
+  on the Admin tab before a user meets them.
+- **Directory suggestions, recipient validation and group membership fall back
+  to the local Workspace snapshot** — the same data the synchronizer
+  materialized. Sharing keeps working with slightly older data instead of an
+  empty picker. The Admin tab says when this is happening.
+- The synchronizer itself never falls back (it would be syncing with itself), it
+  just leaves the snapshot untouched and retries: every minute until the first
+  snapshot lands, then `pm.google-workspace.sync-interval-ms`.
+- While the snapshot has *never* been fetched, an in-domain account that passed
+  SSO is admitted as an ordinary `USER` so a Google problem cannot lock everyone
+  out. Roles and revocations are enforced as soon as a sync succeeds. Set
+  `WORKSPACE_PROVISIONAL_ACCESS=false` to fail closed instead.
 
-Keep automatic group provisioning/recovery disabled until coverage reporting
-shows sufficient recovery wraps for the affected records. On key-version
-rotation, publish the new public version first, backfill wraps on unlock, check
-coverage, and only then retire the old KMS version.
+`GET /api/admin/workspace/directory-status` (admin) reports the credential mode,
+whether it can run unattended, the last successful sync, the last error, and
+whether lookups are currently served from the snapshot.
+
+## Vault passphrase loss
+
+There is no key escrow and no administrator recovery path: a lost vault
+passphrase cannot be recovered by the operator. The user resets their vault from
+the unlock screen ("Forgot your Vault passphrase?"), which requires a fresh SSO
+authentication, forces ownership of any shared record or team collection to be
+handed to a successor who already has encrypted access, and then deletes the
+remaining owned records before a new keypair is created. Plan offboarding around
+that: records that must outlive an account have to be shared (or live in a
+collection) before the account goes away.
 
 ## Chrome extension
 

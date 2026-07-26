@@ -94,6 +94,20 @@ export function CollectionsTab({ session, collections, onChanged }: Props) {
         });
     }
 
+    /** Adjusts an existing member's role. The collection key is already wrapped
+     * for them, so this needs no crypto — only revoking does. */
+    async function changeMemberRole(collection: Collection, member: CollectionMemberInfo, role: CollectionRole) {
+        if (role === member.role) return;
+        setError(null);
+        try {
+            await api(`/api/collections/${collection.id}/members/${member.id}`, {
+                method: 'PUT', body: JSON.stringify({ role }),
+            });
+            setMembers(await api<CollectionMemberInfo[]>(`/api/collections/${collection.id}/members`));
+            await onChanged();
+        } catch (e) { setError((e as Error).message); }
+    }
+
     async function addMember(collection: Collection) {
         setError(null);
         try {
@@ -230,10 +244,18 @@ export function CollectionsTab({ session, collections, onChanged }: Props) {
                                                     {avatars[member.memberEmail.toLowerCase()]
                                                         ? <img className="avatar" src={avatars[member.memberEmail.toLowerCase()]!} alt="" width={20} height={20} />
                                                         : <IconUser />}
-                                                    {' '}{member.memberEmail} — {member.role.toLowerCase()} {member.status !== 'ACTIVE' && `(${member.status.toLowerCase().replace('_', ' ')})`}
+                                                    {' '}{member.memberEmail} {member.status !== 'ACTIVE' && `(${member.status.toLowerCase().replace('_', ' ')})`}
                                                 </span>
                                                 {collection.myRole === 'MANAGER'
                                                     && member.memberEmail !== collection.ownerEmail && (
+                                                    <span className="row">
+                                                    <select className="small" aria-label={tr(`Роль для ${member.memberEmail}`, `Role for ${member.memberEmail}`)}
+                                                            value={member.role}
+                                                            onChange={(e) => changeMemberRole(collection, member, e.target.value as CollectionRole)}>
+                                                        <option value="VIEWER">Viewer</option>
+                                                        <option value="EDITOR">Editor</option>
+                                                        <option value="MANAGER">Manager</option>
+                                                    </select>
                                                     <button type="button" className="secondary small"
                                                             onClick={() => member.status === 'PENDING_PROVISIONING'
                                                                 ? provisionMember(collection, member.memberEmail, member.role)
@@ -242,6 +264,7 @@ export function CollectionsTab({ session, collections, onChanged }: Props) {
                                                                 : removeMember(collection, member)}>
                                                         {member.status === 'PENDING_PROVISIONING' ? 'Provision key' : 'Revoke'}
                                                     </button>
+                                                    </span>
                                                 )}
                                             </li>
                                         ))}

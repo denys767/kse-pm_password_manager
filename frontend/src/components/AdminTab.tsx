@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
 import { useI18n } from '../i18n';
-import type { AdminRecordMetadata, AdminTagSummary, WorkspaceGroup, WorkspaceUser } from '../types';
+import type { AdminRecordMetadata, AdminTagSummary, DirectoryStatus, WorkspaceGroup, WorkspaceUser } from '../types';
 
 /** Defensive Workspace governance UI: all data is server metadata, never vault ciphertext. */
 export function AdminTab() {
@@ -14,16 +14,19 @@ export function AdminTab() {
     const [query, setQuery] = useState('');
     const [error, setError] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
+    const [directory, setDirectory] = useState<DirectoryStatus | null>(null);
 
     const load = useCallback(async () => {
         try {
-            const [nextUsers, nextGroups, nextRecords, nextTags] = await Promise.all([
+            const [nextUsers, nextGroups, nextRecords, nextTags, nextDirectory] = await Promise.all([
                 api<WorkspaceUser[]>(`/api/admin/workspace/users?query=${encodeURIComponent(query)}`),
                 api<WorkspaceGroup[]>('/api/admin/workspace/groups'),
                 api<AdminRecordMetadata[]>('/api/admin/workspace/records'),
                 api<AdminTagSummary[]>('/api/admin/tags'),
+                api<DirectoryStatus>('/api/admin/workspace/directory-status'),
             ]);
-            setUsers(nextUsers); setGroups(nextGroups); setRecords(nextRecords); setTags(nextTags); setError(null);
+            setUsers(nextUsers); setGroups(nextGroups); setRecords(nextRecords); setTags(nextTags);
+            setDirectory(nextDirectory); setError(null);
         } catch (e) { setError((e as Error).message); }
     }, [query]);
     useEffect(() => { void load(); }, [load]);
@@ -74,6 +77,25 @@ export function AdminTab() {
             onClick={refreshDirectory}>{busy ? tr('Оновлення…', 'Refreshing…') : tr('Оновити Google Workspace', 'Refresh Google Workspace')}</button></div>
         <p className="hint">{tr('Google Workspace є джерелом користувачів і груп. Local override або REVOKED має пріоритет. Дані записів нижче — лише метадані, без ciphertext/ключів/вкладень.', 'Google Workspace is the source of users and groups. A local override or REVOKED takes priority. The item data below is metadata only — no ciphertext, keys, or attachments.')}</p>
         {error && <p className="error">{error}</p>}
+        {directory && (directory.lastError || !directory.lastSuccessAt) && <p className="error">
+            {directory.lastSuccessAt
+                ? tr(`Синхронізація Google Workspace не вдалася (${directory.consecutiveFailures} поспіль). Дані від ${new Date(directory.lastSuccessAt).toLocaleString()}: ${directory.lastError}`,
+                     `Google Workspace sync is failing (${directory.consecutiveFailures} in a row). Data is from ${new Date(directory.lastSuccessAt).toLocaleString()}: ${directory.lastError}`)
+                : tr(`Google Workspace ще жодного разу не синхронізувався${directory.lastError ? `: ${directory.lastError}` : ''}. Доки снапшот порожній, ролі та відкликання не діють.`,
+                     `Google Workspace has never synchronized${directory.lastError ? `: ${directory.lastError}` : ''}. While the snapshot is empty, roles and revocations are not enforced.`)}
+        </p>}
+        {directory && !directory.credentialUnattended && <p className="error">
+            {tr(`Облікові дані Google не працюють без участі людини: ${directory.credentialDetail}. Налаштуйте федерацію ідентичності навантаження (WORKSPACE_FEDERATION_*), запустіть сервіс під прикріпленим service account, або, як останній варіант, змонтуйте ключ сервісного акаунта (GOOGLE_WORKSPACE_CREDENTIALS_PATH).`,
+                `Google credentials cannot work unattended: ${directory.credentialDetail}. Configure workload identity federation (WORKSPACE_FEDERATION_* settings), run the service under an attached service account, or — as a last resort — mount a service-account key (GOOGLE_WORKSPACE_CREDENTIALS_PATH).`)}
+        </p>}
+        {directory?.servingFromSnapshotSince && <p className="hint">
+            {tr(`Google Directory недоступний з ${new Date(directory.servingFromSnapshotSince).toLocaleString()}; підказки та перевірка отримувачів відповідають із локального снапшоту.`,
+                `Google Directory has been unreachable since ${new Date(directory.servingFromSnapshotSince).toLocaleString()}; suggestions and recipient validation are answered from the local snapshot.`)}
+        </p>}
+        {directory?.lastSuccessAt && !directory.lastError && <p className="hint">
+            {tr(`Останній успішний синк: ${new Date(directory.lastSuccessAt).toLocaleString()} · користувачів: ${directory.knownUsers}`,
+                `Last successful sync: ${new Date(directory.lastSuccessAt).toLocaleString()} · users: ${directory.knownUsers}`)}
+        </p>}
         <h3>{tr('Користувачі Workspace', 'Workspace users')}</h3>
         <table className="audit-table"><thead><tr><th>{tr('Користувач', 'User')}</th><th>Google admin</th><th>{tr('App роль', 'App role')}</th><th>{tr('Статус', 'Status')}</th></tr></thead><tbody>
             {users.map((user) => <tr key={user.email}><td>{user.displayName}<br /><small>{user.email}</small></td><td>{user.googleAdmin ? tr('так', 'yes') : tr('ні', 'no')}</td>

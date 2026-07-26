@@ -21,7 +21,14 @@ interface Props {
     onReset: (passphrase: string) => Promise<void>;
 }
 
-type Impact = { allowed: boolean; ownedItemsToDelete: number; incomingSharesToRemove: number; membershipsToRemove: number; blockers: { kind: string; id: string; name: string; reason: string }[] };
+type Successor = { email: string; displayName: string };
+type Blocker = { kind: string; id: string; name: string; reason: string; candidates: Successor[] };
+type Impact = {
+    allowed: boolean; ownedItemsToDelete: number; incomingSharesToRemove: number; membershipsToRemove: number;
+    blockers: Blocker[];
+    /** Shared resources nobody else can decrypt, so they cannot be handed over. */
+    stranded: { kind: string; id: string; name: string }[];
+};
 
 export function UnlockScreen({ devMode, user, hasVault, vaultSalt, startRecovery, onUnlock, onCreate, onReset }: Props) {
     const { language, t } = useI18n(); const tr = (uk: string, en: string) => language === 'uk' ? uk : en;
@@ -29,6 +36,7 @@ export function UnlockScreen({ devMode, user, hasVault, vaultSalt, startRecovery
     const [passphrase, setPassphrase] = useState(''); const [confirmation, setConfirmation] = useState('');
     const [assessment, setAssessment] = useState<PassphraseAssessment | null>(null);
     const [error, setError] = useState<string | null>(null); const [busy, setBusy] = useState(false);
+    const [notice, setNotice] = useState<string | null>(null);
     const [recovering, setRecovering] = useState(false); const [impact, setImpact] = useState<Impact | null>(null);
     const [successors, setSuccessors] = useState<Record<string, string>>({});
     const [tosAccepted, setTosAccepted] = useState(false);
@@ -99,7 +107,7 @@ export function UnlockScreen({ devMode, user, hasVault, vaultSalt, startRecovery
     }
 
     async function beginRecovery() {
-        setError(null); setRecovering(true);
+        setError(null); setNotice(null); setRecovering(true);
         try { setImpact(await api<Impact>('/api/vault/reset-impact')); }
         catch (e) { setError(`${(e as Error).message}. ${tr('Після повторного входу спробуйте ще раз.', 'Sign in again and retry.')}`); }
     }
@@ -121,17 +129,21 @@ export function UnlockScreen({ devMode, user, hasVault, vaultSalt, startRecovery
     /** Leaves the reset screen and returns to the normal unlock screen without
      * touching any encrypted material. */
     function cancelRecovery() {
-        setRecovering(false); setImpact(null); setError(null);
+        setRecovering(false); setImpact(null); setError(null); setNotice(null);
         setPassphrase(''); setConfirmation(''); setSuccessors({});
     }
 
-    async function transfer(blocker: Impact['blockers'][number]) {
-        const successorEmail = successors[blocker.id]?.trim();
-        if (!successorEmail) { setError(tr('Вкажіть email нового власника.', 'Enter the new owner’s email.')); return; }
-        setBusy(true); setError(null);
+    async function transfer(blocker: Blocker) {
+        const successorEmail = (successors[blocker.id] || blocker.candidates[0]?.email || '').trim();
+        if (!successorEmail) { setError(tr('Оберіть нового власника.', 'Choose a new owner.')); return; }
+        setBusy(true); setError(null); setNotice(null);
         try {
-            await api('/api/vault/ownership-transfers', { method: 'POST', body: JSON.stringify({ kind: blocker.kind, resourceId: blocker.id, successorEmail }) });
-            setImpact(await api<Impact>('/api/vault/reset-impact'));
+            // The endpoint answers with the refreshed impact: one round trip, and
+            // the screen cannot end up showing a blocker that is already gone.
+            setImpact(await api<Impact>('/api/vault/ownership-transfers', {
+                method: 'POST', body: JSON.stringify({ kind: blocker.kind, resourceId: blocker.id, successorEmail }),
+            }));
+            setNotice(tr(`«${blocker.name}» передано користувачу ${successorEmail}.`, `“${blocker.name}” was transferred to ${successorEmail}.`));
         } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
     }
 
@@ -188,7 +200,33 @@ export function UnlockScreen({ devMode, user, hasVault, vaultSalt, startRecovery
                     {tr('Розблокувати через Passkey', 'Unlock with a passkey')}</button></>}
             {hasVault && !recovering && <button className="linklike recovery-link" onClick={requestRecovery}>{tr('Забули Vault Passphrase?', 'Forgot your Vault passphrase?')}</button>}
             {recovering && <button id="recovery-back" className="linklike recovery-link" onClick={cancelRecovery}>{tr('← Повернутися назад', '← Go back')}</button>}
-            {recovering && <div className="recovery-box">{impact?.blockers.length ? <><strong>{tr('Спершу передайте командні ресурси', 'Transfer team resources first')}</strong><p>{tr('Новий власник уже має бути користувачем із доступом до запису або членом колекції.', 'The new owner must already be a user with access to the item or a member of the collection.')}</p>{impact.blockers.map((b) => <div className="transfer-row" key={b.id}><span>{b.name} <small>({b.reason})</small></span><input type="email" placeholder="new.owner@kse.org.ua" value={successors[b.id] || ''} onChange={(e) => setSuccessors((s) => ({ ...s, [b.id]: e.target.value }))} /><button type="button" className="secondary small" disabled={busy} onClick={() => transfer(b)}>{tr('Передати', 'Transfer')}</button></div>)}</> : <><strong>{tr('Незворотна дія', 'Irreversible action')}</strong><p>{tr(`Буде видалено ${impact?.ownedItemsToDelete ?? 0} ваших записів і відкликано доступи. Team resources не видаляються.`, `${impact?.ownedItemsToDelete ?? 0} of your items will be deleted and their shares revoked. Team resources are not deleted.`)}</p></>}</div>}
+            {recovering && notice && <p id="recovery-notice" className="hint success">{notice}</p>}
+            {recovering && <div className="recovery-box">
+                {impact?.blockers.length ? <>
+                    <strong>{tr('Спершу передайте спільні ресурси', 'Transfer shared resources first')}</strong>
+                    <p>{tr('Ваша Vault Passphrase втрачена, тому нікому не можна видати новий ключ. Обрати можна лише тих, хто вже має розшифрований доступ до цього ресурсу — вони й стають власниками.', 'Your vault passphrase is gone, so no new key can be issued to anyone. Only people who already have decrypted access to a resource can be picked — they become its owner.')}</p>
+                    {impact.blockers.map((b) => <div className="transfer-row" key={b.id}>
+                        <span>{b.name} <small>({b.reason})</small></span>
+                        <select aria-label={tr(`Новий власник для ${b.name}`, `New owner for ${b.name}`)}
+                                value={successors[b.id] || b.candidates[0]?.email || ''}
+                                onChange={(e) => setSuccessors((s) => ({ ...s, [b.id]: e.target.value }))}>
+                            {b.candidates.map((candidate) => <option key={candidate.email} value={candidate.email}>
+                                {candidate.displayName === candidate.email ? candidate.email : `${candidate.displayName} (${candidate.email})`}
+                            </option>)}
+                        </select>
+                        <button type="button" className="secondary small" disabled={busy} onClick={() => transfer(b)}>{tr('Передати', 'Transfer')}</button>
+                    </div>)}
+                </> : <>
+                    <strong>{tr('Незворотна дія', 'Irreversible action')}</strong>
+                    <p>{tr(`Буде видалено ${impact?.ownedItemsToDelete ?? 0} ваших записів і відкликано ${impact?.incomingSharesToRemove ?? 0} доступів до чужих записів. Колекції з іншими учасниками не видаляються.`, `${impact?.ownedItemsToDelete ?? 0} of your items will be deleted, and ${impact?.incomingSharesToRemove ?? 0} shares granted to you will be revoked. Collections with other members are not deleted.`)}</p>
+                    <p>{tr('Після скидання ви створюєте нову Vault Passphrase — старі записи не повертаються, а розблокування через Passkey треба увімкнути заново в Налаштуваннях.', 'After the reset you create a new vault passphrase — the old items do not come back, and passkey unlock has to be re-enabled in Settings.')}</p>
+                </>}
+                {!!impact?.stranded.length && <>
+                    <strong>{tr('Нікому передати', 'Nobody can take these over')}</strong>
+                    <p>{tr('До цих ресурсів немає жодного користувача з розшифрованим доступом. Записи буде видалено разом з рештою; колекції залишаться в їхніх учасників, але ви втратите до них доступ.', 'No other user holds a decrypted key for these. The items are deleted with the rest; collections stay with their members, but you lose access to them.')}</p>
+                    <ul>{impact.stranded.map((resource) => <li key={resource.id}>{resource.name}</li>)}</ul>
+                </>}
+            </div>}
         </div>
     </section>;
 }
