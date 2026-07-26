@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useState } from 'react';
 import { api } from './api';
-import { consumeVaultResetIntent, createVault, fetchConfig, fetchVaultSalt, initOidc, loadOrCreateKeys, oidcLogout, resetVault, setDevIdentity, VaultKeys } from './auth';
+import { consumeVaultResetIntent, createVault, fetchConfig, fetchVaultSalt, initOidc, loadOrCreateKeys, oidcLogout, resetVault, setDevIdentity, verifyPassphrase, VaultKeys } from './auth';
 import { clearLocalItems } from './localItems';
-import { pruneStaleVaultWebAuthn, removeVaultWebAuthn } from './webauthnVault';
+import { hasVaultWebAuthn, pruneStaleVaultWebAuthn, removeVaultWebAuthn, unlockWithVaultWebAuthn } from './webauthnVault';
 import { clearVaultSession, loadVaultSession, saveVaultSession } from './vaultSession';
+import { initExtensionBridge, isExtensionBridgeAvailable, notifyExtensionLock, notifyExtensionUnlock } from './extensionBridge';
 import { UnlockScreen } from './components/UnlockScreen';
 import { VaultTab } from './components/VaultTab';
 import { CollectionsTab } from './components/CollectionsTab';
@@ -11,6 +12,7 @@ import { AuditTab } from './components/AuditTab';
 import { SettingsTab } from './components/SettingsTab';
 import { DashboardTab } from './components/DashboardTab';
 import { ExternalSharePage } from './components/ExternalSharePage';
+import { ExtensionCallbackPage } from './components/ExtensionCallbackPage';
 import { TagsTab } from './components/TagsTab';
 import { AdminTab } from './components/AdminTab';
 import { IconActivity, IconCollections, IconDashboard, IconLock, IconSettings, IconTag, IconUsers, IconVault } from './components/Icons';
@@ -29,6 +31,9 @@ export default function App() {
     const tr = (uk: string, en: string) => (language === 'uk' ? uk : en);
     const externalShareMatch = window.location.pathname.match(/^\/share\/([0-9a-f-]{36})$/i);
     if (externalShareMatch) return <ExternalSharePage shareId={externalShareMatch[1]} />;
+    // Never bootstraps the web SPA's own OIDC login — this route only relays
+    // the extension's own sign-in code back to it.
+    if (window.location.pathname === '/extension-callback') return <ExtensionCallbackPage />;
     const [config, setConfig] = useState<FrontendConfig | null>(null);
     const [oidcReady, setOidcReady] = useState(false);
     const [session, setSession] = useState<Session | null>(null);
@@ -48,6 +53,12 @@ export default function App() {
     // Identifies the current keypair; a passkey enrolment made for a different
     // one wraps a passphrase this vault no longer accepts.
     const [vaultSalt, setVaultSalt] = useState<string | null>(null);
+    // The extension asked this tab to unlock it — surfaced as a small prompt
+    // rather than acted on silently, since only a user gesture can run WebAuthn.
+    const [extensionUnlockRequested, setExtensionUnlockRequested] = useState(false);
+    const [extensionUnlockError, setExtensionUnlockError] = useState<string | null>(null);
+    const [extensionUnlockBusy, setExtensionUnlockBusy] = useState(false);
+    const [extensionUnlockPassphrase, setExtensionUnlockPassphrase] = useState('');
 
     const bootstrap = useCallback(() => {
         setFatal(null);
@@ -89,8 +100,33 @@ export default function App() {
 
     useEffect(() => { bootstrap(); }, [bootstrap]);
 
+    useEffect(() => {
+        // Connecting is harmless even while the sync toggle is off — it only
+        // costs a 'hello'/'status' round trip. The toggle is instead checked at
+        // each point of *acting* (below, and in syncExtensionUnlock/lock), so
+        // turning it on mid-session does not require a reconnect.
+        if (!config?.extensionId || config.authMode !== 'oidc' || !isExtensionBridgeAvailable()) return;
+        initExtensionBridge(config.extensionId, {
+            onRequestUnlock: () => {
+                if (localStorage.getItem('pm.extension-sync') === 'off') return;
+                setExtensionUnlockError(null); setExtensionUnlockRequested(true);
+            },
+            // A lock anywhere — the extension's own idle timeout, or another
+            // app tab — means this tab must stop trusting its resumed session
+            // too. Reset local state only; echoing notifyExtensionLock back
+            // would ping-pong the two forever.
+            onLocked: () => { if (localStorage.getItem('pm.extension-sync') !== 'off') resetLockedState(); },
+        });
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [config]);
+
     const refreshCollections = useCallback(async () => {
         setCollections(await api<Collection[]>('/api/collections'));
+    }, []);
+
+    /** Best-effort: an unreachable or absent extension must never block unlock. */
+    const syncExtensionUnlock = useCallback((passphrase: string) => {
+        if (localStorage.getItem('pm.extension-sync') !== 'off') notifyExtensionUnlock(passphrase);
     }, []);
 
     const unlock = useCallback(async (passphrase: string, dev?: { email: string; roles: string; groups: string }) => {
@@ -104,7 +140,8 @@ export default function App() {
         setVaultSalt(await fetchVaultSalt());
         setSettings(await api<Settings>('/api/settings'));
         await refreshCollections();
-    }, [refreshCollections]);
+        syncExtensionUnlock(passphrase);
+    }, [refreshCollections, syncExtensionUnlock]);
 
     const create = useCallback(async (passphrase: string) => {
         const user = bootstrapUser ?? await api<Me>('/api/me');
@@ -117,7 +154,8 @@ export default function App() {
         setSession({ user, keys }); setHasVault(true);
         setVaultSalt(await fetchVaultSalt());
         setSettings(await api<Settings>('/api/settings')); await refreshCollections();
-    }, [bootstrapUser, refreshCollections]);
+        syncExtensionUnlock(passphrase);
+    }, [bootstrapUser, refreshCollections, syncExtensionUnlock]);
 
     const recover = useCallback(async (passphrase: string) => {
         const user = bootstrapUser ?? await api<Me>('/api/me');
@@ -128,11 +166,19 @@ export default function App() {
         removeVaultWebAuthn(user.email);
         clearLocalItems(user.email); await saveVaultSession(user.email, keys);
         setSession({ user, keys }); setHasVault(true);
+        // The intent has been served. Leaving it set sent the very next lock
+        // back to the reset screen — the vault had just been reset, so the
+        // screen offered to reset it again instead of unlocking it.
+        setResetRequested(false);
         setVaultSalt(await fetchVaultSalt());
         setCollections([]); setSettings(await api<Settings>('/api/settings'));
-    }, [bootstrapUser]);
+        syncExtensionUnlock(passphrase);
+    }, [bootstrapUser, syncExtensionUnlock]);
 
-    const lock = useCallback(() => {
+    // Split from `lock` so the bridge's onLocked handler (the extension telling
+    // this tab it already locked) can reset local state without echoing a
+    // 'lock' message straight back — that would ping-pong the two forever.
+    const resetLockedState = useCallback(() => {
         // An explicit lock must not be resumable, otherwise the next boot walks
         // straight back into the vault.
         void clearVaultSession();
@@ -140,7 +186,15 @@ export default function App() {
         setCollections([]);
         setTab('vault');
         setVaultItemToOpen(null);
+        // Belt and braces: a reset intent must never outlive the boot it was
+        // recorded for, whether or not the reset it asked for went through.
+        setResetRequested(false);
     }, []);
+
+    const lock = useCallback(() => {
+        resetLockedState();
+        if (localStorage.getItem('pm.extension-sync') !== 'off') notifyExtensionLock();
+    }, [resetLockedState]);
 
     const logout = useCallback(() => {
         lock();
@@ -148,6 +202,35 @@ export default function App() {
             oidcLogout();
         }
     }, [config, lock]);
+
+    const extensionUnlockUser = session?.user ?? bootstrapUser;
+    const extensionUnlockViaPasskey = extensionUnlockUser != null && hasVaultWebAuthn(extensionUnlockUser.email, vaultSalt);
+
+    async function resolveExtensionUnlockWithPasskey() {
+        if (!extensionUnlockUser) return;
+        setExtensionUnlockBusy(true); setExtensionUnlockError(null);
+        try {
+            const passphrase = await unlockWithVaultWebAuthn(extensionUnlockUser.email);
+            syncExtensionUnlock(passphrase);
+            setExtensionUnlockRequested(false);
+        } catch (e) { setExtensionUnlockError((e as Error).message); }
+        finally { setExtensionUnlockBusy(false); }
+    }
+
+    async function resolveExtensionUnlockWithPassphrase(event: FormEvent) {
+        event.preventDefault();
+        setExtensionUnlockBusy(true); setExtensionUnlockError(null);
+        try {
+            if (!await verifyPassphrase(extensionUnlockPassphrase)) {
+                setExtensionUnlockError(tr('Невірна Vault Passphrase.', 'Wrong vault passphrase.'));
+                return;
+            }
+            syncExtensionUnlock(extensionUnlockPassphrase);
+            setExtensionUnlockPassphrase('');
+            setExtensionUnlockRequested(false);
+        } catch (e) { setExtensionUnlockError((e as Error).message); }
+        finally { setExtensionUnlockBusy(false); }
+    }
 
     if (fatal) {
         // A backend that has not synchronized Google Workspace yet answers 403
@@ -167,6 +250,21 @@ export default function App() {
 
     return (
         <div className="app-shell">
+            {extensionUnlockRequested && extensionUnlockUser && (
+                <div id="extension-unlock-banner" className="card narrow" style={{ margin: '12px 24px' }}>
+                    <p>{tr('Розширення браузера KSE Password Manager запитує розблокування.', 'The KSE Password Manager browser extension is asking to be unlocked.')}</p>
+                    {extensionUnlockViaPasskey
+                        ? <button type="button" disabled={extensionUnlockBusy} onClick={resolveExtensionUnlockWithPasskey}>
+                            {tr('Розблокувати розширення через Passkey', 'Unlock the extension with a passkey')}</button>
+                        : <form onSubmit={resolveExtensionUnlockWithPassphrase}>
+                            <input type="password" autoComplete="current-password" placeholder={tr('Vault Passphrase', 'Vault passphrase')}
+                                   value={extensionUnlockPassphrase} onChange={(e) => setExtensionUnlockPassphrase(e.target.value)} />
+                            <button type="submit" disabled={extensionUnlockBusy || !extensionUnlockPassphrase}>{tr('Розблокувати розширення', 'Unlock the extension')}</button>
+                        </form>}
+                    <button type="button" className="linklike" onClick={() => setExtensionUnlockRequested(false)}>{tr('Скасувати', 'Dismiss')}</button>
+                    {extensionUnlockError && <p className="error">{extensionUnlockError}</p>}
+                </div>
+            )}
             <header className="topbar">
                 <div className="brand"><span className="brand-mark" aria-hidden="true"><IconLock /></span><span>KSE Password Manager</span></div>
                 <div className="header-right">

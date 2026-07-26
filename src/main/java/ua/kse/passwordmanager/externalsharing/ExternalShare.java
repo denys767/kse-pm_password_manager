@@ -29,7 +29,11 @@ public class ExternalShare {
     @Column(nullable = false)
     private String ownerEmail;
 
-    @Column(nullable = false, length = 65535)
+    // Unbounded: the ciphertext is as long as the record is, and a width here
+    // only ever expressed how big a varchar someone once guessed would do.
+    // ExternalShareDtos.MAX_ENCRYPTED_PACKAGE_CHARS rejects absurd payloads at
+    // the edge instead. See V23__external_share_package_text.sql.
+    @Column(nullable = false, columnDefinition = "text")
     private String encryptedPackage;
 
     @Column(nullable = false)

@@ -15,6 +15,13 @@ export interface ExternalShareSnapshot {
     payload: SecretPayload;
 }
 
+/**
+ * Mirrors ExternalShareDtos.MAX_ENCRYPTED_PACKAGE_CHARS. Checking it here turns
+ * a bare 400 arriving after the browser has already encrypted everything into a
+ * message that says which record is too big and what to do about it.
+ */
+export const MAX_ENCRYPTED_PACKAGE_CHARS = 1_000_000;
+
 export const encryptShareSnapshot = (snapshot: ExternalShareSnapshot) => pmc.encryptExternalShare(snapshot);
 
 export async function decryptShareSnapshot(fragmentKey: string, encryptedPackage: string,

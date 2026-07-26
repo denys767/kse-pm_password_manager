@@ -20,19 +20,40 @@ const ARGON2ID_MEMORY_KIB = 19456;
 const ARGON2ID_ITERATIONS = 2;
 const ARGON2ID_PARALLELISM = 1;
 
-async function deriveKekPbkdf2(passphrase: string, saltB64: string): Promise<CryptoKey> {
-    const material = await crypto.subtle.importKey('raw', te.encode(passphrase), 'PBKDF2', false, ['deriveKey']);
-    return crypto.subtle.deriveKey({ name: 'PBKDF2', salt: unb64(saltB64), iterations: PBKDF2_ITERATIONS, hash: 'SHA-256' }, material, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+async function deriveKekPbkdf2(passphrase: string, saltB64: string): Promise<Uint8Array<ArrayBuffer>> {
+    const material = await crypto.subtle.importKey('raw', te.encode(passphrase), 'PBKDF2', false, ['deriveBits']);
+    const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: unb64(saltB64), iterations: PBKDF2_ITERATIONS, hash: 'SHA-256' }, material, 256);
+    return new Uint8Array(bits);
 }
-async function deriveKekArgon2id(passphrase: string, saltB64: string): Promise<CryptoKey> {
+async function deriveKekArgon2id(passphrase: string, saltB64: string): Promise<Uint8Array<ArrayBuffer>> {
     const raw = await argon2id({ password: passphrase, salt: unb64(saltB64), iterations: ARGON2ID_ITERATIONS, parallelism: ARGON2ID_PARALLELISM, memorySize: ARGON2ID_MEMORY_KIB, hashLength: 32, outputType: 'binary' });
-    return crypto.subtle.importKey('raw', new Uint8Array(raw), { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
+    return new Uint8Array(raw);
 }
-export async function deriveKek(passphrase: string, saltB64: string, algorithm: KdfAlgorithm): Promise<CryptoKey> {
+
+/**
+ * The KEK as raw bytes rather than an opaque CryptoKey.
+ *
+ * <p>An MV3 service worker is evicted after seconds of idleness, taking every
+ * in-memory key with it, and re-deriving costs an Argon2id pass (or 210k
+ * PBKDF2 rounds) — which is why the extension used to demand the passphrase
+ * again every few minutes. Keeping these bytes in chrome.storage.session
+ * (memory-only, never written to disk, cleared when the browser closes) makes
+ * waking up free. They are the crown jewels while they are there, which is why
+ * they go nowhere near storage.local and why the auto-lock alarm deletes them.
+ */
+export async function deriveKekBytes(passphrase: string, saltB64: string, algorithm: KdfAlgorithm): Promise<Uint8Array<ArrayBuffer>> {
     if (algorithm === 'PBKDF2') return deriveKekPbkdf2(passphrase, saltB64);
     if (algorithm === 'ARGON2ID') return deriveKekArgon2id(passphrase, saltB64);
     throw new Error(`Unknown KDF algorithm: ${algorithm}`);
 }
+export async function importKek(raw: Uint8Array<ArrayBuffer>): Promise<CryptoKey> {
+    return crypto.subtle.importKey('raw', raw, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
+}
+export async function deriveKek(passphrase: string, saltB64: string, algorithm: KdfAlgorithm): Promise<CryptoKey> {
+    return importKek(await deriveKekBytes(passphrase, saltB64, algorithm));
+}
+export const toBase64 = b64;
+export const fromBase64 = unb64;
 async function aesDecrypt(key: CryptoKey, ctB64: string, ivB64: string): Promise<ArrayBuffer> {
     return crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(ivB64) }, key, unb64(ctB64));
 }

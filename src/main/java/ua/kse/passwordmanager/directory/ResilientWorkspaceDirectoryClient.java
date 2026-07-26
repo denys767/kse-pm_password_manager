@@ -10,11 +10,21 @@ import org.slf4j.LoggerFactory;
 import ua.kse.passwordmanager.common.BadGatewayException;
 
 /**
- * Keeps the interactive directory usable when Google is not.
+ * Routes directory reads between live Google and the materialized snapshot.
  *
- * <p>Autocomplete and share validation fall back to the materialized snapshot;
- * the synchronizer's own projections never do, so a fallback read can never be
- * written back as if it were fresh Directory data.
+ * <p>Interactive lookups — autocomplete and share validation — are answered
+ * from the snapshot, and only reach Google when the snapshot has nothing to
+ * say (a cold start before the synchronizer's first pass). Going to Google per
+ * keystroke instead meant five Directory API calls per request, authenticated
+ * as the Workspace admin and driven by any signed-in user: enough to exhaust
+ * the per-customer quota and take sharing down for everyone, and enough to
+ * couple a type-ahead to Google's latency and availability for no benefit. The
+ * snapshot holds the same data the synchronizer already wrote; serving it is
+ * not a weaker answer, only a slightly older one.
+ *
+ * <p>{@code memberEmails} and the synchronizer's own projections still go
+ * straight to Google, falling back only on failure, so a degraded read can
+ * never be written back as if it were fresh Directory data.
  */
 public class ResilientWorkspaceDirectoryClient implements WorkspaceDirectoryClient {
 
@@ -39,12 +49,20 @@ public class ResilientWorkspaceDirectoryClient implements WorkspaceDirectoryClie
 
     @Override
     public List<DirectoryPrincipal> search(String query, List<DirectoryPrincipal.Type> types, int limit) {
-        return withFallback("search", () -> live.search(query, types, limit), () -> snapshot.search(query, types, limit));
+        List<DirectoryPrincipal> materialized = snapshot.search(query, types, limit);
+        if (!materialized.isEmpty()) return materialized;
+        // Empty can mean either "no such person" or "the snapshot has not been
+        // built yet". Only the second is worth a Google call, and asking is
+        // cheap precisely because it is rare; a genuine miss costs one lookup
+        // that also returns nothing.
+        return withFallback("search", () -> live.search(query, types, limit), List::of);
     }
 
     @Override
     public Optional<DirectoryPrincipal> find(DirectoryPrincipal.Type type, String id) {
-        return withFallback("find", () -> live.find(type, id), () -> snapshot.find(type, id));
+        Optional<DirectoryPrincipal> materialized = snapshot.find(type, id);
+        if (materialized.isPresent()) return materialized;
+        return withFallback("find", () -> live.find(type, id), Optional::empty);
     }
 
     @Override

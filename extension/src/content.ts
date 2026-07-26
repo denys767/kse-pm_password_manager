@@ -1,6 +1,5 @@
 import jsQR from 'jsqr';
-import { matchesOrigin } from './origin';
-import type { PasswordItem } from './types';
+import type { AutofillCandidate } from './types';
 
 const send = <T>(message: unknown): Promise<T> => chrome.runtime.sendMessage(message) as Promise<T>;
 
@@ -54,36 +53,125 @@ function offerGeneratedPassword(): void {
     document.body.appendChild(button);
 }
 
-/** Inline "fill" affordance next to any password field that matches a saved item for this origin. */
-async function offerAutofill(): Promise<void> {
-    let items: PasswordItem[];
-    try { items = await send<PasswordItem[]>({ type: 'items' }); } catch { return; }
-    const matches = items.filter((item) => matchesOrigin(item.url, location.href));
-    if (matches.length === 0) return;
-    for (const input of passwordInputs()) {
-        if (input.dataset.ksePmMarked) continue;
-        input.dataset.ksePmMarked = '1';
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.textContent = '🔑';
-        button.title = 'Заповнити з KSE Password Manager';
-        button.style.cssText = 'position:absolute;z-index:2147483647;cursor:pointer;border:0;background:#eef0f5;'
-            + 'border-radius:4px;padding:2px 6px;font-size:12px;';
-        const place = () => {
-            const rect = input.getBoundingClientRect();
-            button.style.top = `${rect.top + window.scrollY + rect.height / 2 - 10}px`;
-            button.style.left = `${rect.right + window.scrollX - 28}px`;
-        };
-        place();
-        window.addEventListener('resize', place);
-        window.addEventListener('scroll', place, true);
-        button.addEventListener('click', async (event) => {
-            event.preventDefault();
-            const item = matches[0]; // MVP: first match; open the popup for a picker with several.
-            try { await send({ type: 'autofill', item }); } catch (e) { toast((e as Error).message); }
+/**
+ * The account picker.
+ *
+ * This used to be a single 🔑 button that filled `matches[0]` — so on any site
+ * where you have more than one account, it filled the wrong one and there was
+ * no way to say which you meant. It also only ever reached the password field.
+ * Now every match is listed by username, and choosing one fills the username
+ * and the password together.
+ */
+let openPicker: HTMLElement | undefined;
+let openPickerAnchor: HTMLInputElement | undefined;
+let blurTimer: ReturnType<typeof setTimeout> | undefined;
+
+function closePicker(): void {
+    if (blurTimer !== undefined) { clearTimeout(blurTimer); blurTimer = undefined; }
+    openPicker?.remove();
+    openPicker = undefined;
+    openPickerAnchor = undefined;
+}
+
+/** Pure so the geometry can be unit-tested without a DOM. */
+export function pickerPosition(rect: { top: number; bottom: number; left: number; width: number },
+    viewport: { width: number; height: number }): { top: number; left: number; minWidth: number } {
+    const minWidth = Math.max(rect.width, 220);
+    const left = Math.min(Math.max(rect.left, 4), Math.max(viewport.width - minWidth - 4, 4));
+    const top = rect.bottom + 2 <= viewport.height ? rect.bottom + 2 : Math.max(rect.top - 4, 4);
+    return { top, left, minWidth };
+}
+
+function reposition(): void {
+    if (!openPicker || !openPickerAnchor) return;
+    if (!openPickerAnchor.isConnected) { closePicker(); return; }
+    const rect = openPickerAnchor.getBoundingClientRect();
+    if (rect.width === 0 && rect.height === 0) { closePicker(); return; }
+    const { top, left, minWidth } = pickerPosition(rect, { width: window.innerWidth, height: window.innerHeight });
+    openPicker.style.top = `${top}px`;
+    openPicker.style.left = `${left}px`;
+    openPicker.style.minWidth = `${minWidth}px`;
+}
+
+function showPicker(anchor: HTMLInputElement, candidates: AutofillCandidate[]): void {
+    closePicker();
+    const host = document.createElement('div');
+    const rect = anchor.getBoundingClientRect();
+    const { top, left, minWidth } = pickerPosition(rect, { width: window.innerWidth, height: window.innerHeight });
+    host.style.cssText = `position:fixed;z-index:2147483647;top:${top}px;left:${left}px;min-width:${minWidth}px;`;
+    // Losing focus to the picker itself must not trigger the input's blur-close.
+    host.addEventListener('mousedown', (event) => event.preventDefault());
+    const root = host.attachShadow({ mode: 'closed' });
+    const options = candidates.map((candidate, index) => {
+        const label = candidate.username || candidate.name;
+        const secondary = candidate.username ? candidate.name : location.hostname;
+        return `<button type="button" data-index="${index}">
+            <span class="who">${escapeText(label)}</span><span class="what">${escapeText(secondary)}</span>
+        </button>`;
+    }).join('');
+    root.innerHTML = `<style>
+        .menu { font: 13px/1.35 system-ui, sans-serif; background:#fff; color:#182033; border:1px solid #d5d9e3;
+                border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,.16); overflow:hidden; }
+        .head { padding:6px 10px; font-size:11px; text-transform:uppercase; letter-spacing:.04em;
+                color:#6b7280; background:#f6f7fa; border-bottom:1px solid #eceef3; }
+        button { display:flex; flex-direction:column; gap:1px; width:100%; text-align:left; border:0;
+                 background:none; padding:7px 10px; cursor:pointer; }
+        button:hover, button:focus { background:#eef2fb; outline:none; }
+        .who { font-weight:600; }
+        .what { font-size:11px; color:#6b7280; }
+    </style><div class="menu"><div class="head">KSE Password Manager</div>${options}</div>`;
+    root.querySelectorAll<HTMLButtonElement>('button').forEach((button) => {
+        button.addEventListener('click', () => {
+            const chosen = candidates[Number(button.dataset.index)];
+            closePicker();
+            // By id: the page must not be handed the record itself.
+            void send({ type: 'autofill', itemId: chosen.id }).catch((e: Error) => toast(e.message));
         });
-        document.body.appendChild(button);
-    }
+    });
+    document.documentElement.appendChild(host);
+    openPicker = host;
+    openPickerAnchor = anchor;
+}
+
+function escapeText(value: string): string {
+    return value.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
+}
+
+async function offerAutofill(): Promise<void> {
+    let candidates: AutofillCandidate[] | undefined;
+    let candidatesAt = 0;
+    const CACHE_MS = 30_000;
+    const loginField = (el: HTMLInputElement) => el.offsetParent !== null && !el.disabled && !el.readOnly
+        && (el.type === 'password' || el.type === 'email'
+            || el.autocomplete.includes('username') || el.autocomplete.includes('email'));
+
+    document.addEventListener('focusin', (event) => {
+        const input = event.target as HTMLInputElement;
+        if (!(input instanceof HTMLInputElement) || !loginField(input)) return;
+        if (blurTimer !== undefined) { clearTimeout(blurTimer); blurTimer = undefined; }
+        void (async () => {
+            if (!candidates || Date.now() - candidatesAt > CACHE_MS) {
+                try { candidates = await send<AutofillCandidate[]>({ type: 'autofill-candidates', url: location.href }); candidatesAt = Date.now(); }
+                catch { return; }
+            }
+            if (candidates?.length && document.activeElement === input) showPicker(input, candidates);
+        })();
+    });
+    document.addEventListener('focusout', (event) => {
+        const input = event.target as HTMLInputElement;
+        if (!(input instanceof HTMLInputElement) || input !== openPickerAnchor) return;
+        // Delayed and re-checked: the picker's own mousedown guard keeps focus
+        // on the field when a row is clicked, but some sites re-focus
+        // asynchronously (label wrappers, floating-label libs) — give that a
+        // beat before deciding the field truly lost focus.
+        blurTimer = setTimeout(() => {
+            blurTimer = undefined;
+            if (document.activeElement !== openPickerAnchor) closePicker();
+        }, 150);
+    });
+    document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closePicker(); });
+    window.addEventListener('scroll', () => requestAnimationFrame(reposition), true);
+    window.addEventListener('resize', () => requestAnimationFrame(reposition));
 }
 
 /** Captures newly-typed credentials on submit and offers to save them as a new vault item. */
@@ -92,10 +180,14 @@ function watchForNewCredentials(): void {
         const form = event.target as HTMLFormElement;
         const passwordInput = form?.querySelector<HTMLInputElement>('input[type="password"]');
         if (!passwordInput?.value) return;
-        const usernameInput = [...form.querySelectorAll<HTMLInputElement>('input')]
-            .find((el) => el.type === 'email' || el.type === 'text' || el.autocomplete.includes('username'));
+        // One user gesture, one save. A double-clicked button, or a site that
+        // re-submits its own form, otherwise sent two capture messages and
+        // created two identical records.
+        if (form.dataset.ksePmSubmitted) return;
+        form.dataset.ksePmSubmitted = '1';
+        setTimeout(() => delete form.dataset.ksePmSubmitted, 2000);
         const url = location.origin + location.pathname;
-        const username = usernameInput?.value ?? '';
+        const username = submittedUsername(form);
         const password = passwordInput.value;
         void send<{ saved: boolean }>({ type: 'save-credentials', url, username, password }).then((result) => {
             if (result.saved) toast('Пароль збережено у KSE Password Manager.');
@@ -103,6 +195,27 @@ function watchForNewCredentials(): void {
             if (e.message.includes('заблокован')) toast('KSE Password Manager: розблокуйте vault, щоб зберігати нові паролі.');
         });
     }, true);
+}
+
+/**
+ * The username that goes with a submitted password.
+ *
+ * Looking only inside the form misses two-step sign-ins, where the account was
+ * entered on a previous screen and the password form contains nothing but the
+ * password. Those records were saved with a null username — and an item with no
+ * username is one of the reasons autofill later appeared to fill "only the
+ * password". Falling back to a filled username-ish field elsewhere on the page
+ * recovers most of them.
+ */
+function submittedUsername(form: HTMLFormElement): string {
+    const looksLikeUsername = (el: HTMLInputElement) =>
+        el.type === 'email' || el.type === 'text' || el.type === 'tel'
+        || el.autocomplete.includes('username') || el.autocomplete.includes('email');
+    const inForm = [...form.querySelectorAll<HTMLInputElement>('input')].find((el) => looksLikeUsername(el) && el.value);
+    if (inForm) return inForm.value;
+    const onPage = [...document.querySelectorAll<HTMLInputElement>('input')]
+        .filter((el) => looksLikeUsername(el) && el.value.trim() && !el.disabled);
+    return onPage.length === 1 ? onPage[0].value : '';
 }
 
 /** Decodes a QR code (e.g. a site's 2FA setup screen) into an otpauth:// URI, scanning every image/canvas on the page. */

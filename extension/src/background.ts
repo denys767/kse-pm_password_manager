@@ -1,62 +1,247 @@
-import { API_ORIGIN, DEFAULT_CLIPBOARD_CLEAR_SECONDS, OIDC_CLIENT_ID } from './config';
+import { API_ORIGIN, APP_ORIGIN, AUTO_LOCK_MINUTES, DEFAULT_CLIPBOARD_CLEAR_SECONDS, OIDC_CLIENT_ID } from './config';
 import * as pmc from './crypto';
 import { matchesOrigin } from './origin';
 import { emptyPayload, parsePayload, serializePayload } from './payload';
+import { clearSession, clearVaultFromSession, patchSession, readSession } from './session';
 import { assertionResponse, createResponse } from './webauthn';
-import type { Collection, FrontendConfig, PasskeyCredential, PasswordItem, Settings, UserKeysDto } from './types';
+import { broadcastVaultLocked, requestUnlockFromApp, setupExternalBridge } from './bridge';
+import type { Collection, FrontendConfig, KeyDistribution, PasskeyCredential, PasswordItem, Settings, UserKeysDto } from './types';
 
 interface VaultKeys { kek: CryptoKey; privateKey: CryptoKey; publicKey: CryptoKey; }
 let token: string | undefined;
+let refreshToken: string | undefined;
 let vaultKeys: VaultKeys | undefined;
 let creatingOffscreen: Promise<void> | undefined;
 let passkeyAttached = false;
+/** Set while the OIDC sign-in window is open; see loginWithoutProxyingKeycloak. */
+let signingIn = false;
 const canceledWebAuthnRequests = new Set<number>();
+
+const AUTO_LOCK_ALARM = 'vault-auto-lock';
+const PASSKEY_SYNC_ALARM = 'passkey-key-distribution';
 
 function b64url(bytes: Uint8Array): string { return btoa(String.fromCharCode(...bytes)).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', ''); }
 async function sha256B64url(value: string): Promise<string> { return b64url(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)))); }
 function randomB64url(size: number): string { return b64url(crypto.getRandomValues(new Uint8Array(size))); }
-function callbackParam(url: string, name: string): string | null { return new URL(url).searchParams.get(name); }
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+
+/**
+ * Rebuilds this worker's state from chrome.storage.session.
+ *
+ * Every entry point awaits this, because MV3 may have thrown the previous
+ * worker away between any two messages. Memoized per worker lifetime, so the
+ * common case costs one resolved promise.
+ */
+let hydrating: Promise<void> | undefined;
+function hydrate(): Promise<void> {
+    hydrating ??= (async () => {
+        const stored = await readSession();
+        token = stored.accessToken;
+        refreshToken = stored.refreshToken;
+        if (stored.kek && stored.encryptedPrivateKey && stored.privateKeyIv && stored.publicKey) {
+            try {
+                const kek = await pmc.importKek(pmc.fromBase64(stored.kek));
+                vaultKeys = {
+                    kek,
+                    privateKey: await pmc.importEncryptedPrivateKey(stored.encryptedPrivateKey, stored.privateKeyIv, kek),
+                    publicKey: await pmc.importPublicKey(stored.publicKey),
+                };
+                await attachPasskeyProvider();
+            } catch {
+                // Unreadable stored material is not something to limp along
+                // with; drop it and ask for the passphrase.
+                vaultKeys = undefined;
+                await clearVaultFromSession();
+            }
+        }
+    })();
+    return hydrating;
+}
+
+/** Pushes the idle auto-lock out. Called on deliberate vault use, not on
+ * background chores — otherwise the reconcile alarm would keep the vault
+ * unlocked forever on its own. */
+async function touchVault(): Promise<void> {
+    if (!vaultKeys) return;
+    await patchSession({ lastUsedAt: Date.now() });
+    chrome.alarms.create(AUTO_LOCK_ALARM, { delayInMinutes: AUTO_LOCK_MINUTES });
+}
+
+async function refreshAccessToken(): Promise<boolean> {
+    if (!refreshToken) return false;
+    const c = await config();
+    const response = await fetch(`${c.keycloakUrl}/realms/${encodeURIComponent(c.realm)}/protocol/openid-connect/token`,
+        { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ grant_type: 'refresh_token', client_id: OIDC_CLIENT_ID, refresh_token: refreshToken }) });
+    if (!response.ok) { refreshToken = undefined; return false; }
+    const body = await response.json() as { access_token: string; refresh_token?: string };
+    token = body.access_token;
+    if (body.refresh_token) refreshToken = body.refresh_token;
+    await patchSession({ accessToken: token, refreshToken });
+    return true;
+}
+
+async function request<T>(path: string, init: RequestInit = {}, retrying = false): Promise<T> {
+    await hydrate();
     if (!token) throw new Error('Увійдіть через Keycloak.');
     const response = await fetch(`${API_ORIGIN}${path}`, { ...init, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...(init.headers ?? {}) } });
+    // Keycloak access tokens last minutes. Without this the extension appeared
+    // to log itself out several times an hour; the session was fine, only the
+    // access token had aged out.
+    if (response.status === 401 && !retrying && await refreshAccessToken()) {
+        return request<T>(path, init, true);
+    }
     if (!response.ok) throw new Error(`API error ${response.status}`);
     return response.status === 204 ? null as T : response.json() as Promise<T>;
 }
 // Avoid shadowing this authenticated API primitive in WebAuthn event handlers.
 const requestApi = request;
+let cachedConfig: FrontendConfig | undefined;
 async function config(): Promise<FrontendConfig> {
+    if (cachedConfig) return cachedConfig;
     const response = await fetch(`${API_ORIGIN}/api/config`);
     if (!response.ok) throw new Error('Не вдалося завантажити OIDC configuration.');
     const value = await response.json() as FrontendConfig;
     if (value.authMode !== 'oidc') throw new Error('Extension вимагає OIDC mode.');
+    cachedConfig = value;
     return value;
 }
 async function login(): Promise<void> {
     const c = await config();
     const verifier = randomB64url(32);
     const state = randomB64url(24);
-    const redirectUri = chrome.identity.getRedirectURL('oidc');
+    const redirectUri = `${APP_ORIGIN}/extension-callback`;
     const authorization = new URL(`${c.keycloakUrl}/realms/${encodeURIComponent(c.realm)}/protocol/openid-connect/auth`);
-    authorization.search = new URLSearchParams({ client_id: OIDC_CLIENT_ID, response_type: 'code', redirect_uri: redirectUri, scope: 'openid', state, code_challenge: await sha256B64url(verifier), code_challenge_method: 'S256' }).toString();
-    const callback = await chrome.identity.launchWebAuthFlow({ url: authorization.toString(), interactive: true });
-    if (!callback || callbackParam(callback, 'state') !== state) throw new Error('OIDC state validation failed.');
-    const code = callbackParam(callback, 'code');
-    if (!code) throw new Error(callbackParam(callback, 'error_description') ?? 'Keycloak did not return an authorization code.');
+    // offline_access is what makes the refresh token above possible; without it
+    // Keycloak hands back only a short-lived access token.
+    authorization.search = new URLSearchParams({ client_id: OIDC_CLIENT_ID, response_type: 'code', redirect_uri: redirectUri, scope: 'openid offline_access', state, code_challenge: await sha256B64url(verifier), code_challenge_method: 'S256' }).toString();
+    const code = await launchSignInTab(authorization.toString(), state);
     const response = await fetch(`${c.keycloakUrl}/realms/${encodeURIComponent(c.realm)}/protocol/openid-connect/token`, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ grant_type: 'authorization_code', client_id: OIDC_CLIENT_ID, code, redirect_uri: redirectUri, code_verifier: verifier }) });
     if (!response.ok) throw new Error('Token exchange failed.');
-    token = (await response.json() as { access_token: string }).access_token;
+    const body = await response.json() as { access_token: string; refresh_token?: string };
+    token = body.access_token;
+    refreshToken = body.refresh_token;
+    await patchSession({ accessToken: token, refreshToken });
 }
+
+const SIGN_IN_TIMEOUT_MS = 5 * 60_000;
+
+/**
+ * Runs Keycloak's login in a real, unrestricted tab with the WebAuthn proxy
+ * out of the way, and waits for ExtensionCallbackPage (the SPA's
+ * /extension-callback route) to relay back the authorization code.
+ *
+ * This replaced chrome.identity.launchWebAuthFlow, whose stripped browser
+ * context could not reliably run platform WebAuthn — Keycloak's own passkey
+ * login needs a normal tab, which this now is.
+ *
+ * While the vault is unlocked this extension owns the browser's WebAuthn
+ * requests. That includes the ones Keycloak's own login page makes — so
+ * "Sign in with a passkey" was handed to onGetPasskey, which looked for a vault
+ * item matching the Keycloak origin, found none, and answered NotAllowedError.
+ * Passkey sign-in was not unavailable so much as intercepted; detaching the
+ * proxy for the duration of sign-in, same as before, fixes that here too.
+ */
+async function launchSignInTab(url: string, expectedState: string): Promise<string> {
+    const wasAttached = passkeyAttached;
+    signingIn = true;
+    if (wasAttached) await detachPasskeyProvider();
+    const tab = await chrome.tabs.create({ url, active: true });
+    try {
+        return await new Promise<string>((resolve, reject) => {
+            let settled = false;
+            const finish = (run: () => void) => { if (settled) return; settled = true; cleanup(); run(); };
+            const onMessage = (message: unknown, sender: { origin?: string; tab?: { id?: number } }, sendResponse: (r: unknown) => void): boolean => {
+                const m = message as { type?: string; code?: string; state?: string; error?: string };
+                if (m.type !== 'oidc-callback' || sender.origin !== APP_ORIGIN) return false;
+                sendResponse({ received: true });
+                finish(() => {
+                    if (m.state !== expectedState) { reject(new Error('OIDC state validation failed.')); return; }
+                    if (!m.code) { reject(new Error(m.error ?? 'Keycloak did not return an authorization code.')); return; }
+                    resolve(m.code);
+                });
+                return true;
+            };
+            const onRemoved = (tabId: number) => { if (tabId === tab.id) finish(() => reject(new Error('Sign-in was cancelled.'))); };
+            const timeout = setTimeout(() => finish(() => reject(new Error('Sign-in timed out.'))), SIGN_IN_TIMEOUT_MS);
+            function cleanup(): void {
+                clearTimeout(timeout);
+                chrome.runtime.onMessageExternal.removeListener(onMessage);
+                chrome.tabs.onRemoved.removeListener(onRemoved);
+            }
+            chrome.runtime.onMessageExternal.addListener(onMessage);
+            chrome.tabs.onRemoved.addListener(onRemoved);
+        });
+    } finally {
+        signingIn = false;
+        if (tab.id !== undefined) { try { await chrome.tabs.remove(tab.id); } catch { /* user already closed it */ } }
+        if (wasAttached) await attachPasskeyProvider();
+    }
+}
+
 async function unlock(passphrase: string): Promise<void> {
     const stored = await request<UserKeysDto>('/api/keys/me');
-    const kek = await pmc.deriveKek(passphrase, stored.kdfSalt, stored.kdfAlgorithm);
+    const kekBytes = await pmc.deriveKekBytes(passphrase, stored.kdfSalt, stored.kdfAlgorithm);
+    const kek = await pmc.importKek(kekBytes);
     try {
         vaultKeys = {
             kek,
             privateKey: await pmc.importEncryptedPrivateKey(stored.encryptedPrivateKey, stored.privateKeyIv, kek),
             publicKey: await pmc.importPublicKey(stored.publicKey),
         };
-        await attachPasskeyProvider();
     } catch { throw new Error('Невірний passphrase для цього vault.'); }
+    await patchSession({
+        kek: pmc.toBase64(kekBytes),
+        encryptedPrivateKey: stored.encryptedPrivateKey,
+        privateKeyIv: stored.privateKeyIv,
+        publicKey: stored.publicKey,
+        lastUsedAt: Date.now(),
+    });
+    chrome.alarms.create(AUTO_LOCK_ALARM, { delayInMinutes: AUTO_LOCK_MINUTES });
+    chrome.alarms.create(PASSKEY_SYNC_ALARM, { delayInMinutes: 1, periodInMinutes: 5 });
+    await attachPasskeyProvider();
+    // The owner is the only party who can hand a shared passkey to its
+    // grantees, and unlocking is the first moment it can.
+    void reconcilePasskeyKeys();
+}
+
+async function lockVault(): Promise<void> {
+    vaultKeys = undefined;
+    await clearVaultFromSession();
+    await chrome.alarms.clear(AUTO_LOCK_ALARM);
+    await chrome.alarms.clear(PASSKEY_SYNC_ALARM);
+    await detachPasskeyProvider();
+    // Every path here — manual lock, idle auto-lock, logout — should lock an
+    // open app tab too, not just this extension.
+    broadcastVaultLocked();
+}
+
+/**
+ * Hands each PASSKEY_ONLY (and other passkey-capable) grantee a copy of the
+ * credential key, wrapped to their public key.
+ *
+ * The server cannot do this — it never holds an unwrapped credential key — and
+ * the web client is deliberately not allowed to, so the owner's extension is
+ * the only place it can happen. Until this existed, granting PASSKEY_ONLY
+ * created a permission that entitled the grantee to a credential they could
+ * never actually decrypt, and their passkey list simply stayed empty.
+ */
+async function reconcilePasskeyKeys(): Promise<void> {
+    if (!vaultKeys) return;
+    let work: KeyDistribution[];
+    try { work = await request<KeyDistribution[]>('/api/passkeys/key-distribution'); }
+    catch { return; /* offline, locked out, or an older backend: the next pass retries */ }
+    for (const credential of work) {
+        try {
+            const credentialKey = await pmc.unwrapItemKey(credential.wrappedCredentialKeyForMe, vaultKeys.privateKey);
+            for (const grantee of credential.pending) {
+                const wrapped = await pmc.wrapItemKey(credentialKey, await pmc.importPublicKey(grantee.publicKey));
+                await request(`/api/passkeys/${credential.id}/wrapped-keys`, {
+                    method: 'PUT',
+                    body: JSON.stringify({ userEmail: grantee.email, wrappedCredentialKey: wrapped }),
+                });
+            }
+        } catch { /* one credential failing must not stop the rest */ }
+    }
 }
 async function detachPasskeyProvider(): Promise<void> {
     passkeyAttached = false;
@@ -68,6 +253,23 @@ async function attachPasskeyProvider(): Promise<void> {
     catch { passkeyAttached = false; /* another provider owns the system authenticator */ }
 }
 function canceled(id: number): boolean { return canceledWebAuthnRequests.has(id) || !vaultKeys || !passkeyAttached; }
+
+/**
+ * Requests this extension must never answer: the ones aimed at our own
+ * Keycloak or API. A vault passkey is for some third-party site; a WebAuthn
+ * prompt on the sign-in page is the user authenticating *to us*, and swallowing
+ * it is how passkey login broke.
+ */
+async function isOwnOrigin(rpIdOrOrigin: unknown): Promise<boolean> {
+    if (typeof rpIdOrOrigin !== 'string' || !rpIdOrOrigin) return false;
+    let hosts: string[];
+    try {
+        const c = await config();
+        hosts = [new URL(c.keycloakUrl).hostname, new URL(API_ORIGIN).hostname];
+    } catch { return false; }
+    const candidate = rpIdOrOrigin.includes('://') ? new URL(rpIdOrOrigin).hostname : rpIdOrOrigin;
+    return hosts.some((host) => host === candidate || host.endsWith(`.${candidate}`));
+}
 async function useSystemAuthenticator(requestId: number, complete: (value: { requestId: number; error: { name: string; message: string } }) => Promise<void>): Promise<void> {
     // Proxy attachment suppresses the native authenticator. Detach before
     // responding so the site can retry and Chrome will use the system provider.
@@ -76,9 +278,14 @@ async function useSystemAuthenticator(requestId: number, complete: (value: { req
 }
 async function onCreatePasskey(request: { requestId: number; requestDetailsJson: string }): Promise<void> {
     try {
-        if (!vaultKeys) return useSystemAuthenticator(request.requestId, chrome.webAuthenticationProxy.completeCreateRequest);
+        await hydrate();
+        if (!vaultKeys || signingIn) return useSystemAuthenticator(request.requestId, chrome.webAuthenticationProxy.completeCreateRequest);
         const options = JSON.parse(request.requestDetailsJson) as Record<string, unknown>;
-        const origin = options.origin; const items = await requestApi<PasswordItem[]>('/api/vault/items');
+        const origin = options.origin;
+        if (await isOwnOrigin(origin) || await isOwnOrigin((options.rp as { id?: string } | undefined)?.id)) {
+            return useSystemAuthenticator(request.requestId, chrome.webAuthenticationProxy.completeCreateRequest);
+        }
+        const items = await requestApi<PasswordItem[]>('/api/vault/items');
         const item = items.find(value => typeof origin === 'string' && matchesOrigin(value.url, origin) && value.accessRole !== 'PASSKEY_ONLY');
         if (!item) return useSystemAuthenticator(request.requestId, chrome.webAuthenticationProxy.completeCreateRequest);
         const result = await createResponse(options, item, vaultKeys.publicKey);
@@ -88,9 +295,13 @@ async function onCreatePasskey(request: { requestId: number; requestDetailsJson:
 }
 async function onGetPasskey(request: { requestId: number; requestDetailsJson: string }): Promise<void> {
     try {
-        if (!vaultKeys) return useSystemAuthenticator(request.requestId, chrome.webAuthenticationProxy.completeGetRequest);
+        await hydrate();
+        if (!vaultKeys || signingIn) return useSystemAuthenticator(request.requestId, chrome.webAuthenticationProxy.completeGetRequest);
         const options = JSON.parse(request.requestDetailsJson) as Record<string, unknown>; const rpId = options.rpId;
         if (typeof rpId !== 'string') throw new Error('Missing RP ID.');
+        if (await isOwnOrigin(rpId)) {
+            return useSystemAuthenticator(request.requestId, chrome.webAuthenticationProxy.completeGetRequest);
+        }
         const candidates = await requestApi<PasskeyCredential[]>(`/api/passkeys?rpId=${encodeURIComponent(rpId)}`);
         const allowed = options.allowCredentials as Array<{ id?: string }> | undefined;
         const passkey = candidates.find(candidate => !allowed?.length || allowed.some(entry => entry.id === candidate.credentialId));
@@ -124,8 +335,30 @@ async function totpCode(item: PasswordItem): Promise<string | null> {
     const payload = parsePayload(await pmc.decryptField(key, item.encryptedNotes, item.notesIv));
     return payload.totpSeed ? pmc.generateTotp(payload.totpSeed) : null;
 }
-/** Only ever creates a new item — never silently overwrites an existing saved password. */
-async function saveCredentials(url: string, username: string, password: string): Promise<{ saved: boolean }> {
+/**
+ * Only ever creates a new item — never silently overwrites an existing saved
+ * password, and never creates the same one twice.
+ *
+ * The duplicate-check below reads the vault and then posts, which is a window
+ * two concurrent calls can both walk through: a double-clicked submit button,
+ * or a site that submits its own form again, produced two identical records.
+ * Serializing on (origin, username) closes it — the second caller waits for the
+ * first and then sees the item it created.
+ */
+const savesInFlight = new Map<string, Promise<{ saved: boolean }>>();
+function saveCredentials(url: string, username: string, password: string): Promise<{ saved: boolean }> {
+    let origin: string;
+    try { origin = new URL(url).origin; } catch { origin = url; }
+    const key = `${origin}|${username}`;
+    const existing = savesInFlight.get(key);
+    if (existing) return existing;
+    const attempt = createCredentials(url, username, password).finally(() => savesInFlight.delete(key));
+    savesInFlight.set(key, attempt);
+    return attempt;
+}
+
+async function createCredentials(url: string, username: string, password: string): Promise<{ saved: boolean }> {
+    await hydrate();
     if (!vaultKeys) throw new Error('Vault заблокований — відкрийте extension і розблокуйте його.');
     const items = await request<PasswordItem[]>('/api/vault/items');
     const exists = items.some((item) => matchesOrigin(item.url, url) && (item.username ?? '') === username);
@@ -167,11 +400,30 @@ async function attachTotp(item: PasswordItem, otpauthUri: string): Promise<void>
         }),
     });
 }
+/**
+ * Runs in the page. Fills the password field and the username field that
+ * belongs to it.
+ *
+ * Two things used to go wrong here. It searched the whole document for "the
+ * first visible text input", which on a page with a search box or a cookie
+ * banner is not the username field at all; it now scopes the search to the
+ * password field's own form and takes the nearest text/email input *before* it,
+ * which is what a login form actually looks like. And it skipped any empty
+ * value — so an item saved without a username silently filled nothing, which
+ * read as "autofill only fills the password".
+ */
 function fillFields(username: string, password: string): void {
     const visible = (element: HTMLInputElement) => element.offsetParent !== null && !element.disabled && !element.readOnly;
-    const inputs = [...document.querySelectorAll<HTMLInputElement>('input')].filter(visible);
-    const passwordInput = inputs.find((input) => input.type === 'password');
-    const usernameInput = inputs.find((input) => input.autocomplete.includes('username') || input.type === 'email' || input.type === 'text');
+    const all = [...document.querySelectorAll<HTMLInputElement>('input')].filter(visible);
+    const passwordInput = all.find((input) => input.type === 'password');
+    const scope = passwordInput?.form
+        ? [...passwordInput.form.querySelectorAll<HTMLInputElement>('input')].filter(visible)
+        : all;
+    const looksLikeUsername = (input: HTMLInputElement) =>
+        input.autocomplete.includes('username') || input.autocomplete.includes('email')
+        || input.type === 'email' || input.type === 'text' || input.type === 'tel';
+    const before = passwordInput ? scope.slice(0, scope.indexOf(passwordInput)) : scope;
+    const usernameInput = [...before].reverse().find(looksLikeUsername) ?? scope.find(looksLikeUsername);
     const set = (input: HTMLInputElement | undefined, value: string) => {
         if (!input || !value) return;
         const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
@@ -190,10 +442,32 @@ async function copy(value: string): Promise<void> {
     try { seconds = Math.max(1, (await request<Settings>('/api/settings')).clipboardClearSeconds || seconds); } catch { /* default is intentionally safe */ }
     chrome.alarms.create('clear-password-clipboard', { when: Date.now() + seconds * 1000 });
 }
-chrome.alarms.onAlarm.addListener((alarm) => { if (alarm.name === 'clear-password-clipboard') void ensureOffscreen().then(() => chrome.runtime.sendMessage({ type: 'clipboard-clear' })); });
+chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === 'clear-password-clipboard') { void ensureOffscreen().then(() => chrome.runtime.sendMessage({ type: 'clipboard-clear' })); return; }
+    if (alarm.name === AUTO_LOCK_ALARM) {
+        void (async () => {
+            await hydrate();
+            // The alarm may have been set before the last deliberate use; only
+            // lock if the vault really has been idle for the whole window.
+            const { lastUsedAt } = await readSession();
+            const idleFor = Date.now() - (lastUsedAt ?? 0);
+            if (idleFor >= AUTO_LOCK_MINUTES * 60_000) await lockVault();
+            else chrome.alarms.create(AUTO_LOCK_ALARM, { delayInMinutes: AUTO_LOCK_MINUTES - idleFor / 60_000 });
+        })();
+        return;
+    }
+    if (alarm.name === PASSKEY_SYNC_ALARM) {
+        void hydrate().then(reconcilePasskeyKeys);
+    }
+});
 
 // MV3 service workers may be restarted between requests, so register every
 // proxy listener synchronously at module evaluation time.
+setupExternalBridge({
+    status: async () => { await hydrate(); return { loggedIn: Boolean(token), unlocked: Boolean(vaultKeys) }; },
+    unlock: async (passphrase) => { await hydrate(); await unlock(passphrase); },
+    lock: async () => { await hydrate(); await lockVault(); },
+});
 chrome.webAuthenticationProxy.onCreateRequest.addListener((request) => { void onCreatePasskey(request); });
 chrome.webAuthenticationProxy.onGetRequest.addListener((request) => { void onGetPasskey(request); });
 chrome.webAuthenticationProxy.onIsUvpaaRequest.addListener((request) => { void chrome.webAuthenticationProxy.completeIsUvpaaRequest({ requestId: request.requestId, isUvpaa: Boolean(vaultKeys && passkeyAttached) }); });
@@ -201,20 +475,46 @@ chrome.webAuthenticationProxy.onRequestCanceled.addListener((requestId) => { can
 
 chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
     void (async () => {
+        await hydrate();
         const m = message as { type: string; item?: PasswordItem };
         if (m.type === 'login') { await login(); return { loggedIn: true }; }
-        if (m.type === 'lock') { vaultKeys = undefined; await detachPasskeyProvider(); return { locked: true }; }
-        if (m.type === 'logout') { vaultKeys = undefined; token = undefined; await detachPasskeyProvider(); return { loggedOut: true }; }
+        if (m.type === 'lock') { await lockVault(); return { locked: true }; }
+        if (m.type === 'logout') { await lockVault(); token = undefined; refreshToken = undefined; await clearSession(); return { loggedOut: true }; }
         if (m.type === 'status') return { loggedIn: Boolean(token), unlocked: Boolean(vaultKeys), passkeyProvider: passkeyAttached };
         if (m.type === 'unlock') { await unlock((message as { passphrase: string }).passphrase); return { unlocked: true }; }
+        if (m.type === 'unlock-via-app') {
+            // If an app tab already has the bridge open, ask it directly.
+            // Otherwise open one — it will run the ceremony as soon as it
+            // connects (see the pending-request handling in bridge.ts).
+            if (!requestUnlockFromApp()) await chrome.tabs.create({ url: API_ORIGIN, active: true });
+            return { requested: true };
+        }
         if (m.type === 'items') return await request<PasswordItem[]>('/api/vault/items');
-        if (m.type === 'copy' && m.item) { const value = await secrets(m.item); await copy(value.password); void request(`/api/vault/items/${m.item.id}/copy-event`, { method: 'POST' }); return { copied: true }; }
-        if (m.type === 'autofill' && m.item) {
+        if (m.type === 'copy' && m.item) { const value = await secrets(m.item); await copy(value.password); await touchVault(); void request(`/api/vault/items/${m.item.id}/copy-event`, { method: 'POST' }); return { copied: true }; }
+        if (m.type === 'autofill') {
+            // By id from the content script, by value from the popup. The
+            // content script runs in a page we do not control, so it is handed
+            // labels to draw a picker with and nothing else — never the item
+            // ciphertext it would need to be trusted with otherwise.
+            const itemId = (message as { itemId?: string }).itemId;
+            const item = itemId
+                ? (await request<PasswordItem[]>('/api/vault/items')).find((value) => value.id === itemId)
+                : m.item;
+            if (!item) throw new Error('Запис не знайдено.');
             const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-            if (!matchesOrigin(m.item.url, tab?.url)) throw new Error('URL запису не збігається з origin активної вкладки.');
+            if (!matchesOrigin(item.url, tab?.url)) throw new Error('URL запису не збігається з origin активної вкладки.');
             if (!tab?.id) throw new Error('Немає активної вкладки.');
-            const value = await secrets(m.item); await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: fillFields, args: [value.username, value.password] });
+            const value = await secrets(item);
+            await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: fillFields, args: [value.username, value.password] });
+            await touchVault();
             return { filled: true };
+        }
+        // Just enough for the in-page picker to label its options.
+        if (m.type === 'autofill-candidates') {
+            const url = (message as { url: string }).url;
+            const items = await request<PasswordItem[]>('/api/vault/items');
+            return items.filter((item) => matchesOrigin(item.url, url))
+                .map((item) => ({ id: item.id, name: item.name, username: item.username ?? '' }));
         }
         if (m.type === 'totp' && m.item) return { code: await totpCode(m.item) };
         if (m.type === 'save-credentials') {

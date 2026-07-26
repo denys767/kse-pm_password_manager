@@ -1,0 +1,12 @@
+-- The 65535-char ceiling on encrypted_package was a column width, never a
+-- policy. It bounds the *ciphertext*, and AES-GCM plus Base64 expands the
+-- plaintext by roughly a third, so a long SSH private key or a record with
+-- substantial notes overflowed it and the share POST came back 400 — after the
+-- browser had already done the encryption, with nothing in the message
+-- explaining which field was too big.
+--
+-- text has no width to get wrong, and PostgreSQL stores it identically to a
+-- bounded varchar (the same TOAST path), so this costs nothing. The DTO keeps
+-- an explicit @Size so an absurd payload is still rejected at the edge rather
+-- than at the database.
+alter table external_shares alter column encrypted_package type text;

@@ -48,15 +48,49 @@ So three modes are supported and the deployment picks (see
 
 What must not change:
 - Restrict DWD scopes to exactly the three Directory read-only scopes plus
-  `drive.appdata`; never grant write/admin scopes.
+  `drive.appdata`; never grant write/admin scopes. The app composes the
+  delegation assertion itself — subject and scope list are its own input — so
+  the Admin Console authorization is the only real bound on what it can ask
+  Google for.
+- `GOOGLE_WORKSPACE_ADMIN_EMAIL`, the impersonated Directory subject, should be
+  a dedicated non-human account with a custom Users→Read / Groups→Read admin
+  role, not a super-admin. Scope authorization and subject privilege are
+  independent failures; keep both small.
 - Credential problems fail closed *for Directory data*: `DelegatedTokenMinter.mint()`
   throws 502 and, with no service account configured at all,
-  `UnavailableWorkspaceDirectoryClient` takes over. Interactive lookups then
-  degrade to the local Workspace snapshot (§5) rather than inventing data, and
+  `UnavailableWorkspaceDirectoryClient` takes over. Interactive lookups are
+  served from the local Workspace snapshot (§5) rather than inventing data, and
   the synchronizer never treats that snapshot as a fresh Directory read.
-- The application reports its credential mode at startup and on the Admin tab
-  (`credentialUnattended`); a deployment running on a user credential is
-  visibly misconfigured rather than quietly doomed.
+- The application reports its credential mode on the Admin tab
+  (`credentialUnattended`), and under the `prod` profile refuses to start on a
+  credential that cannot run unattended. A deployment running on a `gcloud`
+  user credential is now loudly misconfigured rather than quietly doomed.
+
+### 1a. Mode A's trust boundary is GCP-side configuration, not code
+
+Worth stating on its own because it is easy to get wrong and invisible when you
+do. The subject token the app presents to Google STS comes from **the same
+Keycloak realm that authenticates end users**. Nothing in
+`FederatedCallerTokenSource` distinguishes its own `client_credentials` token
+from a token the realm issued for a person; that distinction exists only in the
+workload identity pool provider's configuration.
+
+Two settings carry it, and both are required:
+
+- `--attribute-condition="assertion.azp == 'kse-pm-federation'"` on the
+  provider, so the pool admits only the federation client and not every account
+  in the realm.
+- `roles/iam.serviceAccountTokenCreator` bound to a single
+  `principal://…/subject/<sub>`, never a `principalSet://…/*` covering the pool
+  or provider.
+
+Get both wrong and any end user can exchange their own access token at STS,
+`signJwt` on the service account, and impersonate anyone in the domain for every
+delegated scope — the entire directory, plus read and delete on any user's
+`appDataFolder`, which is every encrypted attachment in the organization. Get
+only the second one right (the current documented setup before 2026-07-26) and
+you are relying on nobody ever broadening that binding. The condition is defence
+in depth for a mistake that is one `gcloud` flag away.
 
 ## 2. Rate limiting trusted a spoofable client IP — fixed 2026-07-23
 

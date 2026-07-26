@@ -50,13 +50,32 @@ gcloud iam workload-identity-pools create kse-pm --location=global
 gcloud iam workload-identity-pools providers create-oidc keycloak \
   --workload-identity-pool=kse-pm --location=global \
   --issuer-uri=https://auth.pm.example.com/realms/kse-pm \
-  --attribute-mapping=google.subject=assertion.sub
+  --attribute-mapping=google.subject=assertion.sub \
+  --attribute-condition="assertion.azp == 'kse-pm-federation'"
 ```
 
 No `--allowed-audiences` is needed: the `kse-pm-federation` client carries an
 audience mapper that stamps `WORKSPACE_FEDERATION_AUDIENCE` (the provider
 resource name) into the token's `aud`, which is exactly what Google STS expects
 by default.
+
+**`--attribute-condition` is not optional here, and the reason is specific to
+this stack.** The realm named in `--issuer-uri` is the same realm that
+authenticates ordinary end users. Without the condition, the pool admits *every*
+identity that realm issues a token for — every person with an account — and the
+only thing standing between one of them and impersonating the service account is
+that no IAM binding names their `sub`. That is one careless
+`principalSet://…/*` binding away from domain-wide impersonation for every
+delegated scope: read the whole directory, and read or delete any user's
+`appDataFolder`, which is every encrypted attachment in the organization. The
+condition closes it at the provider, so a later mistake in the binding cannot
+reopen it.
+
+For the same reason, keep the binding below scoped to a single
+`principal://…/subject/<sub>`. Never grant `roles/iam.workloadIdentityUser` or
+`roles/iam.serviceAccountTokenCreator` to `principalSet://…/*`, and never to the
+whole pool or provider — most tutorials show exactly that, and it is wrong for
+any pool whose issuer also serves human logins.
 
 The IAM binding identifies the Keycloak service account by the `sub` claim of
 its token, which is a Keycloak user UUID. Read it from a real token rather than
@@ -134,9 +153,12 @@ no restart needed.
 credential. Google's reauth policy expires it within hours
 (`invalid_grant / invalid_rapt`), taking directory suggestions, group sync and
 new shares with it. It is fine for a laptop; it can never run a deployment. The
-application detects it, logs a warning at startup, and shows it on the Admin
-tab — `GET /api/admin/workspace/directory-status` reports
-`credentialUnattended: false`.
+application detects it and shows it on the Admin tab —
+`GET /api/admin/workspace/directory-status` reports
+`credentialUnattended: false`. Under the `prod` profile it goes further and
+**refuses to start**, because a warning in a log nobody is reading is not a
+signal, and the failure it predicts arrives hours later looking like something
+else entirely.
 
 Whichever mode you pick, configure `GOOGLE_WORKSPACE_SERVICE_ACCOUNT_EMAIL`,
 `GOOGLE_WORKSPACE_ADMIN_EMAIL`, `GOOGLE_WORKSPACE_DOMAIN` and (when needed)
@@ -156,13 +178,36 @@ https://www.googleapis.com/auth/admin.directory.group.member.readonly
 https://www.googleapis.com/auth/drive.appdata
 ```
 
+Exactly those four, and no others. Domain-wide delegation is authorized per
+client ID × scope, and the app builds the delegation assertion itself — it puts
+the subject and the scope list into the JWT — so the Admin Console entry is the
+*only* thing bounding what a compromised backend could ask for. Two substitutions
+matter especially: the writable `admin.directory.user` would let it edit
+accounts, and plain `drive` would reach past `appDataFolder` into every user's
+actual Drive. If you want the Directory and Drive blast radii to be separable at
+all, use two service accounts and authorize each for only its own scopes.
+
+**The delegation subject.** `GOOGLE_WORKSPACE_ADMIN_EMAIL` is the account the
+backend impersonates for every Directory call. Make it a dedicated, licensed,
+non-human account holding a *custom* admin role with only Users → Read and
+Groups → Read — not a super-admin. The read-only scopes already cap what a token
+can do; the subject caps what a scope-authorization mistake can do, and the two
+failures are independent.
+
 Enable both Admin SDK Directory API and Google Drive API in the Google Cloud
 project. The Directory sync runs every 15 minutes and can be triggered by an
 administrator at `POST /api/admin/workspace/refresh`; verify its result before
 relying on local role/revocation decisions. The Drive scope is used only with
 owner impersonation and each record owner's `appDataFolder`. Do not set an
 application attachment-size cap: Drive/Workspace quotas and protocol limits are
-the authoritative limits.
+the authoritative limits. Attachments are streamed end to end (chunked resumable
+upload, streamed download) precisely so that policy is real rather than
+theoretical — a byte[]-buffered implementation would have made any "no cap"
+policy a memory-exhaustion risk in practice. Because of that, both hops in
+front of the app must not silently reintroduce a cap: nginx sets
+`client_max_body_size 0` and `proxy_request_buffering off` on the attachment
+routes (see `nginx/nginx.conf`), and `server.tomcat.max-swallow-size=-1` stops
+Tomcat from aborting a large upload it decided to discard.
 
 ### What happens when Google is unreachable anyway
 
@@ -175,10 +220,18 @@ take the vault down:
   and is renewed proactively every ten minutes
   (`pm.google-workspace.token-refresh-ms`) so failures show up in the logs and
   on the Admin tab before a user meets them.
-- **Directory suggestions, recipient validation and group membership fall back
-  to the local Workspace snapshot** — the same data the synchronizer
-  materialized. Sharing keeps working with slightly older data instead of an
-  empty picker. The Admin tab says when this is happening.
+- **Directory suggestions and recipient validation are served from the local
+  Workspace snapshot in the first place**, not just when Google is down. They
+  reach Google only when the snapshot has nothing to offer, which in practice
+  means a cold start before the first sync. So an outage costs sharing nothing
+  at all: the picker was already answering from materialized data.
+- That is also a load decision, not only a resilience one. A type-ahead going
+  live to Google meant five Directory API calls per keystroke, authenticated as
+  the Workspace admin and driven by any signed-in user — enough to exhaust the
+  per-customer quota and take sharing down for everybody. Google is now called
+  by the 15-minute synchronizer and essentially nothing else.
+- Group membership resolution still asks Google first and falls back to the
+  snapshot on failure. The Admin tab says when that is happening.
 - The synchronizer itself never falls back (it would be syncing with itself), it
   just leaves the snapshot untouched and retries: every minute until the first
   snapshot lands, then `pm.google-workspace.sync-interval-ms`.
@@ -217,8 +270,16 @@ public client `kse-pm-extension` with Authorization Code + PKCE S256 and add thi
 exact redirect URI:
 
 ```text
-https://<stable-extension-id>.chromiumapp.org/oidc
+https://pm.example.com/extension-callback
 ```
+
+Sign-in opens that URL in a normal browser tab (`chrome.tabs.create`), not
+`chrome.identity.launchWebAuthFlow` — the latter's stripped browser context
+could not reliably run Keycloak's own platform-WebAuthn passkey login. The tab
+lands on the SPA's `/extension-callback` route (`ExtensionCallbackPage.tsx`),
+which relays the authorization code back to the extension over
+`chrome.runtime.sendMessage` and never sees a token exchange; the background
+worker closes the tab once it has the code.
 
 The extension fetches `/api/config` from `VITE_API_ORIGIN` and then uses the
 public Keycloak URL returned by the app. No localhost API address appears in a
@@ -228,3 +289,24 @@ The virtual authenticator requires Chrome 115+ and the
 `chrome.webAuthenticationProxy` permission. Keep the extension locked unless
 the user's vault is unlocked; detach the proxy on lock or logout so Chrome can
 fall back to the system authenticator.
+
+### Unlocking the extension with the app's vault passkey
+
+The extension's popup only ever asks for the passphrase directly, or asks the
+web app to unlock it. The two are bridged through
+`externally_connectable` (`extension/public/manifest.json`) — the app's build
+patches this to the deployment's own origin (`VITE_API_ORIGIN`), and
+`chrome.runtime.connect(extensionId)` from the SPA (`frontend/src/extensionBridge.ts`)
+is re-validated against that origin again on the extension side
+(`extension/src/bridge.ts`) before anything is trusted. The extension cannot run
+the vault's WebAuthn ceremony itself — the PRF-wrapped passphrase lives in the
+app's own `localStorage`, bound to the app's origin as the credential's RP ID —
+so the app runs the ceremony and hands the extension the plaintext passphrase,
+exactly as if it had been typed into the popup. Locking propagates both ways;
+unlocking only flows app → extension, since the extension has no way to hand
+the app raw key material without regressing the app's own
+non-extractable-`CryptoKey` session model.
+
+`GET /api/config` reports `extensionId` (`pm.extension.id`, defaulting to the
+ID Chrome derives from the `key` pinned in `manifest.json`) so the SPA knows
+which extension to connect to without hardcoding it.

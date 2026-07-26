@@ -5,6 +5,9 @@ export interface FrontendConfig {
     keycloakUrl?: string;
     realm?: string;
     clientId?: string;
+    /** The KSE Password Manager browser extension's fixed ID, used to reach it
+     *  via chrome.runtime.connect for the passkey-unlock bridge. */
+    extensionId?: string;
 }
 
 export interface Me {

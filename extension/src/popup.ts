@@ -38,7 +38,17 @@ async function act(action: string, id: string): Promise<void> {
 async function vault(): Promise<void> {
     const status = await send<{ loggedIn: boolean; unlocked: boolean }>({ type: 'status' });
     if (!status.loggedIn) { app.innerHTML = '<h1>KSE Vault</h1><p id="status">Увійдіть у корпоративний Keycloak.</p><button id="login">Sign in</button>'; document.querySelector('#login')!.addEventListener('click', async () => { try { await send({ type: 'login' }); await vault(); } catch (e) { error((e as Error).message); } }); return; }
-    if (!status.unlocked) { app.innerHTML = '<h1>KSE Vault</h1><p id="status">Passphrase не залишає extension.</p><form id="unlock"><input id="passphrase" type="password" autocomplete="current-password" placeholder="Vault passphrase" required /><button>Unlock</button></form>'; document.querySelector<HTMLFormElement>('#unlock')!.addEventListener('submit', async (event) => { event.preventDefault(); try { await send({ type: 'unlock', passphrase: document.querySelector<HTMLInputElement>('#passphrase')!.value }); await vault(); } catch (e) { error((e as Error).message); } }); return; }
+    if (!status.unlocked) {
+        app.innerHTML = '<h1>KSE Vault</h1><p id="status">Passphrase не залишає extension.</p>'
+            + '<button id="unlock-via-app" class="secondary">Unlock with passkey (via app)</button>'
+            + '<form id="unlock"><input id="passphrase" type="password" autocomplete="current-password" placeholder="Vault passphrase" required /><button>Unlock</button></form>';
+        document.querySelector<HTMLButtonElement>('#unlock-via-app')!.addEventListener('click', async () => {
+            try { await send({ type: 'unlock-via-app' }); error('Відкрито вкладку застосунку — розблокуйте через Passkey там.'); }
+            catch (e) { error((e as Error).message); }
+        });
+        document.querySelector<HTMLFormElement>('#unlock')!.addEventListener('submit', async (event) => { event.preventDefault(); try { await send({ type: 'unlock', passphrase: document.querySelector<HTMLInputElement>('#passphrase')!.value }); await vault(); } catch (e) { error((e as Error).message); } });
+        return;
+    }
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true }); activeUrl = tab?.url; activeTabId = tab?.id;
     items = await send<PasswordItem[]>({ type: 'items' });
     app.innerHTML = '<header><h1>KSE Vault</h1><button id="lock" class="quiet">Lock</button></header><p id="status">Показано лише записи з точним збігом origin.</p><input id="search" type="search" placeholder="Пошук записів" autofocus /><section id="items"></section>';

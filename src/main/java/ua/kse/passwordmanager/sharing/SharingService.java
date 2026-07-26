@@ -17,6 +17,7 @@ import ua.kse.passwordmanager.directory.WorkspaceGroup;
 import ua.kse.passwordmanager.common.BadRequestException;
 import ua.kse.passwordmanager.common.ForbiddenException;
 import ua.kse.passwordmanager.common.NotFoundException;
+import ua.kse.passwordmanager.passkeys.PasskeyCredentialKeyRepository;
 import ua.kse.passwordmanager.vault.ItemKey;
 import ua.kse.passwordmanager.vault.ItemKeyRepository;
 import ua.kse.passwordmanager.vault.ItemType;
@@ -35,6 +36,7 @@ public class SharingService {
     private final ItemKeyRepository itemKeyRepository;
     private final CollectionMemberRepository collectionMemberRepository;
     private final PermissionMemberRepository permissionMemberRepository;
+    private final PasskeyCredentialKeyRepository passkeyKeyRepository;
     private final WorkspaceDirectoryClient directory;
     private final WorkspaceGroupRepository workspaceGroups;
     private final AuditService auditService;
@@ -45,6 +47,7 @@ public class SharingService {
                           ItemKeyRepository itemKeyRepository,
                           CollectionMemberRepository collectionMemberRepository,
                           PermissionMemberRepository permissionMemberRepository,
+                          PasskeyCredentialKeyRepository passkeyKeyRepository,
                           WorkspaceDirectoryClient directory,
                           WorkspaceGroupRepository workspaceGroups,
                           AuditService auditService, Environment environment) {
@@ -53,10 +56,51 @@ public class SharingService {
         this.itemKeyRepository = itemKeyRepository;
         this.collectionMemberRepository = collectionMemberRepository;
         this.permissionMemberRepository = permissionMemberRepository;
+        this.passkeyKeyRepository = passkeyKeyRepository;
         this.directory = directory;
         this.workspaceGroups = workspaceGroups;
         this.auditService = auditService;
         this.development = java.util.List.of(environment.getActiveProfiles()).contains("dev");
+    }
+
+    /**
+     * Everyone other than the owner whose effective role on this item may use
+     * its passkeys — the exact set that needs a wrapped credential key, and the
+     * mirror image of the {@code mayUsePasskeys()} check
+     * {@code PasskeyService.canUse()} applies on the way back out. Group
+     * members and collection members count, because they can reach the
+     * credential just as a direct grantee can.
+     */
+    @Transactional(readOnly = true)
+    public java.util.Set<String> passkeyCapableGrantees(PasswordItem item) {
+        java.util.Set<String> emails = new java.util.LinkedHashSet<>();
+        for (Permission permission : permissionRepository.findByItemId(item.getId())) {
+            if (!permission.isActive() || !permission.getRole().accessRole().mayUsePasskeys()) continue;
+            switch (permission.getGranteeType()) {
+                case USER -> emails.add(permission.getGrantee().toLowerCase(Locale.ROOT));
+                case GROUP -> permissionMemberRepository.findByPermissionId(permission.getId()).stream()
+                        .filter(member -> member.getStatus() == PermissionMemberStatus.ACTIVE)
+                        .forEach(member -> emails.add(member.getMemberEmail().toLowerCase(Locale.ROOT)));
+            }
+        }
+        if (item.getCollectionId() != null) {
+            collectionMemberRepository.findByCollectionId(item.getCollectionId()).stream()
+                    .filter(member -> member.getStatus().hasCryptographicAccess())
+                    .forEach(member -> emails.add(member.getMemberEmail().toLowerCase(Locale.ROOT)));
+        }
+        emails.remove(item.getOwnerEmail().toLowerCase(Locale.ROOT));
+        return emails;
+    }
+
+    /** Who one grant actually covers: the grantee for a user grant, the active
+     * members for a group grant. */
+    private java.util.Set<String> granteesOf(Permission permission) {
+        if (permission.getGranteeType() == GranteeType.USER) {
+            return java.util.Set.of(permission.getGrantee().toLowerCase(Locale.ROOT));
+        }
+        return permissionMemberRepository.findByPermissionId(permission.getId()).stream()
+                .map(member -> member.getMemberEmail().toLowerCase(Locale.ROOT))
+                .collect(java.util.stream.Collectors.toCollection(java.util.LinkedHashSet::new));
     }
 
     /** Effective role of the user on an item: ownership wins, then the highest
@@ -273,6 +317,13 @@ public class SharingService {
         PermissionRole previous = permission.getRole();
         PermissionRole role = request.role();
         boolean wrappedKeyProvided = request.wrappedKey() != null && !request.wrappedKey().isBlank();
+        // Passkey material follows the role the same way the item key does: a
+        // role that may not use passkeys keeps no wrapped credential key.
+        if (!role.accessRole().mayUsePasskeys()) {
+            for (String grantee : granteesOf(permission)) {
+                passkeyKeyRepository.deleteByItemIdAndUserEmail(itemId, grantee);
+            }
+        }
         if (permission.getGranteeType() == GranteeType.USER) {
             String grantee = permission.getGrantee();
             if (!role.requiresItemKey()) {
@@ -316,10 +367,14 @@ public class SharingService {
                 .orElseThrow(() -> new NotFoundException("Permission not found"));
         // Delete children before touching item_keys; the latter can trigger an
         // automatic flush and would otherwise violate the FK on H2/Postgres.
+        java.util.Set<String> revoked = granteesOf(permission);
         permissionMemberRepository.deleteByPermissionId(permissionId);
         permissionRepository.delete(permission);
         if (permission.getGranteeType() == GranteeType.USER) {
             itemKeyRepository.deleteByItemIdAndUserEmail(itemId, permission.getGrantee());
+        }
+        for (String grantee : revoked) {
+            passkeyKeyRepository.deleteByItemIdAndUserEmail(itemId, grantee);
         }
         auditService.record(user.email(), AuditAction.ACCESS_REVOKED, item.getId(), item.getName(),
                 permission.getGrantee(), permission.getGranteeType() + " access revoked");
