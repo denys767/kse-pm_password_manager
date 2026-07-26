@@ -15,9 +15,11 @@ import org.junit.jupiter.api.Test;
 import ua.kse.passwordmanager.common.BadGatewayException;
 
 /**
- * When Google is unreachable, sharing has to keep working from the snapshot the
- * synchronizer already materialized — that is the difference between "the
- * picker shows nobody" and "the picker shows slightly older data".
+ * Interactive lookups are answered from the materialized snapshot, reaching
+ * Google only when it has nothing to say. That keeps the share picker off the
+ * per-customer Directory quota and makes a Google outage cost sharing nothing —
+ * the difference between "the picker shows nobody" and "the picker shows
+ * slightly older data".
  */
 class ResilientDirectoryFallbackTest {
 
@@ -30,16 +32,48 @@ class ResilientDirectoryFallbackTest {
     }
 
     @Test
-    void suggestionsComeFromTheSnapshotWhenGoogleIsDown() {
-        when(live.search(anyString(), anyList(), anyInt()))
-                .thenThrow(new BadGatewayException("Google Workspace Directory is temporarily unavailable"));
+    void suggestionsComeFromTheSnapshotWithoutAskingGoogleAtAll() {
         when(snapshot.search(anyString(), anyList(), anyInt()))
                 .thenReturn(List.of(principal("colleague@kse.org.ua")));
 
         List<DirectoryPrincipal> found = client.search("coll", List.of(DirectoryPrincipal.Type.USER), 50);
 
         assertThat(found).extracting(DirectoryPrincipal::email).containsExactly("colleague@kse.org.ua");
-        assertThat(client.servingFromSnapshotSince()).isNotNull();
+        // The point of the inversion: a type-ahead must not spend Directory
+        // quota, so Google is not consulted even when it is perfectly healthy.
+        org.mockito.Mockito.verify(live, org.mockito.Mockito.never()).search(anyString(), anyList(), anyInt());
+        // Nor is this "degraded" any more — it is the normal path.
+        assertThat(client.servingFromSnapshotSince()).isNull();
+    }
+
+    @Test
+    void aGoogleOutageIsInvisibleToTheSharePicker() {
+        when(live.search(anyString(), anyList(), anyInt()))
+                .thenThrow(new BadGatewayException("Google Workspace Directory is temporarily unavailable"));
+        when(snapshot.search(anyString(), anyList(), anyInt()))
+                .thenReturn(List.of(principal("colleague@kse.org.ua")));
+
+        assertThat(client.search("coll", List.of(DirectoryPrincipal.Type.USER), 50))
+                .extracting(DirectoryPrincipal::email).containsExactly("colleague@kse.org.ua");
+    }
+
+    @Test
+    void anEmptySnapshotStillAsksGoogle() {
+        // A cold start before the synchronizer's first pass: the snapshot has
+        // nothing, so the one case that still warrants a live call gets one.
+        when(snapshot.search(anyString(), anyList(), anyInt())).thenReturn(List.of());
+        when(live.search(anyString(), anyList(), anyInt())).thenReturn(List.of(principal("fresh@kse.org.ua")));
+
+        assertThat(client.search("fresh", List.of(DirectoryPrincipal.Type.USER), 50))
+                .extracting(DirectoryPrincipal::email).containsExactly("fresh@kse.org.ua");
+    }
+
+    @Test
+    void aColdStartThatGoogleCannotAnswerEitherIsEmptyRatherThanAnError() {
+        when(snapshot.search(anyString(), anyList(), anyInt())).thenReturn(List.of());
+        when(live.search(anyString(), anyList(), anyInt())).thenThrow(new BadGatewayException("unavailable"));
+
+        assertThat(client.search("nobody", List.of(DirectoryPrincipal.Type.USER), 50)).isEmpty();
     }
 
     @Test

@@ -17,6 +17,12 @@ spring:
 
 server:
   port: 8080
+  tomcat:
+    # Attachments stream through as raw request/response bodies with no
+    # application-level size cap (see AttachmentService, GoogleDriveAttachmentStore);
+    # the default swallow limit would otherwise abort a large upload after Tomcat
+    # decided to discard it.
+    max-swallow-size: -1
 
 management:
   endpoints:

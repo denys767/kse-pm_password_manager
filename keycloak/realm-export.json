@@ -70,7 +70,7 @@
       "publicClient": true,
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": false,
-      "redirectUris": ["https://aafmkmcilcgfipkinadcibpgehoiifeg.chromiumapp.org/*"],
+      "redirectUris": ["http://localhost:8080/extension-callback"],
       "webOrigins": ["chrome-extension://aafmkmcilcgfipkinadcibpgehoiifegh"],
       "attributes": { "pkce.code.challenge.method": "S256" },
       "protocolMappers": [{

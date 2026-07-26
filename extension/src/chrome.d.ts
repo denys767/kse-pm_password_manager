@@ -1,9 +1,40 @@
 declare namespace chrome {
-    namespace runtime { const lastError: { message?: string } | undefined; const onMessage: { addListener(cb: (message: unknown, sender: unknown, sendResponse: (response: unknown) => void) => boolean | void): void }; function sendMessage(message: unknown): Promise<unknown>; }
-    namespace identity { function getRedirectURL(path?: string): string; function launchWebAuthFlow(details: { url: string; interactive: boolean }): Promise<string | undefined>; }
-    namespace tabs { function query(queryInfo: { active: boolean; currentWindow: boolean }): Promise<Array<{ id?: number; url?: string }>>; function sendMessage(tabId: number, message: unknown): Promise<unknown>; }
+    namespace runtime {
+        const lastError: { message?: string } | undefined;
+        const onMessage: { addListener(cb: (message: unknown, sender: unknown, sendResponse: (response: unknown) => void) => boolean | void): void };
+        function sendMessage(message: unknown): Promise<unknown>;
+        interface Port {
+            sender?: { origin?: string; tab?: { id?: number } };
+            postMessage(message: unknown): void;
+            disconnect(): void;
+            onMessage: { addListener(cb: (message: unknown, port: Port) => void): void };
+            onDisconnect: { addListener(cb: (port: Port) => void): void };
+        }
+        const onConnectExternal: { addListener(cb: (port: Port) => void): void };
+        const onMessageExternal: {
+            addListener(cb: (message: unknown, sender: { origin?: string; tab?: { id?: number } }, sendResponse: (response: unknown) => void) => boolean | void): void;
+            removeListener(cb: (message: unknown, sender: { origin?: string; tab?: { id?: number } }, sendResponse: (response: unknown) => void) => boolean | void): void;
+        };
+    }
+    namespace tabs {
+        function query(queryInfo: { active: boolean; currentWindow: boolean }): Promise<Array<{ id?: number; url?: string }>>;
+        function sendMessage(tabId: number, message: unknown): Promise<unknown>;
+        function create(properties: { url: string; active?: boolean }): Promise<{ id?: number }>;
+        function update(tabId: number, properties: { active?: boolean }): Promise<unknown>;
+        function remove(tabId: number): Promise<void>;
+        const onRemoved: { addListener(cb: (tabId: number) => void): void; removeListener(cb: (tabId: number) => void): void };
+    }
     namespace scripting { function executeScript(details: { target: { tabId: number }; func: (...args: any[]) => unknown; args?: unknown[] }): Promise<unknown>; }
-    namespace alarms { function create(name: string, alarmInfo: { when: number }): void; const onAlarm: { addListener(cb: (alarm: { name: string }) => void): void }; }
+    namespace alarms { function create(name: string, alarmInfo: { when?: number; delayInMinutes?: number; periodInMinutes?: number }): void; function clear(name: string): Promise<boolean>; const onAlarm: { addListener(cb: (alarm: { name: string }) => void): void }; }
+    namespace storage {
+        interface AreaWithAccessLevel {
+            get(keys?: string | string[] | null): Promise<Record<string, unknown>>;
+            set(items: Record<string, unknown>): Promise<void>;
+            remove(keys: string | string[]): Promise<void>;
+            setAccessLevel(details: { accessLevel: 'TRUSTED_CONTEXTS' | 'TRUSTED_AND_UNTRUSTED_CONTEXTS' }): Promise<void>;
+        }
+        const session: AreaWithAccessLevel;
+    }
     namespace offscreen { function createDocument(options: { url: string; reasons: string[]; justification: string }): Promise<void>; function hasDocument(): Promise<boolean>; }
     namespace webAuthenticationProxy {
         interface Request { requestId: number; requestDetailsJson: string; }

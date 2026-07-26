@@ -21,8 +21,9 @@ class WorkspaceDirectorySyncResilienceTest {
     private final WorkspaceUserRepository users = mock(WorkspaceUserRepository.class);
     private final WorkspaceGroupRepository groups = mock(WorkspaceGroupRepository.class);
     private final WorkspaceMembershipRepository memberships = mock(WorkspaceMembershipRepository.class);
-    private final WorkspaceDirectorySyncService service =
-            new WorkspaceDirectorySyncService(directory, users, groups, memberships);
+    private final WorkspaceDirectorySnapshotWriter writer =
+            new WorkspaceDirectorySnapshotWriter(directory, users, groups, memberships);
+    private final WorkspaceDirectorySyncService service = new WorkspaceDirectorySyncService(writer, users);
 
     @Test
     void scheduledSyncSwallowsDirectoryFailuresAndRecordsThem() {

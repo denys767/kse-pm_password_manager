@@ -7,7 +7,7 @@ import { unwrapCollectionKey, unwrapItemKeyFor } from '../itemKeys';
 import { loadLocalItems, saveLocalItems } from '../localItems';
 import { estimateStrength, generatePassword, hibpBreachCount } from '../passwords';
 import { emptyPayload, parsePayload, serializePayload } from '../payload';
-import { encryptShareSnapshot } from '../externalShare';
+import { encryptShareSnapshot, MAX_ENCRYPTED_PACKAGE_CHARS } from '../externalShare';
 import { IconCheck, IconEye, IconEyeOff, IconLock, IconPencil, IconRefresh, IconUser, IconUsers, IconWarning } from './Icons';
 import { describeSharedAccess } from '../sharedAccess';
 import { DirectoryPicker } from './DirectoryPicker';
@@ -650,6 +650,15 @@ export function ItemDialog({ session, settings, collections, item, availableTags
                 method: 'PATCH', body: JSON.stringify(body),
             });
             if (updated.warning) setError(updated.warning);
+            else if (role === 'PASSKEY_ONLY') {
+                // The credential key can only be re-wrapped by a client holding
+                // the owner's vault private key *and* allowed to touch passkey
+                // material, which means the extension. Until it next syncs the
+                // grantee sees nothing, and silence there reads as a failure.
+                setError(tr(
+                    'Доступ надано. Ключ passkey буде передано отримувачу, коли ваше розширення наступного разу синхронізується (розблокуйте його, якщо воно заблоковане).',
+                    'Access granted. The passkey key reaches the recipient the next time your extension syncs — unlock it if it is locked.'));
+            }
             setPermissions(await api<Permission[]>(`/api/vault/items/${current.id}/permissions`));
         } catch (e) { setError((e as Error).message); }
     }
@@ -692,6 +701,14 @@ export function ItemDialog({ session, settings, collections, item, availableTags
                     cardExpiry: fields.cardExpiry, totpSeed: fields.totpSeed,
                 },
             });
+            // The server's ceiling applies to the ciphertext, which AES-GCM and
+            // Base64 have already inflated by about a third. Saying so here
+            // names the problem; the bare 400 that used to come back did not.
+            if (encrypted.encryptedPackage.length > MAX_ENCRYPTED_PACKAGE_CHARS) {
+                throw new Error(tr(
+                    'Запис завеликий для зовнішнього посилання. Скоротіть нотатки або довгі поля (наприклад SSH-ключ) і спробуйте ще раз.',
+                    'This record is too large for an external link. Shorten the notes or any long fields (an SSH key, say) and try again.'));
+            }
             const created = await api<{ id: string }>(`/api/vault/items/${target.id}/external-shares`, {
                 method: 'POST',
                 body: JSON.stringify({

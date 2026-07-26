@@ -27,10 +27,10 @@ import ua.kse.passwordmanager.keys.UserKeysRepository;
  * deployment; see {@link ua.kse.passwordmanager.google.GoogleCredentialsConfiguration}.
  */
 @Component
-// Not @ConditionalOnProperty: that matches an empty value too, so an
-// unconfigured deployment would construct this bean and fail startup instead
-// of falling back to UnavailableWorkspaceDirectoryClient's explicit 502.
-@ConditionalOnExpression("'${pm.google-workspace.service-account-email:}'.trim() != ''")
+// Shared with the Drive store and the token minter so all three activate
+// together; see GoogleCredentialsConfiguration.CONFIGURED. Falls back to
+// UnavailableWorkspaceDirectoryClient's explicit 502 when it does not hold.
+@ConditionalOnExpression(ua.kse.passwordmanager.google.GoogleCredentialsConfiguration.CONFIGURED)
 public class GoogleWorkspaceDirectoryClient implements WorkspaceDirectoryClient {
     private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(GoogleWorkspaceDirectoryClient.class);
     private static final List<String> SCOPES = List.of(
@@ -45,15 +45,18 @@ public class GoogleWorkspaceDirectoryClient implements WorkspaceDirectoryClient 
     private final ObjectMapper json;
     private final UserKeysRepository keys;
     private final DelegatedTokenMinter minter;
+    private final org.springframework.core.env.Environment environment;
     private final String customer;
     private final String domain;
     private final String adminEmail;
 
     public GoogleWorkspaceDirectoryClient(ObjectMapper json, UserKeysRepository keys, DelegatedTokenMinter minter,
+            org.springframework.core.env.Environment environment,
             @Value("${pm.google-workspace.admin-email}") String adminEmail,
             @Value("${pm.google-workspace.customer-id:my_customer}") String customer,
             @Value("${pm.google-workspace.domain}") String domain) {
-        this.json = json; this.keys = keys; this.minter = minter; this.customer = customer;
+        this.json = json; this.keys = keys; this.minter = minter; this.environment = environment;
+        this.customer = customer;
         this.domain = domain.toLowerCase(Locale.ROOT); this.adminEmail = adminEmail;
     }
 
@@ -84,11 +87,16 @@ public class GoogleWorkspaceDirectoryClient implements WorkspaceDirectoryClient 
         if (summary.unattended()) {
             log.info("Google Workspace credentials: {} ({})", summary.mode(), summary.detail());
         } else {
-            log.warn("Google Workspace credentials are NOT usable unattended: {}. Directory sync, sharing "
-                    + "suggestions and group provisioning will stop working when the credential expires. "
-                    + "Configure workload identity federation (GOOGLE_WORKSPACE federation.* settings), run "
-                    + "under an attached service account, or mount a service-account key "
-                    + "(GOOGLE_WORKSPACE_CREDENTIALS_PATH).", summary.detail());
+            String problem = "Google Workspace credentials are NOT usable unattended: " + summary.detail()
+                    + ". Directory sync, sharing suggestions and group provisioning will stop working when the "
+                    + "credential expires. Configure workload identity federation (GOOGLE_WORKSPACE federation.* "
+                    + "settings), run under an attached service account, or mount a service-account key "
+                    + "(GOOGLE_WORKSPACE_CREDENTIALS_PATH).";
+            // In production this is not a warning, it is a deployment that will
+            // break in a few hours with no further signal. Refusing to serve is
+            // the only version of this an operator reliably notices.
+            if (environment.matchesProfiles("prod")) throw new IllegalStateException(problem);
+            log.warn("{}", problem);
         }
         // Probing Google is a network call: never let it hold up startup.
         java.util.concurrent.CompletableFuture.runAsync(this::warmToken);

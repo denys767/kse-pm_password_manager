@@ -36,6 +36,7 @@ import ua.kse.passwordmanager.directory.DirectoryCredentialSummary;
  */
 public class DelegatedTokenMinter {
     private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(DelegatedTokenMinter.class);
+    private static final int MAX_CACHED_TOKENS = 2048;
     private final ObjectMapper json;
     private final org.springframework.web.client.RestClient iamCredentials =
             org.springframework.web.client.RestClient.create("https://iamcredentials.googleapis.com/v1/");
@@ -88,6 +89,7 @@ public class DelegatedTokenMinter {
         if (cached != null && expiresAfter(cached, Instant.now().plusSeconds(60))) {
             return cached;
         }
+        evictStaleTokens();
         try {
             AccessToken minted = keyPath.isEmpty() ? mintViaCallerToken(subjectEmail, scopes)
                     : mintWithServiceAccountKey(subjectEmail, scopes);
@@ -107,6 +109,25 @@ public class DelegatedTokenMinter {
 
     private static boolean expiresAfter(AccessToken token, Instant moment) {
         return token.getExpirationTime() != null && token.getExpirationTime().toInstant().isAfter(moment);
+    }
+
+    /**
+     * The Drive path mints one entry per record owner, so without this the map
+     * grows with the user base and keeps live bearer tokens on the heap long
+     * after they stop being useful. Dropping the already-expired ones is enough
+     * in every realistic deployment; the hard cap is a backstop so a pathological
+     * one cannot grow without bound either.
+     */
+    private void evictStaleTokens() {
+        Instant now = Instant.now();
+        cache.values().removeIf(token -> !expiresAfter(token, now));
+        if (cache.size() <= MAX_CACHED_TOKENS) return;
+        cache.entrySet().stream()
+                .sorted(java.util.Comparator.comparing(entry -> entry.getValue().getExpirationTime()))
+                .limit(cache.size() - MAX_CACHED_TOKENS)
+                .map(Map.Entry::getKey)
+                .toList()
+                .forEach(cache::remove);
     }
 
     /** Domain-wide delegation straight from a service-account key: the key

@@ -30,6 +30,12 @@ export function SettingsTab({ settings, onSaved, config, user, vaultSalt }: Prop
     const [webauthnPass, setWebauthnPass] = useState('');
     const [webauthnBusy, setWebauthnBusy] = useState(false);
     const [webauthnStatus, setWebauthnStatus] = useState('');
+    // Default on: localStorage.getItem returns null until the user turns it off.
+    const [extensionSyncEnabled, setExtensionSyncEnabledState] = useState(() => localStorage.getItem('pm.extension-sync') !== 'off');
+    function setExtensionSyncEnabled(enabled: boolean): void {
+        localStorage.setItem('pm.extension-sync', enabled ? 'on' : 'off');
+        setExtensionSyncEnabledState(enabled);
+    }
     const tosDialogRef = useRef<HTMLDialogElement>(null);
     const eulaDialogRef = useRef<HTMLDialogElement>(null);
 
@@ -148,6 +154,18 @@ export function SettingsTab({ settings, onSaved, config, user, vaultSalt }: Prop
                                 </button>
                             </>}
                     {webauthnStatus && <p id="webauthn-status" className="hint">{webauthnStatus}</p>}
+                </div>
+            )}
+            {config.authMode === 'oidc' && (
+                <div id="extension-sync-card" className="card narrow" style={{ marginTop: 18 }}>
+                    <h3>{tr('Браузерне розширення', 'Browser extension')}</h3>
+                    <p className="hint">{tr('Коли увімкнено, розблокування або блокування Vault тут синхронізується з розширенням KSE Password Manager, і навпаки — розширення можна розблокувати тим самим Passkey.',
+                        'When enabled, unlocking or locking the vault here syncs with the KSE Password Manager extension, and the extension can be unlocked with the same passkey.')}</p>
+                    <label className="checkbox-row">
+                        <input id="extension-sync-toggle" type="checkbox" checked={extensionSyncEnabled}
+                               onChange={(e) => setExtensionSyncEnabled(e.target.checked)} />
+                        <span>{tr('Синхронізувати з розширенням браузера', 'Sync with the browser extension')}</span>
+                    </label>
                 </div>
             )}
             {/* Google Workspace is the source of groups; there is no local/Keycloak allowlist. */}

@@ -31,9 +31,23 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 public class GoogleCredentialsConfiguration {
 
+    /**
+     * The single condition every Google-backed bean shares, so a deployment
+     * either has working credentials or falls back to the {@code Unavailable*}
+     * clients as a unit. They used to disagree — the Drive store activated on
+     * either setting while the Directory client needed the service-account
+     * email — so a key-only configuration got a live Drive store and a silently
+     * unavailable Directory.
+     *
+     * <p>Not {@code @ConditionalOnProperty}: that matches a declared-but-empty
+     * value, so a deployment that maps these settings through without setting
+     * them would construct the beans and fail startup instead of degrading.
+     */
+    public static final String CONFIGURED = "'${pm.google-workspace.service-account-email:}'.trim() != '' "
+            + "or '${pm.google-workspace.credentials-path:}'.trim() != ''";
+
     @Bean
-    @ConditionalOnExpression("'${pm.google-workspace.service-account-email:}'.trim() != '' "
-            + "or '${pm.google-workspace.credentials-path:}'.trim() != ''")
+    @ConditionalOnExpression(CONFIGURED)
     DelegatedTokenMinter delegatedTokenMinter(ObjectMapper json,
             @Value("${pm.google-workspace.service-account-email:}") String serviceAccountEmail,
             @Value("${pm.google-workspace.credentials-path:}") String keyPath,

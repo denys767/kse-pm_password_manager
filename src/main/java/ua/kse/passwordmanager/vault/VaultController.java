@@ -1,8 +1,11 @@
 package ua.kse.passwordmanager.vault;
 
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
+import java.io.IOException;
 import java.util.List;
 import java.util.UUID;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -17,6 +20,7 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 import ua.kse.passwordmanager.auth.AuthFacade;
 import ua.kse.passwordmanager.attachment.AttachmentMetadataResponse;
 import ua.kse.passwordmanager.attachment.AttachmentService;
@@ -98,8 +102,8 @@ public class VaultController {
 
     @PutMapping(value = "/{id}/attachment", consumes = MediaType.APPLICATION_OCTET_STREAM_VALUE)
     public AttachmentMetadataResponse uploadAttachment(@PathVariable UUID id,
-            @RequestHeader("X-Kse-Attachment-Metadata") String metadata, @RequestBody byte[] ciphertext) {
-        return attachments.upload(authFacade.current(), id, metadata, ciphertext);
+            @RequestHeader("X-Kse-Attachment-Metadata") String metadata, HttpServletRequest request) throws IOException {
+        return attachments.upload(authFacade.current(), id, metadata, request.getInputStream());
     }
 
     @GetMapping("/{id}/attachment")
@@ -108,9 +112,14 @@ public class VaultController {
     }
 
     @GetMapping(value = "/{id}/attachment/content", produces = MediaType.APPLICATION_OCTET_STREAM_VALUE)
-    public ResponseEntity<byte[]> downloadAttachment(@PathVariable UUID id) {
+    public ResponseEntity<StreamingResponseBody> downloadAttachment(@PathVariable UUID id) {
+        var user = authFacade.current();
+        boolean extensionClient = authFacade.isExtensionClient();
+        long size = attachments.metadata(user, id, extensionClient).ciphertextSize();
+        StreamingResponseBody body = out -> attachments.download(user, id, out, extensionClient);
         return ResponseEntity.ok().contentType(MediaType.APPLICATION_OCTET_STREAM)
-                .body(attachments.download(authFacade.current(), id, authFacade.isExtensionClient()));
+                .header(HttpHeaders.CONTENT_LENGTH, Long.toString(size))
+                .body(body);
     }
 
     @DeleteMapping("/{id}/attachment")

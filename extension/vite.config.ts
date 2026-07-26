@@ -1,7 +1,29 @@
-import { defineConfig } from 'vite';
+import { defineConfig, Plugin } from 'vite';
 import { resolve } from 'node:path';
+import { readFileSync, writeFileSync } from 'node:fs';
+
+/**
+ * Patches externally_connectable in the built manifest with this deployment's
+ * app origin. The manifest in public/ carries the localhost dev default —
+ * Vite copies it verbatim, so without this every non-dev build would still
+ * only trust http://localhost:8080, and the SPA's chrome.runtime.connect
+ * bridge would be refused everywhere else.
+ */
+function patchManifestOrigin(): Plugin {
+    return {
+        name: 'patch-manifest-origin',
+        closeBundle() {
+            const origin = (process.env.VITE_API_ORIGIN || 'http://localhost:8080').replace(/\/$/, '');
+            const path = resolve(__dirname, 'dist/manifest.json');
+            const manifest = JSON.parse(readFileSync(path, 'utf-8'));
+            manifest.externally_connectable = { matches: [`${origin}/*`] };
+            writeFileSync(path, JSON.stringify(manifest, null, 2));
+        },
+    };
+}
 
 export default defineConfig({
+    plugins: [patchManifestOrigin()],
     build: {
         outDir: 'dist',
         emptyOutDir: true,

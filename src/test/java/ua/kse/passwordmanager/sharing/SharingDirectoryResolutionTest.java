@@ -46,9 +46,11 @@ class SharingDirectoryResolutionTest {
     private final WorkspaceDirectoryClient directory = mock(WorkspaceDirectoryClient.class);
     private final WorkspaceGroupRepository groups = mock(WorkspaceGroupRepository.class);
     private final AuditService audit = mock(AuditService.class);
+    private final ua.kse.passwordmanager.passkeys.PasskeyCredentialKeyRepository passkeyKeys =
+            mock(ua.kse.passwordmanager.passkeys.PasskeyCredentialKeyRepository.class);
 
     private final SharingService sharing = new SharingService(permissions, items, itemKeys, collectionMembers,
-            permissionMembers, directory, groups, audit, new MockEnvironment());
+            permissionMembers, passkeyKeys, directory, groups, audit, new MockEnvironment());
 
     private final UUID itemId = UUID.randomUUID();
     private final PasswordItem item = new PasswordItem();

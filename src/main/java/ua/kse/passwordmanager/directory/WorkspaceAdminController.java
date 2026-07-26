@@ -37,7 +37,7 @@ public class WorkspaceAdminController {
         this.users = users; this.groups = groups; this.items = items; this.audit = audit;
     }
     @PostMapping("/refresh")
-    public WorkspaceDirectorySyncService.SyncResult refresh() { requireAdmin(); return sync.sync(); }
+    public WorkspaceDirectorySnapshotWriter.SyncResult refresh() { requireAdmin(); return sync.syncNow(); }
 
     /** Freshness of the Workspace snapshot and the credential behind it. Stale
      * or never-fetched data is the difference between "this account is not

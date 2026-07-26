@@ -21,7 +21,7 @@ class DirectoryCredentialModeTest {
 
     private GoogleWorkspaceDirectoryClient client(DelegatedTokenMinter minter) {
         return new GoogleWorkspaceDirectoryClient(new ObjectMapper(), mock(UserKeysRepository.class), minter,
-                ADMIN, "my_customer", "kse.org.ua");
+                new org.springframework.mock.env.MockEnvironment(), ADMIN, "my_customer", "kse.org.ua");
     }
 
     @Test

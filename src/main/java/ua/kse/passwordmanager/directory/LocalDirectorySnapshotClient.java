@@ -47,10 +47,10 @@ class LocalDirectorySnapshotClient implements WorkspaceDirectoryClient {
                     .forEach(found::add);
         }
         if (types.contains(DirectoryPrincipal.Type.GROUP)) {
-            groups.findAll().stream()
+            groups.findByEmailContainingIgnoreCaseOrDisplayNameContainingIgnoreCase(term, term,
+                            PageRequest.of(0, Math.max(1, limit)))
+                    .stream()
                     .filter(WorkspaceGroup::isDirectoryPresent)
-                    .filter(group -> matches(group, term))
-                    .limit(Math.max(1, limit))
                     .map(this::principal)
                     .forEach(found::add);
         }
@@ -81,13 +81,6 @@ class LocalDirectorySnapshotClient implements WorkspaceDirectoryClient {
     private Optional<WorkspaceGroup> group(String key) {
         return groups.findById(key)
                 .or(() -> groups.findAll().stream().filter(g -> key.equals(g.getDirectoryId())).findFirst());
-    }
-
-    private static boolean matches(WorkspaceGroup group, String term) {
-        if (term.isBlank()) return true;
-        String needle = term.toLowerCase(Locale.ROOT);
-        return group.getEmail().toLowerCase(Locale.ROOT).contains(needle)
-                || group.getDisplayName().toLowerCase(Locale.ROOT).contains(needle);
     }
 
     private DirectoryPrincipal principal(WorkspaceUser user) {

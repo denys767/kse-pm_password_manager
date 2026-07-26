@@ -22,5 +22,8 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 class SpaRoutingConfig implements WebMvcConfigurer {
     @Override public void addViewControllers(ViewControllerRegistry registry) {
         registry.addViewController("/share/{shareId}").setViewName("forward:/index.html");
+        // Landing page for the extension's OIDC sign-in tab (background.ts,
+        // launchSignInTab) — see ExtensionCallbackPage.tsx.
+        registry.addViewController("/extension-callback").setViewName("forward:/index.html");
     }
 }

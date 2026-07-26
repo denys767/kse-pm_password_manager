@@ -28,6 +28,11 @@ public class PasskeyController {
     public List<PasskeyDtos.Response> matching(@RequestParam String rpId) { extensionOnly(); return service.matching(auth.current(), rpId); }
     @PostMapping("/{id}/counter") @ResponseStatus(HttpStatus.NO_CONTENT)
     public void counter(@PathVariable UUID id, @RequestBody PasskeyDtos.CounterRequest request) { extensionOnly(); service.advanceCounter(auth.current(), id, request.signCounter()); }
+    /** Credential keys the owner's extension still owes its grantees. Extension-only
+     * like the rest: distributing them means unwrapping the credential key, which is
+     * exactly the material the web client is kept away from. */
+    @GetMapping("/key-distribution")
+    public List<PasskeyDtos.KeyDistribution> keyDistribution() { extensionOnly(); return service.pendingKeyDistribution(auth.current()); }
     @PutMapping("/{id}/wrapped-keys") @ResponseStatus(HttpStatus.NO_CONTENT)
     public void wrappedKey(@PathVariable UUID id, @Valid @RequestBody PasskeyDtos.WrappedKeyRequest request) { extensionOnly(); service.putWrappedKey(auth.current(), id, request); }
 }
