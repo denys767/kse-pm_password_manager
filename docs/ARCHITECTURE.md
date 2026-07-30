@@ -47,7 +47,7 @@ Browser ──── HTTPS ───► nginx ───┼──► Keycloak ─
 | Chrome extension | Manifest V3, TypeScript, WebCrypto, offscreen document | Autofill, генерація/збереження паролів, TOTP, passkeys, ізольована сесія vault | Не показує сайтам сам vault або повні записи без вибору користувача |
 | API | Spring Boot 3.4, Java 21, Spring Security, JPA | REST API, перевірка JWT, бізнес-правила, авторизація, аудит, стримінг вкладень | Не розшифровує vault-дані |
 | Сховище | PostgreSQL 16, Flyway | Довговічний стан і транзакції | Не зберігає raw item keys або plaintext-секрети |
-| Identity | Keycloak 26 + Google Workspace IdP | SSO, OAuth2/OIDC токени, WebAuthn required action, realm-конфігурація | Не є джерелом корпоративних ролей API |
+| Identity | Keycloak 26 + Google Workspace IdP | SSO, OAuth2/OIDC токени, passwordless WebAuthn, realm-конфігурація | Не є джерелом корпоративних ролей API |
 | Google інтеграції | Admin SDK Directory API, Drive API, Google STS/IAM | Знімок користувачів/груп; encrypted attachments у per-user Drive; keyless credentials | Не надають групі криптографічний доступ автоматично |
 | Edge та observability | nginx, Actuator, Prometheus, ECS JSON logs | TLS, security headers, route isolation, health/metrics | Не замінює авторизацію в backend |
 
@@ -87,7 +87,7 @@ Content script не отримує весь vault: він надсилає `item
 ```text
 1. SPA/extension → Keycloak
 2. Keycloak → Google Workspace SSO → Keycloak
-3. Для нового акаунта Keycloak вимагає реєстрацію passkey
+3. Keycloak показує Google SSO та passwordless passkey як альтернативні способи входу; реєстрація passkey зараз добровільна
 4. Keycloak → клієнт: OIDC access token (JWT)
 5. Клієнт → API: Authorization: Bearer <JWT>
 6. Spring перевіряє підпис та issuer JWT
@@ -127,11 +127,11 @@ Content script не отримує весь vault: він надсилає `item
 
 Ланцюжок розшифрування: приватний ключ користувача → collection key → item key → ciphertext полів. Google group використовується як підказка та матеріалізований список кандидатів; її членство **не створює** криптографічний доступ само по собі. Manager явно затверджує членів і браузер створює envelope для кожного.
 
-### Відкликання і відновлення
+### Відкликання, втрата passphrase і відновлення
 
 Перед revoke клієнт owner/manager виконує ротацію ключа: генерує новий item/collection key, повторно шифрує дані або envelope-и для тих, хто лишається, потім прибирає доступ. Це crypto-shredding для майбутніх API-чтень, але не може стерти ciphertext, уже скопійований на скомпрометований пристрій.
 
-Для керованого відновлення існують `recovery_key_envelopes`, `recovery_operations` і `user_notifications`: KMS ciphertext містить лише recovery envelope, не raw key. Recovery API показує impact, переносить ownership або скидає vault за контрольованою операцією та створює аудит/сповіщення.
+Серверного escrow і адміністративного «break-glass» доступу до vault **немає**. Якщо користувач забув passphrase, він проходить fresh SSO, оцінює вплив через recovery API, передає ownership shared records або collections наступнику, який уже має зашифрований доступ, а потім скидає vault і створює новий keypair. Особисті записи, не поширені до offboarding, відновити неможливо. Історичні recovery-таблиці не означають, що поточний deployment зберігає KMS-envelopes для розшифрування даних.
 
 ### Інші encrypted payload-и
 
@@ -165,7 +165,7 @@ Flyway застосовує `V1`–`V23` на PostgreSQL; Hibernate працює
 - **Vault**: `password_items`, `item_keys`, `password_item_versions`, `user_keys`, `user_settings`, `item_attachments`.
 - **Доступ**: `permissions`, `permission_members`, `collections`, `collection_members`, `allowed_keycloak_groups`.
 - **Governance**: `workspace_users`, `workspace_groups`, `workspace_group_memberships`.
-- **Додаткові можливості**: `external_shares`, `passkey_credentials`, `passkey_credential_keys`, recovery-таблиці, `audit_events`.
+- **Додаткові можливості**: `external_shares`, `passkey_credentials`, `passkey_credential_keys`, історичні recovery-таблиці, `audit_events`.
 
 Foreign keys каскадно прибирають похідний стан (наприклад, keys, versions, external shares і passkeys записи при видаленні item). Індекси підтримують owner/item lookup, membership, audit filters та paged chronological audit.
 
@@ -243,14 +243,132 @@ Browser encrypts file + creates metadata → PUT opaque stream to API
 |---|---|---|
 | Витік БД або backup | Client-side AES-GCM і wrapped keys | Видно незашифровані metadata |
 | Компрометація backend | Backend не має passphrase/raw item keys | Зловмисник може впливати на доступність або підміняти delivery без додаткових client-side assurances |
-| Викрадений Google акаунт | Vault passphrase — окремий фактор; Keycloak passkey registration | Existing user може ще не мати required passkey, якщо створений до default policy |
+| Викрадений Google акаунт | Vault passphrase — окремий фактор; Keycloak підтримує passkey | Passkey registration добровільна і не є MFA-перевіркою на кожному повторному вході |
 | Insider `ADMIN` | Audit без vault decryption | Адмін все одно бачить метадані й audit |
 | Revoke | Key rotation прибирає майбутній API-доступ | Не відкликає plaintext/ciphertext, уже скопійований отримувачем |
 | Доступ за Google-групою | Local snapshot, policy, явні crypto envelopes | Group membership сама не розкриває item key |
 | Brute force passphrase | Argon2id для нових keypair-ів; PBKDF2 legacy | Старі keypair-и не мігрують автоматично без passphrase |
 | Public share / audit ingest | Tight rate limits, opaque package / shared secret, edge isolation | Secret треба ротути та тримати поза git |
 
-## 13. Перевірка змін і навігація
+## 13. Архітектура розгортання
+
+### Production topology і build
+
+`Dockerfile` — multi-stage build: Maven image збирає Java backend і React SPA, а runtime image містить лише Temurin JRE 21, jar та non-root користувача `app` (UID 1001). Контейнер app слухає внутрішній порт `8080`.
+
+`docker-compose.prod.yml` створює такі сервіси:
+
+| Сервіс | Призначення | Доступ ззовні | Persistent state |
+|---|---|---|---|
+| `nginx` | TLS edge, reverse proxy | `443` (app), `8443` (Keycloak) | TLS certificates, mounted read-only |
+| `app` | Spring Boot + SPA | лише через nginx | немає, усі дані у Postgres/Drive |
+| `postgres` | БД застосунку та Keycloak у production compose | ні | named volume `pgdata` |
+| `keycloak` | SSO, IdP broker, OIDC clients | лише через nginx `:8443` | PostgreSQL schema |
+| `keycloak-init` | одноразово зв'язує Account Console з Google re-auth flow | ні, завершується після роботи | немає |
+
+Перед першим запуском визначають два різні публічні HTTPS origins, наприклад `https://pm.example.com` та `https://auth.pm.example.com`. Лише nginx публікує порти. Для Keycloak задають `KEYCLOAK_HOSTNAME=https://auth.pm.example.com`, для backend — `KEYCLOAK_ISSUER_URI=https://auth.pm.example.com/realms/kse-pm`; у клієнті `kse-pm-web` оновлюють valid redirects на `https://pm.example.com/*`, web origin на `https://pm.example.com` та Google broker redirect на `https://auth.pm.example.com/realms/kse-pm/broker/google/endpoint`.
+
+Нормальний запуск: `docker compose -f docker-compose.prod.yml up -d --build`. Перед введенням у експлуатацію перевіряють health, Google login/logout, роботу passkey, розшифрування запису та public external-share link. У TLS-директорії мають бути реальні сертифікати; self-signed підходить лише для staging.
+
+### Конфігураційні межі та секрети
+
+`example.env` є шаблоном, а не production secret store. У production секрети передаються через Secret Manager/Vault або захищений environment file; їх не можна включати до Docker image чи комітити. Критичні значення:
+
+| Значення | Споживач | Призначення |
+|---|---|---|
+| `DB_PASSWORD` | app, PostgreSQL, Keycloak | пароль БД |
+| `KEYCLOAK_ADMIN_PASSWORD` | Keycloak | bootstrap realm administrator, tier-0 секрет |
+| `GOOGLE_CLIENT_SECRET` | Keycloak | обмін Google OAuth code на token |
+| `KEYCLOAK_EVENTS_SECRET` | app + Keycloak listener | internal audit-event ingestion |
+| `WORKSPACE_FEDERATION_CLIENT_SECRET` | Keycloak federation client + app | machine `client_credentials` для WIF |
+| `GOOGLE_WORKSPACE_CREDENTIALS_PATH` | app, лише fallback | mounted read-only JSON service-account key |
+| `GOOGLE_WORKSPACE_SERVICE_ACCOUNT_EMAIL`, `GOOGLE_WORKSPACE_ADMIN_EMAIL` | app | target service account і delegation subject |
+| `GOOGLE_WORKSPACE_DOMAIN`, `GOOGLE_WORKSPACE_CUSTOMER_ID` | app | межа Workspace directory sync |
+
+`KEYCLOAK_EVENTS_SECRET` є необхідним у production compose, хоча стандартний Keycloak image ще не містить HTTP Event Listener provider: endpoint готовий і захищений, але автоматична доставка подій не почнеться, доки не буде розгорнуто й перевірено власний або сторонній SPI.
+
+### Keycloak production configuration
+
+Realm import містить web client `kse-pm-web` (Authorization Code + PKCE), public extension client `kse-pm-extension` (Authorization Code + PKCE S256) і confidential non-interactive `kse-pm-federation` для workload identity. Google є identity broker; `hostedDomain` лише обмежує login UX і не замінює local Workspace governance.
+
+Keycloak запускається з feature `passkeys`. Browser flow тримає Google redirector і `webauthn-authenticator-passwordless` як `ALTERNATIVE`: жоден із них не слід вимикати, інакше login flow не матиме execution, який може автентифікувати користувача. У поточному realm `webauthn-register-passwordless.defaultAction=false`, тому первинна реєстрація passkey добровільна. Account Console може додавати passkey через client-level override `browser-google-reauth`; `keycloak-init` накладає цей override, налаштовує read-only email/profile і вимикає update profile при first Google login.
+
+Passkey не є примусовою другою перевіркою після кожного Google login: така схема через post-broker flow ламала створення нових користувачів, бо до завершення First Broker Login локальний користувач ще не існує. Перед compliance-твердженнями про MFA це обмеження треба врахувати; перспективний шлях — окремий Keycloak SPI/authenticator з явною обробкою відсутнього user context. Біометричні дані не надходять у Keycloak чи застосунок — платформа повертає лише WebAuthn assertion.
+
+### Розгортання Chrome extension
+
+Extension збирається окремо й публікується зі стабільною Chrome identity:
+
+```bash
+cd extension
+VITE_API_ORIGIN=https://pm.example.com VITE_OIDC_CLIENT_ID=kse-pm-extension npm ci
+VITE_API_ORIGIN=https://pm.example.com VITE_OIDC_CLIENT_ID=kse-pm-extension npm run build
+```
+
+У Keycloak для `kse-pm-extension` задають точний redirect `https://pm.example.com/extension-callback`. Вхід відкриває normal browser tab, бо `chrome.identity.launchWebAuthFlow` не дає надійного контексту для platform-WebAuthn Keycloak login. Callback page передає authorization code extension через `chrome.runtime.sendMessage`; token exchange виконує background worker, а callback tab закривається.
+
+Build підставляє deployment origin в `externally_connectable`. SPA ще раз перевіряє extension ID із `/api/config`, а extension перевіряє origin bridge-підключення. Vault passkey extension сам не виконує: PRF-wrapped passphrase прив'язаний до RP ID вебзастосунку у його `localStorage`. Тому app виконує ceremony і передає passphrase extension; lock синхронізується в обидва боки, unlock — тільки app → extension. Потрібний Chrome 115+; на lock/logout virtual authenticator від'єднується, щоб Chrome міг використати системний authenticator.
+
+## 14. Google Workspace: credential modes, resilience і мінімальні права
+
+Для Directory та Drive застосунок завжди створює короткоживучий domain-wide delegated token. У Workspace Admin Console OAuth Client ID service account дозволяють **лише** такі scopes:
+
+```text
+https://www.googleapis.com/auth/admin.directory.user.readonly
+https://www.googleapis.com/auth/admin.directory.group.readonly
+https://www.googleapis.com/auth/admin.directory.group.member.readonly
+https://www.googleapis.com/auth/drive.appdata
+```
+
+Не можна замінювати їх write Directory scope або загальним `drive`: перший дає керування акаунтами, другий відкриває більше ніж зашифрований `appDataFolder`. Delegation subject повинен бути окремим non-human ліцензованим акаунтом із custom role «Users Read / Groups Read», не super-admin.
+
+| Режим | Коли використовувати | Ланцюжок довіри | Заборони/ризики |
+|---|---|---|---|
+| A — Workload Identity Federation | рекомендований поза GCP | app → Keycloak confidential client → Google STS → IAM `signJwt` → DWD token | Не давати pool-wide `principalSet://…/*`; Keycloak issuer має бути HTTPS/JWKS-reachable |
+| B — attached service account | GCE/GKE | metadata ADC → IAM `signJwt` → DWD token | attached identity має бути scoped до target SA `TokenCreator` |
+| C — service-account key | лише коли A/B неможливі | mounted JSON key локально підписує delegation assertion | довгоживучий tier-0 secret; mount RO, rotate поза git |
+
+Людський `gcloud auth application-default login` придатний тільки для локальної розробки: Google re-auth policy робить його непридатним для 24/7 сервісу. Application показує це в directory status (`credentialUnattended=false`) і під `prod` профілем відмовляється стартувати з таким credential.
+
+Для WIF provider обов'язкові дві незалежні GCP-обмежувальні умови:
+
+1. `--attribute-condition="assertion.azp == 'kse-pm-federation'"`, щоб той самий Keycloak realm не допускав до pool токени звичайних користувачів.
+2. `roles/iam.serviceAccountTokenCreator` тільки для одного `principal://…/subject/<Keycloak service-account sub>`, а не для pool/provider/`principalSet`.
+
+`sub` беруть із реального client-credentials token, а не вгадують; його треба оновити в IAM binding після recreation realm або client. Якщо issuer не можна зробити externally reachable із trusted TLS, WIF provider створюють із pinned realm JWKS і оновлюють при ротації signing key.
+
+### Поведінка під час Google outage
+
+Старт app не залежить від доступності Google. Токен, уже отриманий backend, використовується до expiry і proactively renews кожні 10 хвилин (`pm.google-workspace.token-refresh-ms`). Пошук recipients і directory suggestions у звичайному режимі читають materialized local snapshot — це і resilience, і захист від вичерпання квоти під час type-ahead. Sync оновлює Google кожні 15 хвилин; до першого успіху retry відбувається щохвилини. Membership resolution спершу питає Google, але має fallback на snapshot; сам synchronizer не синхронізується «із snapshot у snapshot», а лишає попередній стан та повторює спробу.
+
+`GET /api/admin/workspace/directory-status` показує credential mode, unattended status, останній успішний sync, error і факт використання snapshot. Дозвіл `provisional-access-when-unsynced` — вузький fallback: лише email у configured domain, лише коли `workspace_users` порожня, лише роль `USER`, із WARN не частіше разу на хвилину. Після першого snapshot він припиняє діяти. Налаштування `WORKSPACE_PROVISIONAL_ACCESS=false` робить поведінку fail-closed.
+
+## 15. Експлуатація, резервне копіювання і спостережуваність
+
+### Дані та відновлення
+
+PostgreSQL backup не розкриває паролі, але втрата backup означає втрату server-synced vault data, wrapped keys і metadata. Практичний runbook використовує щоденний custom-format `pg_dump`, зберігання поза хостом із versioning і retention, а також щомісячне test restore. До backup scope належить і Keycloak realm/його БД.
+
+Відновлення роблять у порядку: підняти `postgres` і `keycloak`; виконати `pg_restore --clean --if-exists`; підняти `app` і `nginx`; Flyway звіряє версію схеми, Hibernate — mapping (`ddl-auto=validate`); потім перевірити `/api/health`, login і decrypt тестового запису. З server backup не відновлюються local-only items та passphrase. Force-reset keypair робить старі items нечитабельними, а не відновлює їх.
+
+### Моніторинг та реакція
+
+`/actuator/prometheus` доступний лише із внутрішньої мережі. Мінімальні alerts: `up == 0`; rate 5xx; rate 429 як сигнал brute-force/abuse; тривалий `hikaricp_connections_pending > 0`. `GET /api/audit/anomalies` для `ADMIN`/`SECURITY` знаходить порогові сплески copy/share/revoke та відображається banner-ом у UI; це проста евристика, не SIEM і не виявляє повільні або розподілені атаки.
+
+Production logs — ECS JSON на stdout із `actorEmail` і request-scoped UUID `requestId`; `dev` залишає human-readable logging. Business audit і технічні логи доповнюють одне одного: перший фіксує дію, другі — хід обробки запиту.
+
+Перед production launch потрібні реальні TLS сертифікати, замінені default паролі, відсутній `dev` profile/`PM_ALLOW_INSECURE_DEV`, налаштовані й перевірені backups, Google credentials/hosted domain, passkey UX та external security review/pentest.
+
+## 16. Межі поточної реалізації та наступні кроки
+
+- Прямий group-share відображає намір і policy, але не видає group members криптографічні envelope-и автоматично; для реального team E2E access використовують Collections.
+- Login/logout audit endpoint перевірено вручну, але без EventListener SPI Keycloak не доставляє ці події автоматично.
+- Rate limiter in-memory і per-node: перед horizontal scaling потрібен shared limiter на кшталт Redis/Bucket4j.
+- Мобільний client (React Native) ще не реалізований, але REST API і crypto boundary спроєктовано API-first.
+- Extension MVP сфокусований на Chrome; Firefox/Safari і enterprise deployment policy залишаються окремою роботою.
+- Security dashboard виконує аналіз unlock-нутих записів лише локально: weak/reused/old (90+ days) і compromised password. Для HIBP у мережу йде тільки 5-symbol SHA-1 prefix; plaintext не передається.
+
+## 17. Перевірка змін і навігація
 
 `mvn test` покриває vault, sharing, collections, directory governance, audit, external share, passkeys і security filters. `FlywayMigrationIT` потребує Docker/Testcontainers; якщо Testcontainers не може дістатися Docker daemon, локальна альтернатива — PostgreSQL у звичайному контейнері та `ExternalPostgresSchemaValidationIT` з `PM_TEST_POSTGRES_URL`, `PM_TEST_POSTGRES_USER`, `PM_TEST_POSTGRES_PASSWORD`.
 
