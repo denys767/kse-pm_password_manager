@@ -641,7 +641,7 @@ export function ItemDialog({ session, settings, collections, item, availableTags
         setError(null);
         try {
             const body: Record<string, unknown> = { role };
-            if (permission.granteeType === 'USER' && role !== 'PASSKEY_ONLY') {
+            if (permission.granteeType === 'USER') {
                 if (!itemKey) throw new Error(tr('Ключ запису недоступний — відкрийте запис ще раз.', 'The item key is unavailable — reopen the item.'));
                 const recipient = await api<{ publicKey: string }>(`/api/keys/${encodeURIComponent(permission.grantee)}`);
                 body.wrappedKey = await pmc.wrapItemKey(itemKey, await pmc.importPublicKey(recipient.publicKey));
@@ -1114,7 +1114,7 @@ export function ItemDialog({ session, settings, collections, item, availableTags
                                                 <option value="VIEWER">Viewer</option>
                                                 <option value="EDITOR">Editor</option>
                                                 <option value="AUTOFILL_ONLY">Autofill Only (extension)</option>
-                                                <option value="PASSKEY_ONLY">Passkey Only</option>
+                                                <option value="PASSKEY_ONLY">Passkey Only (extension autofill, no password)</option>
                                             </select>
                                             {p.granteeType === 'GROUP' && p.status === 'ACTIVE' && <button type="button" className="secondary small" onClick={() => provisionGroup(p)}>{tr('Видати ключі', 'Provision')}</button>}
                                             <button type="button" className="secondary small" onClick={() => revoke(p.id)}>{t('revoke')}</button>
@@ -1133,7 +1133,7 @@ export function ItemDialog({ session, settings, collections, item, availableTags
                                     <option value="VIEWER">Viewer</option>
                                     <option value="EDITOR">Editor</option>
                                     <option value="AUTOFILL_ONLY">Autofill Only (extension)</option>
-                                    <option value="PASSKEY_ONLY">Passkey Only</option>
+                                    <option value="PASSKEY_ONLY">Passkey Only (extension autofill, no password)</option>
                                 </select>
                                 <button type="button" id="share-btn" className="secondary" onClick={share}>{t('share')}</button>
                             </div>

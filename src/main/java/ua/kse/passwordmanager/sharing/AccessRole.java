@@ -25,13 +25,15 @@ public enum AccessRole {
     public boolean canTransferOwnership() { return this == OWNER; }
     public boolean canRevokeGrants() { return this == OWNER; }
 
-    /** Password ciphertext and its item key are intentionally never returned
-     * to PASSKEY_ONLY. AUTOFILL_ONLY is a server policy boundary: it is only
-     * released to the dedicated browser-extension OAuth audience. */
+    /** Password ciphertext and its item key are a server policy boundary for
+     * AUTOFILL_ONLY and PASSKEY_ONLY alike: both are released only to the
+     * dedicated browser-extension OAuth audience, never to the web client.
+     * That is what keeps PASSKEY_ONLY's raw password unreadable in the app
+     * while still letting the extension autofill it. */
     public boolean mayReceivePasswordMaterial(boolean extensionClient) {
         return switch (this) {
-            case NONE, PASSKEY_ONLY -> false;
-            case AUTOFILL_ONLY -> extensionClient;
+            case NONE -> false;
+            case AUTOFILL_ONLY, PASSKEY_ONLY -> extensionClient;
             case VIEWER, EDITOR, OWNER -> true;
         };
     }
@@ -44,13 +46,20 @@ public enum AccessRole {
         return this == OWNER;
     }
 
-    /** Capability-based merge, intentionally independent of enum order. */
+    /**
+     * Capability-based merge, intentionally independent of enum order.
+     * PASSKEY_ONLY outranks AUTOFILL_ONLY because it strictly dominates it —
+     * both autofill through the extension, only PASSKEY_ONLY may use passkeys.
+     * Ranking them the other way meant that holding PASSKEY_ONLY directly and
+     * AUTOFILL_ONLY through a group *lost* passkey access, so adding a grant
+     * took a capability away.
+     */
     public static AccessRole mostPermissive(AccessRole left, AccessRole right) {
         if (left == OWNER || right == OWNER) return OWNER;
         if (left == EDITOR || right == EDITOR) return EDITOR;
         if (left == VIEWER || right == VIEWER) return VIEWER;
-        if (left == AUTOFILL_ONLY || right == AUTOFILL_ONLY) return AUTOFILL_ONLY;
         if (left == PASSKEY_ONLY || right == PASSKEY_ONLY) return PASSKEY_ONLY;
+        if (left == AUTOFILL_ONLY || right == AUTOFILL_ONLY) return AUTOFILL_ONLY;
         return NONE;
     }
 }

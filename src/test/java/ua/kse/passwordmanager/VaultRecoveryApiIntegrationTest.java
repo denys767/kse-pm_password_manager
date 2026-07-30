@@ -16,6 +16,10 @@ import org.springframework.http.MediaType;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
+import ua.kse.passwordmanager.directory.WorkspaceGroup;
+import ua.kse.passwordmanager.directory.WorkspaceGroupRepository;
+import ua.kse.passwordmanager.directory.WorkspaceMembership;
+import ua.kse.passwordmanager.directory.WorkspaceMembershipRepository;
 
 /**
  * The reset flow of a user who lost their vault passphrase: they can no longer
@@ -36,6 +40,12 @@ class VaultRecoveryApiIntegrationTest {
 
     @Autowired
     private ObjectMapper objectMapper;
+
+    @Autowired
+    private WorkspaceGroupRepository workspaceGroups;
+
+    @Autowired
+    private WorkspaceMembershipRepository workspaceMemberships;
 
     private MockHttpServletRequestBuilder as(MockHttpServletRequestBuilder request, String email) {
         return request.header("X-Dev-User", email).contentType(MediaType.APPLICATION_JSON);
@@ -65,6 +75,20 @@ class VaultRecoveryApiIntegrationTest {
                 .andExpect(status().isCreated());
     }
 
+    /** A group share with no wrapped keys ever provisioned to its members: the
+     * only case left that can leave a shared item with zero item-key holders,
+     * now that every USER role (PASSKEY_ONLY included) requires one. */
+    private void shareWithUnprovisionedGroup(String owner, String itemId, String groupEmail, String member)
+            throws Exception {
+        workspaceGroups.save(new WorkspaceGroup(groupEmail, true));
+        workspaceMemberships.save(new WorkspaceMembership(groupEmail, member));
+        mockMvc.perform(as(post("/api/vault/items/" + itemId + "/permissions"), owner)
+                        .content("""
+                                {"granteeType": "GROUP", "grantee": "%s", "directorySubjectId": "%s", "role": "VIEWER"}
+                                """.formatted(groupEmail, groupEmail)))
+                .andExpect(status().isCreated());
+    }
+
     private String transfer(String owner, String kind, String resourceId, String successor) throws Exception {
         return mockMvc.perform(as(post("/api/vault/ownership-transfers"), owner)
                         .content("""
@@ -78,8 +102,10 @@ class VaultRecoveryApiIntegrationTest {
     void resetImpactOffersOnlyRecipientsThatHoldAWrappedKey() throws Exception {
         String itemId = createItem(ALICE, "Shared login");
         shareWithUser(ALICE, itemId, BOB, "VIEWER", true);
-        // PASSKEY_ONLY never receives the item key, so Carol cannot become the owner.
-        shareWithUser(ALICE, itemId, CAROL, "PASSKEY_ONLY", false);
+        // PASSKEY_ONLY now requires a wrapped item key too (the extension
+        // needs it to autofill), so Carol holds one and is a candidate too —
+        // same as any other key-holding grantee.
+        shareWithUser(ALICE, itemId, CAROL, "PASSKEY_ONLY", true);
 
         mockMvc.perform(as(get("/api/vault/reset-impact"), ALICE))
                 .andExpect(status().isOk())
@@ -87,13 +113,15 @@ class VaultRecoveryApiIntegrationTest {
                 .andExpect(jsonPath("$.blockers[?(@.id == '%s')].candidates[*].email".formatted(itemId),
                         hasItem(BOB)))
                 .andExpect(jsonPath("$.blockers[?(@.id == '%s')].candidates[*].email".formatted(itemId),
-                        hasSize(1)));
+                        hasItem(CAROL)))
+                .andExpect(jsonPath("$.blockers[?(@.id == '%s')].candidates[*].email".formatted(itemId),
+                        hasSize(2)));
 
         mockMvc.perform(as(post("/api/vault/ownership-transfers"), ALICE)
                         .content("""
                                 {"kind": "ITEM", "resourceId": "%s", "successorEmail": "%s"}
                                 """.formatted(itemId, CAROL)))
-                .andExpect(status().isBadRequest());
+                .andExpect(status().isOk());
     }
 
     @Test
@@ -116,8 +144,11 @@ class VaultRecoveryApiIntegrationTest {
 
     @Test
     void sharedItemWithNoPossibleSuccessorIsStrandedRatherThanBlocking() throws Exception {
-        String itemId = createItem(ALICE, "Passkey only");
-        shareWithUser(ALICE, itemId, BOB, "PASSKEY_ONLY", false);
+        String itemId = createItem(ALICE, "Group-only, unprovisioned");
+        // Every USER role (PASSKEY_ONLY included) now requires a wrapped item
+        // key, so the only remaining way for a shared item to have zero
+        // key-holders is a group whose members were never provisioned one.
+        shareWithUnprovisionedGroup(ALICE, itemId, "reset-team@kse.org.ua", BOB);
 
         mockMvc.perform(as(get("/api/vault/reset-impact"), ALICE))
                 .andExpect(status().isOk())

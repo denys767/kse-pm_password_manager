@@ -23,6 +23,9 @@ export interface KeyDistribution {
 }
 /** What the in-page picker is allowed to know about a match. */
 export interface AutofillCandidate { id: string; name: string; username: string; }
+/** Response to 'autofill-candidates'. While the vault is locked, `candidates`
+ * is always empty — only `hasMatch` (no account names) is disclosed. */
+export interface AutofillCandidatesResult { locked: boolean; hasMatch: boolean; candidates: AutofillCandidate[]; }
 export interface PasskeyCredential {
     id: string; itemId: string; relyingPartyId: string; credentialId: string; userHandle: string;
     algorithm: 'ES256'; publicKey: string; encryptedPrivateMaterial: string; privateMaterialIv: string;

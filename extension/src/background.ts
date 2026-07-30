@@ -473,7 +473,7 @@ chrome.webAuthenticationProxy.onGetRequest.addListener((request) => { void onGet
 chrome.webAuthenticationProxy.onIsUvpaaRequest.addListener((request) => { void chrome.webAuthenticationProxy.completeIsUvpaaRequest({ requestId: request.requestId, isUvpaa: Boolean(vaultKeys && passkeyAttached) }); });
 chrome.webAuthenticationProxy.onRequestCanceled.addListener((requestId) => { canceledWebAuthnRequests.add(requestId); });
 
-chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
     void (async () => {
         await hydrate();
         const m = message as { type: string; item?: PasswordItem };
@@ -483,14 +483,35 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
         if (m.type === 'status') return { loggedIn: Boolean(token), unlocked: Boolean(vaultKeys), passkeyProvider: passkeyAttached };
         if (m.type === 'unlock') { await unlock((message as { passphrase: string }).passphrase); return { unlocked: true }; }
         if (m.type === 'unlock-via-app') {
-            // If an app tab already has the bridge open, ask it directly.
-            // Otherwise open one — it will run the ceremony as soon as it
-            // connects (see the pending-request handling in bridge.ts).
-            if (!requestUnlockFromApp()) await chrome.tabs.create({ url: API_ORIGIN, active: true });
-            return { requested: true };
+            // If an app tab already has the bridge open, ask it directly and
+            // bring it to the front — the passkey ceremony needs a focused
+            // document, and a background tab leaves the user staring at
+            // nothing. Otherwise open a new tab; it will run the ceremony as
+            // soon as it connects (see the pending-request handling in bridge.ts).
+            const { served, tabId, windowId } = requestUnlockFromApp();
+            let focused = false;
+            if (served && tabId !== undefined) {
+                try {
+                    await chrome.tabs.update(tabId, { active: true });
+                    if (windowId !== undefined) await chrome.windows.update(windowId, { focused: true });
+                    focused = true;
+                } catch { /* the tab went away between the port message and now */ }
+            }
+            if (!served || !focused) await chrome.tabs.create({ url: API_ORIGIN, active: true });
+            return { requested: true, focused };
         }
         if (m.type === 'items') return await request<PasswordItem[]>('/api/vault/items');
-        if (m.type === 'copy' && m.item) { const value = await secrets(m.item); await copy(value.password); await touchVault(); void request(`/api/vault/items/${m.item.id}/copy-event`, { method: 'POST' }); return { copied: true }; }
+        if (m.type === 'copy' && m.item) {
+            // Resolved fresh from the server rather than trusted from the
+            // caller: Passkey Only must never yield the raw password, and a
+            // stale or crafted message must not be able to lie about the role.
+            const fresh = (await request<PasswordItem[]>('/api/vault/items')).find((value) => value.id === m.item!.id);
+            if (!fresh) throw new Error('Запис не знайдено.');
+            if (fresh.accessRole === 'PASSKEY_ONLY') throw new Error('Passkey Only: пароль недоступний для копіювання.');
+            const value = await secrets(fresh);
+            await copy(value.password); await touchVault(); void request(`/api/vault/items/${fresh.id}/copy-event`, { method: 'POST' });
+            return { copied: true };
+        }
         if (m.type === 'autofill') {
             // By id from the content script, by value from the popup. The
             // content script runs in a page we do not control, so it is handed
@@ -501,20 +522,34 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
                 ? (await request<PasswordItem[]>('/api/vault/items')).find((value) => value.id === itemId)
                 : m.item;
             if (!item) throw new Error('Запис не знайдено.');
-            const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-            if (!matchesOrigin(item.url, tab?.url)) throw new Error('URL запису не збігається з origin активної вкладки.');
-            if (!tab?.id) throw new Error('Немає активної вкладки.');
+            // Fill the frame that asked, not whatever happens to be focused.
+            // Content scripts run in every frame of every page, so resolving
+            // the active tab let a page in a background tab drive a fill into
+            // the document the user was actually looking at — and lost the
+            // right target anyway if focus moved between click and fill. The
+            // popup has no sender tab, so it still means "the active one".
+            const senderTabId = sender?.tab?.id;
+            const target = senderTabId !== undefined
+                ? { id: senderTabId, url: sender?.origin ?? sender?.tab?.url }
+                : await chrome.tabs.query({ active: true, currentWindow: true })
+                    .then(([tab]) => (tab?.id === undefined ? undefined : { id: tab.id, url: tab.url }));
+            if (!target) throw new Error('Немає активної вкладки.');
+            if (!matchesOrigin(item.url, target.url)) throw new Error('URL запису не збігається з origin вкладки.');
             const value = await secrets(item);
-            await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: fillFields, args: [value.username, value.password] });
+            await chrome.scripting.executeScript({ target: { tabId: target.id }, func: fillFields, args: [value.username, value.password] });
             await touchVault();
             return { filled: true };
         }
-        // Just enough for the in-page picker to label its options.
+        // Just enough for the in-page picker to label its options. While the
+        // vault is locked, usernames are still plaintext on the server, but
+        // handing them to the page would defeat locking — only whether a
+        // match exists is disclosed.
         if (m.type === 'autofill-candidates') {
             const url = (message as { url: string }).url;
             const items = await request<PasswordItem[]>('/api/vault/items');
-            return items.filter((item) => matchesOrigin(item.url, url))
-                .map((item) => ({ id: item.id, name: item.name, username: item.username ?? '' }));
+            const matching = items.filter((item) => matchesOrigin(item.url, url));
+            if (!vaultKeys) return { locked: true, hasMatch: matching.length > 0, candidates: [] };
+            return { locked: false, hasMatch: matching.length > 0, candidates: matching.map((item) => ({ id: item.id, name: item.name, username: item.username ?? '' })) };
         }
         if (m.type === 'totp' && m.item) return { code: await totpCode(m.item) };
         if (m.type === 'save-credentials') {

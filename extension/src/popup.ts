@@ -16,7 +16,11 @@ function error(message: string): void { document.querySelector<HTMLElement>('#st
 function renderItems(query = ''): void {
     const matching = items.filter((item) => matchesOrigin(item.url, activeUrl)).filter((item) => `${item.name} ${item.username ?? ''} ${item.url ?? ''}`.toLowerCase().includes(query.toLowerCase()));
     const list = document.querySelector<HTMLDivElement>('#items')!;
-    list.innerHTML = matching.length ? matching.map((item) => `<article><strong>${escape(item.name)}</strong><small>${escape(item.username ?? '')}</small><small>${escape(item.url ?? '')}</small><div><button data-action="fill" data-id="${item.id}">Fill</button><button data-action="copy" data-id="${item.id}">Copy</button><button data-action="totp" data-id="${item.id}">TOTP</button><button data-action="totp-scan" data-id="${item.id}" title="Скануй QR 2FA на цій сторінці">Scan QR (2FA)</button></div></article>`).join('') : '<p class="empty">Немає записів для точного origin цієї вкладки.</p>';
+    list.innerHTML = matching.length ? matching.map((item) => {
+        // Passkey Only never yields the raw password — no Copy button to offer one.
+        const copyButton = item.accessRole === 'PASSKEY_ONLY' ? '' : `<button data-action="copy" data-id="${item.id}">Copy</button>`;
+        return `<article><strong>${escape(item.name)}</strong><small>${escape(item.username ?? '')}</small><small>${escape(item.url ?? '')}</small><div><button data-action="fill" data-id="${item.id}">Fill</button>${copyButton}<button data-action="totp" data-id="${item.id}">TOTP</button><button data-action="totp-scan" data-id="${item.id}" title="Скануй QR 2FA на цій сторінці">Scan QR (2FA)</button></div></article>`;
+    }).join('') : '<p class="empty">Немає записів для точного origin цієї вкладки.</p>';
     list.querySelectorAll<HTMLButtonElement>('button').forEach((button) => button.addEventListener('click', () => void act(button.dataset.action!, button.dataset.id!)));
 }
 async function act(action: string, id: string): Promise<void> {
@@ -43,8 +47,12 @@ async function vault(): Promise<void> {
             + '<button id="unlock-via-app" class="secondary">Unlock with passkey (via app)</button>'
             + '<form id="unlock"><input id="passphrase" type="password" autocomplete="current-password" placeholder="Vault passphrase" required /><button>Unlock</button></form>';
         document.querySelector<HTMLButtonElement>('#unlock-via-app')!.addEventListener('click', async () => {
-            try { await send({ type: 'unlock-via-app' }); error('Відкрито вкладку застосунку — розблокуйте через Passkey там.'); }
-            catch (e) { error((e as Error).message); }
+            try {
+                const { focused } = await send<{ focused: boolean }>({ type: 'unlock-via-app' });
+                error(focused
+                    ? 'Перемкнено на вкладку застосунку — розблокуйте через Passkey там.'
+                    : 'Відкрито вкладку застосунку — розблокуйте через Passkey там.');
+            } catch (e) { error((e as Error).message); }
         });
         document.querySelector<HTMLFormElement>('#unlock')!.addEventListener('submit', async (event) => { event.preventDefault(); try { await send({ type: 'unlock', passphrase: document.querySelector<HTMLInputElement>('#passphrase')!.value }); await vault(); } catch (e) { error((e as Error).message); } });
         return;

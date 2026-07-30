@@ -1,5 +1,5 @@
 import jsQR from 'jsqr';
-import type { AutofillCandidate } from './types';
+import type { AutofillCandidatesResult } from './types';
 
 const send = <T>(message: unknown): Promise<T> => chrome.runtime.sendMessage(message) as Promise<T>;
 
@@ -93,7 +93,9 @@ function reposition(): void {
     openPicker.style.minWidth = `${minWidth}px`;
 }
 
-function showPicker(anchor: HTMLInputElement, candidates: AutofillCandidate[]): void {
+/** Locked shows a single row with no account names — showing usernames for a
+ *  locked vault would defeat the point of locking it. */
+function showPicker(anchor: HTMLInputElement, result: AutofillCandidatesResult): void {
     closePicker();
     const host = document.createElement('div');
     const rect = anchor.getBoundingClientRect();
@@ -102,13 +104,17 @@ function showPicker(anchor: HTMLInputElement, candidates: AutofillCandidate[]): 
     // Losing focus to the picker itself must not trigger the input's blur-close.
     host.addEventListener('mousedown', (event) => event.preventDefault());
     const root = host.attachShadow({ mode: 'closed' });
-    const options = candidates.map((candidate, index) => {
-        const label = candidate.username || candidate.name;
-        const secondary = candidate.username ? candidate.name : location.hostname;
-        return `<button type="button" data-index="${index}">
-            <span class="who">${escapeText(label)}</span><span class="what">${escapeText(secondary)}</span>
-        </button>`;
-    }).join('');
+    const options = result.locked
+        ? `<button type="button" data-locked="1">
+            <span class="who">Сховище заблоковане</span><span class="what">Натисніть, щоб розблокувати</span>
+        </button>`
+        : result.candidates.map((candidate, index) => {
+            const label = candidate.username || candidate.name;
+            const secondary = candidate.username ? candidate.name : location.hostname;
+            return `<button type="button" data-index="${index}">
+                <span class="who">${escapeText(label)}</span><span class="what">${escapeText(secondary)}</span>
+            </button>`;
+        }).join('');
     root.innerHTML = `<style>
         .menu { font: 13px/1.35 system-ui, sans-serif; background:#fff; color:#182033; border:1px solid #d5d9e3;
                 border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,.16); overflow:hidden; }
@@ -122,8 +128,12 @@ function showPicker(anchor: HTMLInputElement, candidates: AutofillCandidate[]): 
     </style><div class="menu"><div class="head">KSE Password Manager</div>${options}</div>`;
     root.querySelectorAll<HTMLButtonElement>('button').forEach((button) => {
         button.addEventListener('click', () => {
-            const chosen = candidates[Number(button.dataset.index)];
             closePicker();
+            if (button.dataset.locked) {
+                void send({ type: 'unlock-via-app' }).catch((e: Error) => toast(e.message));
+                return;
+            }
+            const chosen = result.candidates[Number(button.dataset.index)];
             // By id: the page must not be handed the record itself.
             void send({ type: 'autofill', itemId: chosen.id }).catch((e: Error) => toast(e.message));
         });
@@ -138,7 +148,7 @@ function escapeText(value: string): string {
 }
 
 async function offerAutofill(): Promise<void> {
-    let candidates: AutofillCandidate[] | undefined;
+    let cached: AutofillCandidatesResult | undefined;
     let candidatesAt = 0;
     const CACHE_MS = 30_000;
     const loginField = (el: HTMLInputElement) => el.offsetParent !== null && !el.disabled && !el.readOnly
@@ -150,11 +160,11 @@ async function offerAutofill(): Promise<void> {
         if (!(input instanceof HTMLInputElement) || !loginField(input)) return;
         if (blurTimer !== undefined) { clearTimeout(blurTimer); blurTimer = undefined; }
         void (async () => {
-            if (!candidates || Date.now() - candidatesAt > CACHE_MS) {
-                try { candidates = await send<AutofillCandidate[]>({ type: 'autofill-candidates', url: location.href }); candidatesAt = Date.now(); }
+            if (!cached || Date.now() - candidatesAt > CACHE_MS) {
+                try { cached = await send<AutofillCandidatesResult>({ type: 'autofill-candidates', url: location.href }); candidatesAt = Date.now(); }
                 catch { return; }
             }
-            if (candidates?.length && document.activeElement === input) showPicker(input, candidates);
+            if (cached.hasMatch && document.activeElement === input) showPicker(input, cached);
         })();
     });
     document.addEventListener('focusout', (event) => {

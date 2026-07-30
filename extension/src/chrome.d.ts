@@ -1,10 +1,16 @@
 declare namespace chrome {
     namespace runtime {
         const lastError: { message?: string } | undefined;
-        const onMessage: { addListener(cb: (message: unknown, sender: unknown, sendResponse: (response: unknown) => void) => boolean | void): void };
+        /** `tab` is present only for messages from a content script; the popup
+         * and other extension pages send without one. */
+        interface MessageSender {
+            origin?: string;
+            tab?: { id?: number; url?: string; windowId?: number };
+        }
+        const onMessage: { addListener(cb: (message: unknown, sender: MessageSender, sendResponse: (response: unknown) => void) => boolean | void): void };
         function sendMessage(message: unknown): Promise<unknown>;
         interface Port {
-            sender?: { origin?: string; tab?: { id?: number } };
+            sender?: { origin?: string; tab?: { id?: number; windowId?: number } };
             postMessage(message: unknown): void;
             disconnect(): void;
             onMessage: { addListener(cb: (message: unknown, port: Port) => void): void };
@@ -23,6 +29,9 @@ declare namespace chrome {
         function update(tabId: number, properties: { active?: boolean }): Promise<unknown>;
         function remove(tabId: number): Promise<void>;
         const onRemoved: { addListener(cb: (tabId: number) => void): void; removeListener(cb: (tabId: number) => void): void };
+    }
+    namespace windows {
+        function update(windowId: number, properties: { focused?: boolean }): Promise<unknown>;
     }
     namespace scripting { function executeScript(details: { target: { tabId: number }; func: (...args: any[]) => unknown; args?: unknown[] }): Promise<unknown>; }
     namespace alarms { function create(name: string, alarmInfo: { when?: number; delayInMinutes?: number; periodInMinutes?: number }): void; function clear(name: string): Promise<boolean>; const onAlarm: { addListener(cb: (alarm: { name: string }) => void): void }; }

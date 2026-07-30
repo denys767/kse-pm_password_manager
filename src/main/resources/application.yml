@@ -71,18 +71,30 @@ pm:
     # Proactive token renewal, so a broken credential shows up in the logs and
     # on the admin screen instead of in a user's face.
     token-refresh-ms: ${WORKSPACE_TOKEN_REFRESH_MS:600000}
-    # While the Workspace snapshot has never been fetched (fresh database,
-    # expired caller credentials, Directory outage) an in-domain account that
-    # passed SSO is admitted as an ordinary USER instead of being denied, so a
-    # Google problem cannot lock everyone out of their vaults. Roles and
-    # revocations are only enforced once a sync succeeds; set this to false to
-    # fail closed instead.
-    provisional-access-when-unsynced: ${WORKSPACE_PROVISIONAL_ACCESS:true}
+    # Fails closed by default: while the Workspace snapshot is empty, roles and
+    # revocations cannot be enforced, and an empty table is also what a failed
+    # or partial sync leaves behind — not just a fresh database. Set this to
+    # true to accept that risk and admit in-domain SSO accounts as ordinary
+    # USERs until a sync succeeds, so a Google outage cannot lock everyone out.
+    provisional-access-when-unsynced: ${WORKSPACE_PROVISIONAL_ACCESS:false}
     # Retry cadence until the first successful sync; the steady-state interval
     # is sync-interval-ms.
     bootstrap-retry-ms: ${WORKSPACE_BOOTSTRAP_RETRY_MS:60000}
   rate-limit:
-    requests-per-minute: 300
+    requests-per-minute: ${RATE_LIMIT_PER_MINUTE:300}
+    # /api/external-shares/** and /api/audit/keycloak-events authenticate
+    # nobody, so this filter is the only thing standing between a guessable id
+    # or a shared secret and an unlimited retry loop.
+    unauthenticated-requests-per-minute: ${RATE_LIMIT_UNAUTHENTICATED_PER_MINUTE:20}
+    # /api/keys/** is a "which users have vaults" oracle for any authenticated
+    # caller; normal sharing needs a few calls, not hundreds.
+    key-directory-requests-per-minute: ${RATE_LIMIT_KEY_DIRECTORY_PER_MINUTE:60}
+    # Peers whose X-Forwarded-For is believed, as literal addresses or CIDR
+    # blocks. Empty means trust nothing and key every client on its real socket
+    # address — correct when the app is reached directly. Set this to the
+    # reverse proxy (the Docker bridge network in the bundled compose files),
+    # otherwise the header spoofs the limit away.
+    trusted-proxies: ${RATE_LIMIT_TRUSTED_PROXIES:}
   audit:
     keycloak-events-secret: ${KEYCLOAK_EVENTS_SECRET:}
 
