@@ -1,10 +1,16 @@
 package ua.kse.passwordmanager.vault;
 
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Email;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
+import ua.kse.passwordmanager.attachment.AttachmentService;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -46,16 +52,28 @@ public class VaultRecoveryController {
     private final CollectionMemberRepository members;
     private final UserKeysRepository userKeys;
     private final WorkspaceUserRepository workspaceUsers;
+    private final AttachmentService attachments;
     private final AuditService audit;
+    /** Ownership transfer moves attachment bytes between two users' Drive
+     * appDataFolders, which can run for minutes. That cannot happen inside the
+     * transaction that flips ownership, so transfer() drives its own — same
+     * reasoning as AttachmentService itself. */
+    private final TransactionTemplate readOnlyTx;
+    private final TransactionTemplate writeTx;
 
     public VaultRecoveryController(AuthFacade auth, PasswordItemRepository items,
             ItemKeyRepository itemKeys, ItemVersionRepository versions, PermissionRepository permissions,
             PermissionMemberRepository permissionMembers, CollectionRepository collections, CollectionMemberRepository members,
-            UserKeysRepository userKeys, WorkspaceUserRepository workspaceUsers, AuditService audit) {
+            UserKeysRepository userKeys, WorkspaceUserRepository workspaceUsers, AttachmentService attachments,
+            AuditService audit, PlatformTransactionManager transactionManager) {
         this.auth = auth; this.items = items; this.itemKeys = itemKeys; this.versions = versions;
         this.permissions = permissions; this.permissionMembers = permissionMembers;
         this.collections = collections; this.members = members;
-        this.userKeys = userKeys; this.workspaceUsers = workspaceUsers; this.audit = audit;
+        this.userKeys = userKeys; this.workspaceUsers = workspaceUsers;
+        this.attachments = attachments; this.audit = audit;
+        this.readOnlyTx = new TransactionTemplate(transactionManager);
+        this.readOnlyTx.setReadOnly(true);
+        this.writeTx = new TransactionTemplate(transactionManager);
     }
 
     @GetMapping("/reset-impact")
@@ -67,13 +85,41 @@ public class VaultRecoveryController {
     /** Returns the refreshed impact so the caller sees the remaining blockers:
      * the reset screen has no other way to know a transfer succeeded, and an
      * empty 200 body used to surface as a JSON parse error in the browser. */
+    /**
+     * Runs in three phases rather than one transaction: attachments live in the
+     * owner's private Drive appDataFolder, so changing the owner has to copy the
+     * ciphertext across to the successor's, and that transfer can take minutes
+     * on a large file. Validating and flipping ownership around it keeps the
+     * database work short instead of pinning a pooled connection for the whole
+     * upload.
+     */
     @PostMapping("/ownership-transfers")
-    @Transactional
     public ResetImpact transfer(@Valid @RequestBody OwnershipTransfer request) {
         requireRecentAuth();
         CurrentUser user = auth.current();
         String successor = request.successorEmail().trim().toLowerCase();
         if (successor.equals(user.email())) throw new BadRequestException("Choose another owner");
+
+        // Phase 1 — validate and work out which items change hands.
+        List<PasswordItem> moving = readOnlyTx.execute(status -> validateTransfer(user, successor, request));
+
+        // Phase 2 — move the encrypted bytes, outside any transaction. Nothing
+        // is lost if this throws: transferOwner verifies size and SHA-256
+        // before it uploads, and removes the source copy only once the new
+        // Drive id has been committed. Ownership below is then left untouched,
+        // so the caller can simply retry.
+        for (PasswordItem item : moving) {
+            attachments.transferOwner(item, user.email(), successor);
+        }
+
+        // Phase 3 — flip ownership.
+        writeTx.executeWithoutResult(status -> applyTransfer(user, successor, request));
+        return impactFor(user.email());
+    }
+
+    /** Returns the items whose owner is about to change, so their attachments
+     * can be moved before the change is applied. */
+    private List<PasswordItem> validateTransfer(CurrentUser user, String successor, OwnershipTransfer request) {
         if (request.kind() == TransferKind.ITEM) {
             PasswordItem item = items.findById(request.resourceId()).orElseThrow(() -> new BadRequestException("Item not found"));
             if (!user.email().equals(item.getOwnerEmail())) throw new ForbiddenException("Only the owner can transfer an item");
@@ -82,31 +128,48 @@ public class VaultRecoveryController {
             // wrapped copy can become the owner.
             boolean canDecrypt = itemKeys.findByItemIdAndUserEmail(item.getId(), successor).isPresent();
             if (!canDecrypt) throw new BadRequestException("Successor must already have encrypted access to this item");
+            return List.of(item);
+        }
+        Collection collection = collections.findById(request.resourceId()).orElseThrow(() -> new BadRequestException("Collection not found"));
+        if (!user.email().equals(collection.getOwnerEmail())) throw new ForbiddenException("Only the owner can transfer a collection");
+        CollectionMember member = members.findByCollectionIdAndMemberEmail(collection.getId(), successor)
+                .orElseThrow(() -> new BadRequestException("Successor must be a collection member"));
+        if (!member.getStatus().hasCryptographicAccess()) {
+            throw new BadRequestException("Successor has no provisioned collection key yet");
+        }
+        return items.findByCollectionIdInOrderByNameAsc(List.of(collection.getId())).stream()
+                .filter(item -> user.email().equals(item.getOwnerEmail()))
+                .toList();
+    }
+
+    private void applyTransfer(CurrentUser user, String successor, OwnershipTransfer request) {
+        if (request.kind() == TransferKind.ITEM) {
+            PasswordItem item = items.findById(request.resourceId()).orElseThrow(() -> new BadRequestException("Item not found"));
             item.setOwnerEmail(successor);
+            items.save(item);
             // Ownership supersedes any grant the successor held; leaving the row
             // would make them appear in their own item's access list.
             permissions.findByItemIdAndGranteeTypeAndGrantee(item.getId(), GranteeType.USER, successor)
                     .ifPresent(this::deletePermission);
             audit.record(user.email(), AuditAction.OWNERSHIP_TRANSFERRED, item.getId(), item.getName(), successor, "item ownership transferred for vault recovery");
-        } else {
-            Collection collection = collections.findById(request.resourceId()).orElseThrow(() -> new BadRequestException("Collection not found"));
-            if (!user.email().equals(collection.getOwnerEmail())) throw new ForbiddenException("Only the owner can transfer a collection");
-            CollectionMember member = members.findByCollectionIdAndMemberEmail(collection.getId(), successor)
-                    .orElseThrow(() -> new BadRequestException("Successor must be a collection member"));
-            if (!member.getStatus().hasCryptographicAccess()) {
-                throw new BadRequestException("Successor has no provisioned collection key yet");
-            }
-            collection.setOwnerEmail(successor);
-            // Without this the new owner keeps whatever role they had (typically
-            // VIEWER) and cannot manage the collection they now own.
+            return;
+        }
+        Collection collection = collections.findById(request.resourceId()).orElseThrow(() -> new BadRequestException("Collection not found"));
+        collection.setOwnerEmail(successor);
+        collections.save(collection);
+        // Without this the new owner keeps whatever role they had (typically
+        // VIEWER) and cannot manage the collection they now own.
+        members.findByCollectionIdAndMemberEmail(collection.getId(), successor).ifPresent(member -> {
             member.setRole(CollectionRole.MANAGER);
             members.save(member);
-            for (PasswordItem item : items.findByCollectionIdInOrderByNameAsc(List.of(collection.getId()))) {
-                if (user.email().equals(item.getOwnerEmail())) item.setOwnerEmail(successor);
+        });
+        for (PasswordItem item : items.findByCollectionIdInOrderByNameAsc(List.of(collection.getId()))) {
+            if (user.email().equals(item.getOwnerEmail())) {
+                item.setOwnerEmail(successor);
+                items.save(item);
             }
-            audit.record(user.email(), AuditAction.OWNERSHIP_TRANSFERRED, collection.getId(), collection.getName(), successor, "collection ownership transferred for vault recovery");
         }
-        return impactFor(user.email());
+        audit.record(user.email(), AuditAction.OWNERSHIP_TRANSFERRED, collection.getId(), collection.getName(), successor, "collection ownership transferred for vault recovery");
     }
 
     @PostMapping("/reset")
@@ -197,6 +260,10 @@ public class VaultRecoveryController {
         for (Permission permission : permissions.findByItemId(item.getId())) deletePermission(permission);
         itemKeys.deleteByItemId(item.getId());
         versions.deleteByItemId(item.getId());
+        // item_attachments cascades on the item delete, so skipping this left
+        // the Drive file with nothing pointing at it — the orphan that
+        // AttachmentService's delete ordering exists to prevent.
+        attachments.deleteForItem(item);
         items.delete(item);
     }
 
@@ -220,6 +287,7 @@ public class VaultRecoveryController {
     public record ResetImpact(boolean allowed, long ownedItemsToDelete, long incomingSharesToRemove,
                               long membershipsToRemove, List<ResetBlocker> blockers,
                               List<StrandedResource> stranded) {}
-    public record OwnershipTransfer(TransferKind kind, UUID resourceId, String successorEmail) {}
-    public record ResetRequest(String confirmation, @Valid UserKeysDto keys) {}
+    public record OwnershipTransfer(@NotNull TransferKind kind, @NotNull UUID resourceId,
+                                    @NotBlank @Email String successorEmail) {}
+    public record ResetRequest(@NotBlank String confirmation, @NotNull @Valid UserKeysDto keys) {}
 }

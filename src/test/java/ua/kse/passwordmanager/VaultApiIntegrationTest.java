@@ -41,6 +41,11 @@ class VaultApiIntegrationTest {
         return request.header("X-Dev-User", email).contentType(MediaType.APPLICATION_JSON);
     }
 
+    private MockHttpServletRequestBuilder extension(MockHttpServletRequestBuilder request, String email) {
+        return as(request, email).header("X-Dev-OAuth-Client", "kse-pm-extension")
+                .header("X-Dev-OAuth-Audience", "kse-pm-extension");
+    }
+
     private String itemJson(String name, String itemType, String syncMode) {
         return """
                 {
@@ -234,27 +239,36 @@ class VaultApiIntegrationTest {
                 .andExpect(jsonPath("$.accessRole").value("EDITOR"))
                 .andExpect(jsonPath("$.wrappedKey").value("cmV3cmFwcGVkS2V5"));
 
-        // PASSKEY_ONLY must take the password key away.
+        // PASSKEY_ONLY still requires a wrapped key — the extension needs it
+        // to autofill — but the web client stays denied the ciphertext.
         mockMvc.perform(as(patch(url), ALICE).content("""
-                        {"role": "PASSKEY_ONLY"}
+                        {"role": "PASSKEY_ONLY", "wrappedKey": "cGFzc2tleU9ubHlLZXk="}
                         """))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.role").value("PASSKEY_ONLY"));
+        // The single-item route is gated on canReadItemCiphertext, which
+        // PASSKEY_ONLY never satisfies for any client — the extension reads
+        // this item through the list route instead (below), same as it does
+        // in the running product (extension/src/background.ts never calls
+        // GET /api/vault/items/{id}).
         mockMvc.perform(as(get("/api/vault/items/" + id), BOB))
                 .andExpect(status().isNotFound());
+        mockMvc.perform(extension(get("/api/vault/items/" + id), BOB))
+                .andExpect(status().isNotFound());
+        mockMvc.perform(extension(get("/api/vault/items"), BOB))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[?(@.id == '%s')].accessRole".formatted(id), hasItem("PASSKEY_ONLY")))
+                .andExpect(jsonPath("$[?(@.id == '%s')].wrappedKey".formatted(id), hasItem("cGFzc2tleU9ubHlLZXk=")));
 
-        // Coming back needs a freshly wrapped key: the server has none to reuse.
+        // Coming back to VIEWER needs no new key: the server still has the one
+        // just wrapped for PASSKEY_ONLY and reuses it.
         mockMvc.perform(as(patch(url), ALICE).content("""
                         {"role": "VIEWER"}
-                        """))
-                .andExpect(status().isBadRequest());
-        mockMvc.perform(as(patch(url), ALICE).content("""
-                        {"role": "VIEWER", "wrappedKey": "YmFja0FnYWlu"}
                         """))
                 .andExpect(status().isOk());
         mockMvc.perform(as(get("/api/vault/items/" + id), BOB))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.wrappedKey").value("YmFja0FnYWlu"));
+                .andExpect(jsonPath("$.wrappedKey").value("cGFzc2tleU9ubHlLZXk="));
     }
 
     @Test

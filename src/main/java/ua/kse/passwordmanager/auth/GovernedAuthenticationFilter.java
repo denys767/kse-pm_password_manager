@@ -40,7 +40,7 @@ public class GovernedAuthenticationFilter extends OncePerRequestFilter {
 
     public GovernedAuthenticationFilter(WorkspaceUserRepository users, Environment environment,
             @Value("${pm.google-workspace.domain:}") String domain,
-            @Value("${pm.google-workspace.provisional-access-when-unsynced:true}") boolean provisionalAccessWhenUnsynced) {
+            @Value("${pm.google-workspace.provisional-access-when-unsynced:false}") boolean provisionalAccessWhenUnsynced) {
         this.users = users;
         this.development = List.of(environment.getActiveProfiles()).contains("dev");
         this.domain = domain == null ? "" : domain.trim().toLowerCase(Locale.ROOT);
@@ -92,15 +92,18 @@ public class GovernedAuthenticationFilter extends OncePerRequestFilter {
     }
 
     /**
-     * Degraded mode: the local Workspace snapshot is empty, so the directory
-     * has never been read (fresh database, expired caller credentials, Google
-     * outage) and every single request would otherwise be denied. In that state
-     * an in-domain account that already passed SSO is admitted as an ordinary
-     * user — never as an administrator, and never once the snapshot exists, so
-     * a genuinely unknown or revoked account is still refused as soon as there
-     * is data to judge it by. Set
-     * pm.google-workspace.provisional-access-when-unsynced=false to fail closed
-     * instead.
+     * Degraded mode, off by default: the local Workspace snapshot is empty, so
+     * the directory has never been read (fresh database, expired caller
+     * credentials, Google outage) and every single request would otherwise be
+     * denied. With
+     * pm.google-workspace.provisional-access-when-unsynced=true an in-domain
+     * account that already passed SSO is admitted as an ordinary user — never
+     * as an administrator, and never once the snapshot exists.
+     *
+     * <p>It defaults to false because an empty table is not only the cold-start
+     * state: a sync that failed partway through leaves the same condition, and
+     * in that window a revoked or never-provisioned in-domain account would be
+     * let in. Availability over governance has to be an explicit choice.
      */
     private boolean degradedAccessAllowed(String email) {
         if (!provisionalAccessWhenUnsynced || domain.isEmpty()) return false;

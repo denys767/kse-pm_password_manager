@@ -28,9 +28,11 @@ public class SecurityConfig {
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/api/health", "/api/config", "/api/audit/keycloak-events", "/api/external-shares/**", "/actuator/health").permitAll()
-                        // Swagger UI and non-API actuator endpoints fall through to
-                        // anyRequest().permitAll(); the reverse proxy blocks /actuator/*
-                        // (except health) from the outside.
+                        // API documentation and the remaining actuator endpoints are
+                        // denied here as well as in nginx. Relying on the proxy alone
+                        // put them one misconfiguration — a second ingress, a direct
+                        // container port, a port-forward — away from being public.
+                        .requestMatchers("/swagger-ui/**", "/swagger-ui.html", "/v3/api-docs/**", "/actuator/**").denyAll()
                         .requestMatchers("/api/**").authenticated()
                         .anyRequest().permitAll())
                 .oauth2ResourceServer(oauth2 -> oauth2

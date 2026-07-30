@@ -106,11 +106,24 @@ public class PasskeyService {
         return work;
     }
 
+    /**
+     * Seats a wrapped credential key for a grantee. Owning the item is not
+     * enough on its own: the recipient must still be entitled to use the
+     * passkey, or a stale client could re-seat key material for somebody whose
+     * grant has since been changed or revoked — {@link #canUse} would then let
+     * them back in. The entitled set is the same one
+     * {@link #pendingKeyDistribution} hands out work for.
+     */
     @Transactional
     public void putWrappedKey(CurrentUser user, UUID id, PasskeyDtos.WrappedKeyRequest request) {
         PasskeyCredential credential = credentials.findById(id).orElseThrow(() -> new NotFoundException("Passkey not found"));
-        ownedItem(user, credential.getItemId());
+        PasswordItem item = ownedItem(user, credential.getItemId());
         String email = request.userEmail().toLowerCase(Locale.ROOT);
+        // The owner keeps their own copy; passkeyCapableGrantees deliberately
+        // excludes them, so check for that case before consulting it.
+        if (!email.equalsIgnoreCase(user.email()) && !sharing.passkeyCapableGrantees(item).contains(email)) {
+            throw new ForbiddenException("Recipient has no passkey-capable access to this item");
+        }
         keys.findByCredentialIdAndUserEmail(id, email).ifPresentOrElse(k -> k.setWrappedKey(request.wrappedCredentialKey()),
                 () -> keys.save(new PasskeyCredentialKey(credential, email, request.wrappedCredentialKey())));
     }

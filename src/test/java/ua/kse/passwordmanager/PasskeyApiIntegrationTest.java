@@ -78,7 +78,7 @@ class PasskeyApiIntegrationTest {
         String credentialId = credential(owner, itemId, "distribution.test", "credential-D");
         vaultKeysFor(grantee);
         mvc.perform(as(post("/api/vault/items/" + itemId + "/permissions"), owner).content("""
-                {"granteeType":"USER","grantee":"%s","role":"PASSKEY_ONLY"}
+                {"granteeType":"USER","grantee":"%s","role":"PASSKEY_ONLY","wrappedKey":"cGFzc2tleS1vbmx5LWtleQ=="}
                 """.formatted(grantee))).andExpect(status().isCreated());
 
         mvc.perform(extension(get("/api/passkeys/key-distribution"), owner))
@@ -109,7 +109,7 @@ class PasskeyApiIntegrationTest {
         vaultKeysFor(grantee);
         String permission = json.readTree(mvc.perform(as(post("/api/vault/items/" + itemId + "/permissions"), owner)
                 .content("""
-                {"granteeType":"USER","grantee":"%s","role":"PASSKEY_ONLY"}
+                {"granteeType":"USER","grantee":"%s","role":"PASSKEY_ONLY","wrappedKey":"cGFzc2tleS1vbmx5LWtleQ=="}
                 """.formatted(grantee))).andExpect(status().isCreated())
                 .andReturn().getResponse().getContentAsString()).path("id").asText();
         mvc.perform(extension(put("/api/passkeys/" + credentialId + "/wrapped-keys"), owner)
@@ -128,7 +128,7 @@ class PasskeyApiIntegrationTest {
         // resurrect a key the owner never re-issued: the grantee still sees
         // nothing, and the owner's extension is told to wrap a fresh one.
         mvc.perform(as(post("/api/vault/items/" + itemId + "/permissions"), owner).content("""
-                {"granteeType":"USER","grantee":"%s","role":"PASSKEY_ONLY"}
+                {"granteeType":"USER","grantee":"%s","role":"PASSKEY_ONLY","wrappedKey":"cGFzc2tleS1vbmx5LWtleQ=="}
                 """.formatted(grantee))).andExpect(status().isCreated());
         mvc.perform(extension(get("/api/passkeys?rpId=" + rpId), grantee))
                 .andExpect(status().isOk()).andExpect(jsonPath("$").isEmpty());
@@ -149,11 +149,14 @@ class PasskeyApiIntegrationTest {
                 .andExpect(status().isOk()).andExpect(jsonPath("$[0].encryptedPassword").value("Y2lwaGVy"));
 
         mvc.perform(as(post("/api/vault/items/" + itemId + "/permissions"), "alice@kse.org.ua").content("""
-                {"granteeType":"USER","grantee":"bob@kse.org.ua","role":"PASSKEY_ONLY"}
+                {"granteeType":"USER","grantee":"bob@kse.org.ua","role":"PASSKEY_ONLY","wrappedKey":"Ym9iLXBhc3NrZXktb25seS1rZXk="}
                 """)) .andExpect(status().isCreated());
+        // Passkey Only reaches the extension client — that is what lets it
+        // autofill — but the web client stays 404, same as before.
+        mvc.perform(as(get("/api/vault/items/" + itemId), "bob@kse.org.ua")).andExpect(status().isNotFound());
         mvc.perform(extension(get("/api/vault/items"), "bob@kse.org.ua"))
-                .andExpect(status().isOk()).andExpect(jsonPath("$[0].encryptedPassword").doesNotExist())
-                .andExpect(jsonPath("$[0].wrappedKey").doesNotExist());
+                .andExpect(status().isOk()).andExpect(jsonPath("$[0].encryptedPassword").value("Y2lwaGVy"))
+                .andExpect(jsonPath("$[0].wrappedKey").value("Ym9iLXBhc3NrZXktb25seS1rZXk="));
         mvc.perform(extension(get("/api/passkeys?rpId=example.test"), "bob@kse.org.ua"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$").isEmpty());
         mvc.perform(extension(put("/api/passkeys/" + credentialId + "/wrapped-keys"), "alice@kse.org.ua")

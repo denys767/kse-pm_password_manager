@@ -35,6 +35,7 @@ public class SharingService {
     private final PasswordItemRepository itemRepository;
     private final ItemKeyRepository itemKeyRepository;
     private final CollectionMemberRepository collectionMemberRepository;
+    private final ua.kse.passwordmanager.collections.CollectionRepository collectionRepository;
     private final PermissionMemberRepository permissionMemberRepository;
     private final PasskeyCredentialKeyRepository passkeyKeyRepository;
     private final WorkspaceDirectoryClient directory;
@@ -46,6 +47,7 @@ public class SharingService {
                           PasswordItemRepository itemRepository,
                           ItemKeyRepository itemKeyRepository,
                           CollectionMemberRepository collectionMemberRepository,
+                          ua.kse.passwordmanager.collections.CollectionRepository collectionRepository,
                           PermissionMemberRepository permissionMemberRepository,
                           PasskeyCredentialKeyRepository passkeyKeyRepository,
                           WorkspaceDirectoryClient directory,
@@ -55,6 +57,7 @@ public class SharingService {
         this.itemRepository = itemRepository;
         this.itemKeyRepository = itemKeyRepository;
         this.collectionMemberRepository = collectionMemberRepository;
+        this.collectionRepository = collectionRepository;
         this.permissionMemberRepository = permissionMemberRepository;
         this.passkeyKeyRepository = passkeyKeyRepository;
         this.directory = directory;
@@ -139,7 +142,9 @@ public class SharingService {
 
     @Transactional
     public PermissionResponse share(CurrentUser user, UUID itemId, ShareRequest request) {
-        PasswordItem item = shareableItem(user, itemId);
+        ShareableAccess access = shareableAccess(user, itemId);
+        PasswordItem item = access.item();
+        requireGrantableBy(access.role(), request.role());
         String grantee = request.grantee().trim().toLowerCase(Locale.ROOT);
         if (request.granteeType() == GranteeType.USER && grantee.equalsIgnoreCase(item.getOwnerEmail())) {
             throw new BadRequestException("Cannot share an item with its owner");
@@ -178,6 +183,13 @@ public class SharingService {
         }
 
         final String resolvedGrantee = grantee;
+        if (request.granteeType() == GranteeType.USER) {
+            requireRestrictionIsEnforceable(item, resolvedGrantee, request.role());
+        } else {
+            for (String email : directory.memberEmails(request.directorySubjectId())) {
+                requireRestrictionIsEnforceable(item, email.toLowerCase(Locale.ROOT), request.role());
+            }
+        }
         Permission permission = permissionRepository
                 .findByItemIdAndGranteeTypeAndGrantee(itemId, request.granteeType(), resolvedGrantee)
                 .map(existing -> {
@@ -316,6 +328,11 @@ public class SharingService {
                 .orElseThrow(() -> new NotFoundException("Permission not found"));
         PermissionRole previous = permission.getRole();
         PermissionRole role = request.role();
+        // Downgrading to a restricted role on a collection item promises the
+        // same unenforceable restriction that share() refuses.
+        for (String grantee : granteesOf(permission)) {
+            requireRestrictionIsEnforceable(item, grantee, role);
+        }
         boolean wrappedKeyProvided = request.wrappedKey() != null && !request.wrappedKey().isBlank();
         // Passkey material follows the role the same way the item key does: a
         // role that may not use passkeys keeps no wrapped credential key.
@@ -395,12 +412,56 @@ public class SharingService {
     }
 
     private PasswordItem shareableItem(CurrentUser user, UUID itemId) {
+        return shareableAccess(user, itemId).item();
+    }
+
+    private record ShareableAccess(PasswordItem item, AccessRole role) { }
+
+    private ShareableAccess shareableAccess(CurrentUser user, UUID itemId) {
         PasswordItem item = itemRepository.findById(itemId)
                 .orElseThrow(() -> new NotFoundException("Item not found"));
-        if (!resolveAccess(item, user).canCreateShares()) {
+        AccessRole role = resolveAccess(item, user);
+        if (!role.canCreateShares()) {
             throw new ForbiddenException("Only the owner or an editor can add shares");
         }
-        return item;
+        return new ShareableAccess(item, role);
+    }
+
+    /**
+     * An editor may widen access, but not to another editor. Only the owner can
+     * revoke or change a grant ({@link #ownedItem}), so an editor granting
+     * EDITOR built a chain of re-sharers the owner could not unwind — and each
+     * link could add another. Capping editors below their own level breaks the
+     * chain, because the roles they can still grant cannot share at all.
+     */
+    private static void requireGrantableBy(AccessRole sharer, PermissionRole granted) {
+        if (sharer.isOwner()) return;
+        if (granted == PermissionRole.EDITOR) {
+            throw new ForbiddenException("Only the owner can grant editor access");
+        }
+    }
+
+    /**
+     * Items in a collection carry their item key wrapped with the *collection*
+     * key, so every provisioned member can already decrypt them. Accepting a
+     * PASSKEY_ONLY or AUTOFILL_ONLY grant for such a member would promise a
+     * restriction that no server check can keep — resolveAccess merges them up
+     * to VIEWER precisely because that is what the cryptography already allows.
+     * Refusing the grant is the honest answer; the owner has to take the item
+     * out of the collection to restrict anyone in it.
+     */
+    private void requireRestrictionIsEnforceable(PasswordItem item, String grantee, PermissionRole role) {
+        if (role.accessRole().canReadItemCiphertext() || item.getCollectionId() == null) return;
+        boolean provisionedMember = collectionMemberRepository
+                .findByCollectionIdAndMemberEmail(item.getCollectionId(), grantee)
+                .filter(member -> member.getStatus().hasCryptographicAccess())
+                .isPresent();
+        if (!provisionedMember) return;
+        String collectionName = collectionRepository.findById(item.getCollectionId())
+                .map(ua.kse.passwordmanager.collections.Collection::getName)
+                .orElse(item.getCollectionId().toString());
+        throw new BadRequestException(grantee + " already has full access through collection \""
+                + collectionName + "\"; remove the item from the collection before restricting them");
     }
 
     private void upsertMember(Permission permission, String email, PermissionMemberStatus status) {

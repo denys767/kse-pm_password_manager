@@ -59,16 +59,19 @@ export function broadcastVaultLocked(): void {
 }
 
 /** Asks a connected app tab to run its passkey ceremony and send back an
- *  `unlock` message. Returns false when no app tab has the bridge open yet —
- *  the request is remembered and served to the next tab that connects, so the
- *  caller can simply open one. */
-export function requestUnlockFromApp(): boolean {
-    if (ports.size === 0) { pendingUnlockRequest = true; return false; }
-    for (const port of ports) sendRequestUnlock(port);
-    return true;
-}
-
-export function connectedAppTabId(): number | undefined {
-    for (const port of ports) { if (port.sender?.tab?.id !== undefined) return port.sender.tab.id; }
-    return undefined;
+ *  `unlock` message. Returns the tab (and its window) it asked, so the caller
+ *  can bring it to the front — the passkey ceremony needs a focused document.
+ *  Returns served: false when no app tab has the bridge open yet; the request
+ *  is remembered and served to the next tab that connects, so the caller can
+ *  simply open one. */
+export function requestUnlockFromApp(): { served: boolean; tabId?: number; windowId?: number } {
+    if (ports.size === 0) { pendingUnlockRequest = true; return { served: false }; }
+    let target: { tabId?: number; windowId?: number } = {};
+    for (const port of ports) {
+        sendRequestUnlock(port);
+        if (target.tabId === undefined && port.sender?.tab?.id !== undefined) {
+            target = { tabId: port.sender.tab.id, windowId: port.sender.tab.windowId };
+        }
+    }
+    return { served: true, ...target };
 }
