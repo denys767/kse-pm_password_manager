@@ -1,5 +1,5 @@
 # Multi-stage build: Maven builds backend + React frontend, JRE-only runtime.
-FROM maven:3.9-eclipse-temurin-21 AS build
+FROM maven:3.9-eclipse-temurin-26 AS build
 WORKDIR /app
 COPY pom.xml ./
 COPY frontend/package.json frontend/package-lock.json frontend/
